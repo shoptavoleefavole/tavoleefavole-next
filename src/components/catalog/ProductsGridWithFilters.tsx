@@ -1,0 +1,321 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import AddToCartButton from "@/components/cart/AddToCartButton";
+import { formatEUR } from "@/lib/format";
+
+type Product = {
+  id: string;
+  slug: string;
+  name: string;
+  price: number | string;
+  compareAtPrice?: number | string | null;
+  image?: string;
+  isNew?: boolean;
+  inStock?: boolean;
+
+  // opzionali (mock/compat): se esistono li usiamo, altrimenti fallback
+  popularity?: number;
+  createdAt?: string; // ISO string
+};
+
+type SortValue = "popularity" | "price_asc" | "price_desc" | "newest";
+
+function toNumber(v: unknown): number {
+  const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toTime(v: unknown): number {
+  if (typeof v !== "string") return 0;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : 0;
+}
+
+export default function ProductsGridWithFilters({
+  items,
+  emptyText = "Nessun prodotto trovato.",
+  initialQuery = "",
+}: {
+  items: Product[];
+  emptyText?: string;
+  initialQuery?: string;
+}) {
+  const router = useRouter();
+  const pathname = usePathname() ?? "/catalogo";
+  const searchParams = useSearchParams();
+
+  // ✅ q: inizializza da URL se presente, altrimenti usa initialQuery
+  const [q, setQ] = useState(() => searchParams.get("q") ?? initialQuery);
+
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [newOnly, setNewOnly] = useState(false);
+  const [saleOnly, setSaleOnly] = useState(false);
+
+  // ✅ sort: da URL -> default "popularity"
+  const [sort, setSort] = useState<SortValue>(() => {
+    const raw = (searchParams.get("sort") ?? "popularity").toLowerCase();
+    if (raw === "price_asc") return "price_asc";
+    if (raw === "price_desc") return "price_desc";
+    if (raw === "newest") return "newest";
+    return "popularity";
+  });
+
+  // ✅ se l’utente cambia la URL manualmente, allinea lo state (solo q/sort)
+  useEffect(() => {
+    const urlQ = searchParams.get("q") ?? "";
+    if (urlQ !== q) setQ(urlQ);
+
+    const raw = (searchParams.get("sort") ?? "popularity").toLowerCase();
+    const nextSort: SortValue =
+      raw === "price_asc"
+        ? "price_asc"
+        : raw === "price_desc"
+          ? "price_desc"
+          : raw === "newest"
+            ? "newest"
+            : "popularity";
+
+    if (nextSort !== sort) setSort(nextSort);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  function setParam(key: string, value: string | null) {
+    const sp = new URLSearchParams(searchParams.toString());
+    if (!value) sp.delete(key);
+    else sp.set(key, value);
+
+    const qs = sp.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }
+
+  function onChangeSort(next: SortValue) {
+    setSort(next);
+    setParam("sort", next === "popularity" ? null : next);
+  }
+
+  function resetFilters() {
+    setQ("");
+    setInStockOnly(false);
+    setNewOnly(false);
+    setSaleOnly(false);
+    setSort("popularity");
+
+    // ✅ ripulisce solo i parametri che gestiamo qui (preserva `categoria`)
+    setParam("q", null);
+    setParam("sort", null);
+  }
+
+  const hasActiveFilters = useMemo(() => {
+    return q.trim().length > 0 || inStockOnly || newOnly || saleOnly || sort !== "popularity";
+  }, [q, inStockOnly, newOnly, saleOnly, sort]);
+
+  const filtered = useMemo(() => {
+    const query = q.trim().toLowerCase();
+
+    let list = items.filter((p) => {
+      if (query && !p.name?.toLowerCase().includes(query)) return false;
+
+      if (inStockOnly && p.inStock === false) return false;
+      if (newOnly && !p.isNew) return false;
+
+      const hasSale = p.compareAtPrice != null && toNumber(p.compareAtPrice) > toNumber(p.price);
+      if (saleOnly && !hasSale) return false;
+
+      return true;
+    });
+
+    // ✅ sorting richiesto
+    switch (sort) {
+      case "price_asc":
+        list = [...list].sort((a, b) => toNumber(a.price) - toNumber(b.price));
+        break;
+
+      case "price_desc":
+        list = [...list].sort((a, b) => toNumber(b.price) - toNumber(a.price));
+        break;
+
+      case "newest":
+        list = [...list].sort((a, b) => {
+          // 1) se c’è createdAt, usalo
+          const ta = toTime((a as any).createdAt);
+          const tb = toTime((b as any).createdAt);
+          if (ta !== 0 || tb !== 0) return tb - ta;
+
+          // 2) fallback: isNew
+          const na = Number(!!a.isNew);
+          const nb = Number(!!b.isNew);
+          if (na !== nb) return nb - na;
+
+          // 3) fallback stabile: id
+          return String(b.id).localeCompare(String(a.id));
+        });
+        break;
+
+      case "popularity":
+      default:
+        list = [...list].sort((a, b) => {
+          // 1) se esiste popularity nel mock, usalo
+          const pa = Number((a as any).popularity ?? 0);
+          const pb = Number((b as any).popularity ?? 0);
+          if (pa !== pb) return pb - pa;
+
+          // 2) fallback: inStock prima (più utile in ecommerce)
+          const sa = Number(a.inStock !== false);
+          const sb = Number(b.inStock !== false);
+          if (sa !== sb) return sb - sa;
+
+          // 3) fallback stabile
+          return String(a.id).localeCompare(String(b.id));
+        });
+        break;
+    }
+
+    return list;
+  }, [items, q, inStockOnly, newOnly, saleOnly, sort]);
+
+  return (
+    <div className="mt-6">
+      {/* Toolbar */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-background p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            value={q}
+            onChange={(e) => {
+              const next = e.target.value;
+              setQ(next);
+              setParam("q", next.trim() ? next : null);
+            }}
+            placeholder="Cerca un prodotto…"
+            className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/25 sm:w-72"
+          />
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-surface-2">
+              <input type="checkbox" checked={inStockOnly} onChange={(e) => setInStockOnly(e.target.checked)} />
+              Disponibili
+            </label>
+
+            <label className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-surface-2">
+              <input type="checkbox" checked={newOnly} onChange={(e) => setNewOnly(e.target.checked)} />
+              Novità
+            </label>
+
+            <label className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm hover:bg-surface-2">
+              <input type="checkbox" checked={saleOnly} onChange={(e) => setSaleOnly(e.target.checked)} />
+              In offerta
+            </label>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
+          <div className="text-sm text-text/70">
+            {filtered.length} / {items.length}
+          </div>
+
+          {hasActiveFilters ? (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="rounded-xl border border-border bg-background px-3 py-2 text-sm font-bold hover:bg-surface-2"
+            >
+              Reset filtri
+            </button>
+          ) : null}
+
+          <select
+            value={sort}
+            onChange={(e) => onChangeSort(e.target.value as SortValue)}
+            className="rounded-xl border border-border bg-background px-3 py-2 text-sm"
+            aria-label="Ordina prodotti"
+          >
+            <option value="popularity">Popolarità</option>
+            <option value="price_asc">Prezzo crescente</option>
+            <option value="price_desc">Prezzo decrescente</option>
+            <option value="newest">Novità</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Grid */}
+      {filtered.length === 0 ? (
+        <div className="mt-4 rounded-2xl border border-border bg-surface p-5">
+          <p className="text-sm font-semibold">{emptyText}</p>
+          {hasActiveFilters ? (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="mt-3 rounded-xl bg-primary px-4 py-2 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+            >
+              Rimuovi filtri
+            </button>
+          ) : (
+            <p className="mt-2 text-sm text-text/70">Prova a cambiare ricerca o scegli un’altra categoria.</p>
+          )}
+        </div>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {filtered.map((p) => {
+            const price = toNumber(p.price);
+            const compare = p.compareAtPrice != null ? toNumber(p.compareAtPrice) : null;
+            const hasSale = compare != null && compare > price;
+
+            // 🔒 id: proviamo a tenerlo stabile, altrimenti fallback su slug
+            const id = (p as any).documentId ?? p.id ?? p.slug;
+            const slug = p.slug ?? String(p.id);
+
+            // immagini: preferiamo p.image / p.imageUrl; fallback logo
+            const image = (p as any).imageUrl ?? p.image ?? "/brand/tavoleefavole-logo.svg";
+
+            const disabled = p.inStock === false;
+
+            return (
+              <div key={String(id)} className="rounded-2xl border border-border bg-background p-3 hover:shadow-sm">
+                {/* Link solo su immagine + titolo (così il bottone non naviga) */}
+                <Link href={`/prodotto/${slug}`} className="block">
+                  <div className="aspect-[4/3] overflow-hidden rounded-xl bg-surface-2/60">
+                    {image ? (
+                      <img src={image} alt={p.name} className="h-full w-full object-cover" loading="lazy" />
+                    ) : null}
+                  </div>
+
+                  <div className="mt-3">
+                    <div className="text-sm font-semibold line-clamp-2">{p.name}</div>
+                  </div>
+                </Link>
+
+                <div className="mt-2 flex items-baseline gap-2">
+                  <span className="text-sm font-bold">{formatEUR(price)}</span>
+                  {hasSale ? (
+                    <span className="text-xs line-through text-text/50">{formatEUR(compare!)}</span>
+                  ) : null}
+                </div>
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {p.isNew ? (
+                    <span className="rounded-full border border-border px-2 py-0.5 text-xs font-semibold">Novità</span>
+                  ) : null}
+                  {hasSale ? (
+                    <span className="rounded-full border border-border px-2 py-0.5 text-xs font-semibold">Offerta</span>
+                  ) : null}
+                  {disabled ? (
+                    <span className="rounded-full border border-red-200 px-2 py-0.5 text-xs font-semibold text-red-600">
+                      Non disponibile
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* ✅ CTA carrello */}
+                <div className="mt-3 flex justify-end">
+                  <AddToCartButton id={id} slug={slug} name={p.name} image={image} price={price} qty={1} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /*
+    Brand palette (estratta da public/icon.png):
+    - Pink ~ rgb(224,24,112)
+    - Teal ~ rgb(24,164,156)
+  */
+  --color-primary: 224 24 112;            /* rosa */
+  --color-primary-hover: 200 20 100;
+  --color-primary-active: 176 16 88;
+  --color-primary-contrast: 255 255 255;
+
+  --color-secondary: 255 235 246;         /* rosa chiarissimo */
+  --color-accent: 24 164 156;             /* verde/teal */
+  --color-accent-contrast: 255 255 255;
+
+  --color-background: 255 255 255;
+  --color-surface: 255 250 253;           /* quasi bianco, leggermente rosato */
+  --color-surface-2: 244 252 251;         /* quasi bianco, leggermente verdino */
+
+  --color-text: 67 74 86;
+  --color-muted-text: 115 124 140;
+  --color-text-on-dark: 255 255 255;
+
+  --color-border: 232 236 240;
+  --color-border-strong: 214 220 228;
+
+  --color-link: 24 164 156;
+  --color-link-hover: 224 24 112;
+
+  --color-success: 10 135 90;
+  --color-warn: 245 158 11;
+  --color-error: 220 38 38;
+
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.10);
+}
+
+html { color-scheme: light; }
+
+body {
+  background: rgb(var(--color-background));
+  color: rgb(var(--color-text));
+}
+
+::selection { background: rgb(var(--color-secondary)); }
+
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid rgb(var(--color-primary));
+  outline-offset: 2px;
+}
+
+/* Mobile UX: nasconde la scrollbar senza disabilitare lo scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@layer utilities {
+  /* Evita overflow su parole lunghe (SKU, URL, ecc.) */
+  .smart-wrap {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    hyphens: auto;
+  }
+
+  /* Tap target minimo consigliato (mobile-first) */
+  .tap-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Line clamp senza plugin Tailwind */
+  .line-clamp-1,
+  .line-clamp-2,
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .line-clamp-1 { -webkit-line-clamp: 1; }
+  .line-clamp-2 { -webkit-line-clamp: 2; }
+  .line-clamp-3 { -webkit-line-clamp: 3; }
+
+  /* Grid configurabile via CSS variables (utile per layout configurati da JSON) */
+  .rg {
+    --cols: var(--cols-base, 1);
+    display: grid;
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  }
+  @media (min-width: 640px) {
+    .rg { --cols: var(--cols-sm, var(--cols-base, 1)); }
+  }
+  @media (min-width: 768px) {
+    .rg { --cols: var(--cols-md, var(--cols-sm, var(--cols-base, 1))); }
+  }
+  @media (min-width: 1024px) {
+    .rg { --cols: var(--cols-lg, var(--cols-md, var(--cols-sm, var(--cols-base, 1)))); }
+  }
+}
