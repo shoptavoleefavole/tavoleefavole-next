@@ -35,21 +35,15 @@ function sha12(s: string) {
   return crypto.createHash("sha256").update(s).digest("hex").slice(0, 12);
 }
 
-async function fetchStrapi(url: string, withAuth: boolean, signal: AbortSignal) {
+async function fetchStrapi(url: string, token: string | null, signal: AbortSignal) {
   const headers: Record<string, string> = {
     Accept: "application/json",
-    // (facoltativo ma utile se c’è qualche filtro lato rete/UA)
-    "User-Agent": "Mozilla/5.0 (Vercel; Next.js server)",
   };
-
-  if (withAuth && STRAPI_TOKEN) {
-    headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
-  }
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(url, { headers, cache: "no-store", signal });
   const text = await res.text().catch(() => "");
   const json = safeJsonParse(text);
-
   return { res, text, json };
 }
 
@@ -58,7 +52,6 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const debug = searchParams.get("debug") === "1";
 
-  // Log “sicuro” (nessun token)
   console.log("NAV_CATEGORIES_ENV", {
     usedUrlBase,
     hasToken: Boolean(STRAPI_TOKEN),
@@ -70,14 +63,23 @@ export async function GET(req: Request) {
     return NextResponse.json({ data: [], error: "STRAPI_URL missing" }, { status: 200 });
   }
 
-  // ✅ Richiesta MINIMA per navbar (niente populate=*)
-  // - fields: solo label/slug
-  // - populate: solo icon e subcategories (niente products)
+  // ✅ Query MINIMA (niente "*") per evitare icon.related
+  // Navbar: label/slug + icon(url/alt/formats) + subcategories(label/slug)
   const qs = new URLSearchParams();
   qs.set("fields[0]", "label");
   qs.set("fields[1]", "slug");
-  qs.set("populate[icon]", "*");
-  qs.set("populate[subcategories]", "*");
+
+  // icon (media): prendo SOLO campi necessari, niente populate "*" che tenta icon.related
+  qs.set("populate[icon][fields][0]", "url");
+  qs.set("populate[icon][fields][1]", "alternativeText");
+  qs.set("populate[icon][fields][2]", "width");
+  qs.set("populate[icon][fields][3]", "height");
+  qs.set("populate[icon][fields][4]", "formats");
+
+  // subcategories: solo label/slug
+  qs.set("populate[subcategories][fields][0]", "label");
+  qs.set("populate[subcategories][fields][1]", "slug");
+
   qs.set("pagination[pageSize]", "100");
   qs.set("sort[0]", "createdAt:asc");
 
@@ -87,55 +89,48 @@ export async function GET(req: Request) {
   const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    // 1) tenta con token
-    const a = await fetchStrapi(url, true, controller.signal);
-
-    // 2) se 401/403, fallback senza token (dato che Public è abilitato)
-    if ((a.res.status === 401 || a.res.status === 403) && STRAPI_TOKEN) {
-      const b = await fetchStrapi(url, false, controller.signal);
-
-      if (b.res.ok) {
-        return NextResponse.json(
-          debug
-            ? { data: b.json?.data ?? [], debug: { firstStatus: a.res.status, fallbackStatus: b.res.status } }
-            : { data: b.json?.data ?? [] },
-          { status: 200 }
-        );
-      }
-
-      // entrambi falliti
+    // 1) PRIMA senza token (dato che Public find/findOne è abilitato)
+    const noAuth = await fetchStrapi(url, null, controller.signal);
+    if (noAuth.res.ok) {
       return NextResponse.json(
         debug
-          ? {
-              data: [],
-              error: `Strapi error ${a.res.status} (auth) + ${b.res.status} (noauth)`,
-              usedUrl: url,
-              authBody: a.text.slice(0, 800),
-              noAuthBody: b.text.slice(0, 800),
-              wwwAuthAuth: a.res.headers.get("www-authenticate"),
-              wwwAuthNoAuth: b.res.headers.get("www-authenticate"),
-            }
-          : { data: [], error: `Strapi error ${a.res.status}` },
+          ? { data: noAuth.json?.data ?? [], debug: { mode: "noauth", status: noAuth.res.status, usedUrl: url } }
+          : { data: noAuth.json?.data ?? [] },
         { status: 200 }
       );
     }
 
-    // se ok al primo colpo
-    if (a.res.ok) {
-      return NextResponse.json({ data: a.json?.data ?? [] }, { status: 200 });
+    // 2) Se non va e hai token, prova con token (fallback per futuro se rendi private le categorie)
+    if (STRAPI_TOKEN) {
+      const auth = await fetchStrapi(url, STRAPI_TOKEN, controller.signal);
+      if (auth.res.ok) {
+        return NextResponse.json(
+          debug
+            ? { data: auth.json?.data ?? [], debug: { mode: "auth", status: auth.res.status, usedUrl: url } }
+            : { data: auth.json?.data ?? [] },
+          { status: 200 }
+        );
+      }
+
+      return NextResponse.json(
+        debug
+          ? {
+              data: [],
+              error: `Strapi error ${noAuth.res.status} (noauth) + ${auth.res.status} (auth)`,
+              usedUrl: url,
+              noAuthBody: noAuth.text.slice(0, 800),
+              authBody: auth.text.slice(0, 800),
+            }
+          : { data: [], error: `Strapi error ${auth.res.status}` },
+        { status: 200 }
+      );
     }
 
-    // fallito (non 401/403 o senza token)
+    // no token e noauth fallito
     return NextResponse.json(
       debug
-        ? {
-            data: [],
-            error: `Strapi error ${a.res.status}`,
-            usedUrl: url,
-            body: a.text.slice(0, 800),
-            wwwAuth: a.res.headers.get("www-authenticate"),
-          }
-        : { data: [], error: `Strapi error ${a.res.status}` },
+        ? { data: [], error: `Strapi error ${noAuth.res.status}`, usedUrl: url, body: noAuth.text.slice(0, 800) }
+        : { data: [], error: `Strapi error ${noAuth.res.status}` },
       { status: 200 }
     );
   } catch (e: any) {
