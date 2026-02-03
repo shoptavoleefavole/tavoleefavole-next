@@ -5,14 +5,23 @@ export const STRAPI_URL =
   process.env.STRAPI_URL ||
   "http://localhost:1337";
 
-type StrapiFetchOptions = RequestInit & {
-  /** Revalidate (ISR) in seconds. If undefined uses default 30. If 0 => no-store. */
+export type StrapiAuthMode = "auto" | "none" | "force";
+
+export type StrapiFetchOptions = Omit<RequestInit, "next"> & {
+  /** Revalidate (ISR) in seconds. Default 30. If 0 => no-store. */
   revalidate?: number;
+  /**
+   * auth:
+   * - "auto"  (default): adds Bearer token if available
+   * - "none": never sends Authorization (for public content)
+   * - "force": requires token; throws if missing
+   */
+  auth?: StrapiAuthMode;
 };
 
 /** Normalizza base url togliendo eventuale slash finale */
 function baseUrl() {
-  return String(STRAPI_URL || "").replace(/\/$/, "");
+  return String(STRAPI_URL || "").trim().replace(/\/$/, "");
 }
 
 /** Concatena base + path in modo sicuro */
@@ -23,12 +32,13 @@ function joinUrl(path: string) {
 
 /** Token: supporta più nomi env (Vercel/locale) */
 function getStrapiToken() {
-  return (
+  const t =
     process.env.STRAPI_API_TOKEN ||
     process.env.STRAPI_TOKEN ||
     process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-    process.env.NEXT_PUBLIC_STRAPI_TOKEN
-  );
+    process.env.NEXT_PUBLIC_STRAPI_TOKEN;
+
+  return t?.trim();
 }
 
 export async function strapiFetch<T>(
@@ -37,43 +47,61 @@ export async function strapiFetch<T>(
 ): Promise<T> {
   const url = joinUrl(path);
 
+  // estraiamo i campi custom per NON farli finire nello spread di fetch()
+  const {
+    revalidate: revalidateOpt,
+    auth: authOpt,
+    ...init
+  } = opts;
+
   const headers: Record<string, string> = {
     Accept: "application/json",
-    ...(opts.headers as Record<string, string> | undefined),
+    ...(init.headers as Record<string, string> | undefined),
   };
 
-  // Se mando un body string/JSON, spesso serve Content-Type
-  if (!headers["Content-Type"] && opts.body) {
+  // Se mando un body e manca Content-Type, imposto JSON
+  if (!headers["Content-Type"] && init.body) {
     headers["Content-Type"] = "application/json";
   }
 
+  // auth handling
+  const authMode: StrapiAuthMode = authOpt ?? "auto";
   const token = getStrapiToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
 
-  // revalidate: 0 => no-store (utile per debug)
-  const revalidate = opts.revalidate ?? 30;
-  const nextOpt =
-    revalidate === 0 ? undefined : { revalidate: revalidate as number };
+  if (authMode !== "none") {
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    } else if (authMode === "force") {
+      throw new Error(`Strapi token missing (auth="force") for ${url}`);
+    }
+  }
 
-  const res = await fetch(url, {
-    ...opts,
+  // caching / ISR (Next fetch extension)
+  const revalidate = revalidateOpt ?? 30;
+
+  const fetchInit: RequestInit & {
+    next?: { revalidate?: number | false };
+  } = {
+    ...init,
     headers,
-    ...(revalidate === 0 ? { cache: "no-store" } : {}),
-    ...(nextOpt ? { next: nextOpt } : {}),
-  });
+  };
+
+  if (revalidate === 0) {
+    fetchInit.cache = "no-store";
+  } else {
+    fetchInit.next = { revalidate };
+  }
+
+  const res = await fetch(url, fetchInit);
 
   if (!res.ok) {
-    let body = "";
-    try {
-      body = await res.text();
-    } catch {
-      body = "";
-    }
-    // Taglia risposta troppo lunga per non “sporcare” i log
-    const shortBody = body.length > 800 ? body.slice(0, 800) + "..." : body;
+    const text = await res.text().catch(() => "");
+    const shortBody = text.length > 800 ? text.slice(0, 800) + "..." : text;
 
     throw new Error(
-      `Strapi fetch failed: ${res.status} ${res.statusText}\nURL: ${url}\n${shortBody}`
+      `Strapi fetch failed: ${res.status} ${res.statusText}\nURL: ${url}\nAuth: ${authMode} (token ${
+        token ? "yes" : "no"
+      })\n${shortBody}`
     );
   }
 
