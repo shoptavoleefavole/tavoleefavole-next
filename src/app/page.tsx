@@ -7,6 +7,9 @@ import { getAvailability } from "@/lib/inventory.server";
 import FavoritesProvider from "@/components/favorites/FavoritesProvider";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+
 type HomeCat = {
   slug: string;
   label: string;
