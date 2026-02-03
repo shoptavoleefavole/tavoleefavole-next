@@ -2,10 +2,38 @@ import Link from "next/link";
 import Container from "@/components/Container";
 
 const columns = [
-  { title: "Azienda", links: [{ label: "Chi siamo", href: "/supporto" }, { label: "Contatti", href: "/supporto" }, { label: "Lavora con noi", href: "/supporto" }] },
-  { title: "Assistenza", links: [{ label: "Supporto", href: "/supporto" }, { label: "Spedizioni", href: "/supporto" }, { label: "Resi & rimborsi", href: "/supporto" }] },
-  { title: "Info legali", links: [{ label: "Privacy", href: "/supporto" }, { label: "Cookie", href: "/supporto" }, { label: "Termini", href: "/supporto" }] },
-  { title: "Metodi pagamento", links: [{ label: "Carte", href: "/supporto" }, { label: "PayPal", href: "/supporto" }, { label: "Bonifico", href: "/supporto" }] },
+  {
+    title: "Azienda",
+    links: [
+      { label: "Chi siamo", href: "/chi-siamo" },
+      { label: "Contatti", href: "/contatti" },
+      { label: "Lavora con noi", href: "/supporto" }, // placeholder
+    ],
+  },
+  {
+    title: "Assistenza",
+    links: [
+      { label: "Supporto", href: "/supporto" }, // se esiste già
+      { label: "Spedizioni", href: "/spedizioni" },
+      { label: "Resi & rimborsi", href: "/resi" },
+    ],
+  },
+  {
+    title: "Info legali",
+    links: [
+      { label: "Privacy", href: "/privacy-policy" },
+      { label: "Cookie", href: "/cookie-policy" },
+      { label: "Termini", href: "/termini" },
+    ],
+  },
+  {
+    title: "Metodi pagamento",
+    links: [
+      { label: "Carte", href: "/supporto" }, // placeholder
+      { label: "PayPal", href: "/supporto" }, // placeholder
+      { label: "Bonifico", href: "/supporto" }, // placeholder
+    ],
+  },
 ];
 
 export default function Footer() {
@@ -19,7 +47,10 @@ export default function Footer() {
               <ul className="mt-3 space-y-2">
                 {col.links.map((l) => (
                   <li key={l.label}>
-                    <Link href={l.href} className="text-sm text-muted-text hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                    <Link
+                      href={l.href}
+                      className="text-sm text-muted-text hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    >
                       {l.label}
                     </Link>
                   </li>
@@ -30,10 +61,24 @@ export default function Footer() {
         </div>
 
         <div className="flex flex-col gap-2 border-t border-border py-6 text-sm text-muted-text sm:flex-row sm:items-center sm:justify-between">
-          <span>© {new Date().getFullYear()} Tavole & Favole (placeholder)</span>
+          <span>© {new Date().getFullYear()} Tavole & Favole</span>
+
           <div className="flex flex-wrap gap-4">
-            <Link href="/supporto" className="hover:text-link-hover">Info legali</Link>
-            <Link href="/supporto" className="hover:text-link-hover">Preferenze cookie</Link>
+            <Link href="/privacy-policy" className="hover:text-link-hover">
+              Privacy
+            </Link>
+            <Link href="/cookie-policy" className="hover:text-link-hover">
+              Cookie
+            </Link>
+            <Link href="/termini" className="hover:text-link-hover">
+              Termini
+            </Link>
+
+            {/* “Preferenze cookie” (placeholder sicuro): porta alla Cookie Policy.
+               Se hai Iubenda CMP attiva, lo trasformiamo nel vero link "apri preferenze". */}
+            <Link href="/cookie-policy" className="hover:text-link-hover">
+              Preferenze cookie
+            </Link>
           </div>
         </div>
       </Container>

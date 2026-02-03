@@ -1,6 +1,8 @@
+// src/app/layout.tsx
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Suspense } from "react";
+import Script from "next/script";
 
 import "@/styles/globals.css";
 
@@ -21,7 +23,9 @@ function normalizeSiteUrl(input: string) {
 
 const rawSiteUrl =
   process.env.NEXT_PUBLIC_SITE_URL ||
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  (process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : "http://localhost:3000");
 
 const siteUrl = normalizeSiteUrl(rawSiteUrl);
 const site = new URL(siteUrl);
@@ -70,6 +74,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         >
           Salta al contenuto
         </a>
+
+        {/* ✅ Iubenda: carica lo script UNA SOLA VOLTA (Privacy/Cookie links funzionano ovunque) */}
+        <Script
+          src="https://cdn.iubenda.com/iubenda.js"
+          strategy="afterInteractive"
+        />
 
         <AppProviders>
           {/* ✅ Provider preferiti globale: header + pagine + mobile nav */}
