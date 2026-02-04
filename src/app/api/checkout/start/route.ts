@@ -1,19 +1,35 @@
+// src/app/api/checkout/start/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
+import { getAvailability } from "@/lib/inventory.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ✅ accettiamo anche slug/id come fallback (il client può mandare uno dei due)
+/**
+ * ✅ Server-pricing robusto (Step 3):
+ * - Il carrello può essere usato anche da guest (nessun requisito login).
+ * - Prezzi “standard” e “in offerta” vengono SEMPRE da Strapi (price + compareAtPrice se presente).
+ * - Prezzi AZIENDE: applicati SOLO se l’utente è realmente “azienda” su Strapi (CustomerProfile/Azienda approved).
+ * - “Cialda personalizzata”: prezzo calcolato server-side da meta.material (ostia / pasta_di_zucchero).
+ * - NON ci fidiamo del price del client.
+ * - ✅ NEW: blocco checkout se inventario (warehouse MAIN) non copre qty (SKU-based).
+ */
+
+type CartItemMeta = Record<string, any>;
+
 type CartItem = {
-  productId?: number; // preferito
-  id?: number; // fallback
-  slug?: string; // fallback
+  productId?: number | string;
+  id?: number | string;
+  slug?: string;
+
   name?: string;
-  price?: number; // IGNORATO (non fidarti del client)
+  price?: number; // ignored
   qty: number;
   imageUrl?: string;
   variantId?: number | null;
+
+  meta?: CartItemMeta;
 };
 
 type BillingType = "PRIVATE" | "AZIENDE";
@@ -32,7 +48,7 @@ function json(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-route": "v9-server-pricing",
+      "x-checkout-route": "v12-server-pricing-b2b-guest-cialde-inventory",
     },
   });
 }
@@ -64,6 +80,45 @@ function clampNumber(v: any, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toSafeString(v: any, fallback = "") {
+  const s = String(v ?? "").trim();
+  return s || fallback;
+}
+
+function toIntStrict(v: any): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return null;
+    if (!/^\d+$/.test(s)) return null;
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return Math.trunc(n);
+  }
+  return null;
+}
+
+function isPlainObject(x: any) {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
+
+function sanitizeMeta(meta: any): CartItemMeta | undefined {
+  if (!isPlainObject(meta)) return undefined;
+
+  const out: CartItemMeta = {};
+  const allow = ["kind", "href", "shape", "material", "text", "imageUrl", "notes", "lineId"];
+
+  for (const k of allow) {
+    const v = meta[k];
+    if (v == null) continue;
+
+    if (typeof v === "string") out[k] = v.slice(0, 500);
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = v;
+  }
+
+  return Object.keys(out).length ? out : undefined;
+}
+
 function normalizeItems(input: any): CartItem[] {
   if (!Array.isArray(input)) return [];
   const out: CartItem[] = [];
@@ -73,12 +128,8 @@ function normalizeItems(input: any): CartItem[] {
     const qty = Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : NaN;
     if (!Number.isFinite(qty) || qty <= 0) continue;
 
-    const productId =
-      typeof it?.productId === "number"
-        ? it.productId
-        : typeof it?.id === "number"
-        ? it.id
-        : undefined;
+    const productIdNum = toIntStrict(it?.productId);
+    const idNum = toIntStrict(it?.id);
 
     const slug =
       typeof it?.slug === "string" && it.slug.trim()
@@ -87,17 +138,20 @@ function normalizeItems(input: any): CartItem[] {
         ? it.productSlug.trim()
         : undefined;
 
-    // serve almeno productId o slug
-    if (!productId && !slug) continue;
+    const meta = sanitizeMeta(it?.meta);
+    const isCustom = typeof meta?.kind === "string" && meta.kind.trim().length > 0;
+
+    if (!productIdNum && !idNum && !slug && !isCustom) continue;
 
     out.push({
-      productId,
-      id: productId,
+      productId: productIdNum ?? undefined,
+      id: idNum ?? undefined,
       slug,
       name: typeof it?.name === "string" ? it.name : undefined,
       qty,
       imageUrl: typeof it?.imageUrl === "string" ? it.imageUrl : undefined,
       variantId: typeof it?.variantId === "number" || it?.variantId === null ? it.variantId : undefined,
+      meta,
     });
   }
 
@@ -111,9 +165,7 @@ function normalizeBillingType(input: any): BillingType {
 }
 
 function pickStr(...vals: any[]) {
-  for (const v of vals) {
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
+  for (const v of vals) if (typeof v === "string" && v.trim()) return v.trim();
   return "";
 }
 
@@ -194,14 +246,18 @@ async function strapiRequest(
   init: RequestInit,
   timeoutMs = 12_000
 ) {
-  const res = await fetchWithTimeout(`${strapiBaseUrl(STRAPI_URL)}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${STRAPI_API_TOKEN}`,
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
+  const res = await fetchWithTimeout(
+    `${strapiBaseUrl(STRAPI_URL)}${path}`,
+    {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${STRAPI_API_TOKEN}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
     },
-  }, timeoutMs);
+    timeoutMs
+  );
 
   const text = await res.text().catch(() => "");
   const data = text ? safeJsonParse(text) : null;
@@ -211,7 +267,22 @@ async function strapiRequest(
 /** Stripe: zero-decimal currencies */
 function isZeroDecimalCurrency(currency: string) {
   const zero = new Set([
-    "BIF","CLP","DJF","GNF","JPY","KMF","KRW","MGA","PYG","RWF","UGX","VND","VUV","XAF","XOF","XPF",
+    "BIF",
+    "CLP",
+    "DJF",
+    "GNF",
+    "JPY",
+    "KMF",
+    "KRW",
+    "MGA",
+    "PYG",
+    "RWF",
+    "UGX",
+    "VND",
+    "VUV",
+    "XAF",
+    "XOF",
+    "XPF",
   ]);
   return zero.has(String(currency || "").toUpperCase());
 }
@@ -267,7 +338,6 @@ async function bestEffortUpdateStripeSessionId(args: {
   orderRef: string;
 }) {
   const { STRAPI_URL, STRAPI_API_TOKEN, orderId, documentId, stripeSessionId, orderRef } = args;
-
   const payload = { data: { stripeSessionId, stripeClientRef: orderRef } };
 
   if (orderId) {
@@ -293,40 +363,135 @@ async function bestEffortUpdateStripeSessionId(args: {
   }
 }
 
-// ---------- ✅ Server pricing: prodotti + sconto aziende ----------
+/* ---------------- ✅ Custom pricing: Cialde ---------------- */
+
+const CIALDE_PRICE_MAJOR = {
+  ostia: 4.75,
+  pasta_di_zucchero: 6.5,
+} as const;
+
+type CialdaMaterial = keyof typeof CIALDE_PRICE_MAJOR;
+
+function isCialdaMaterial(x: any): x is CialdaMaterial {
+  return x === "ostia" || x === "pasta_di_zucchero";
+}
+
+function isCialdaItem(it: CartItem) {
+  const kind = toSafeString(it?.meta?.kind);
+  return kind === "cialda-personalizzata" || kind === "cialde-personalizzate";
+}
+
+function buildCialdaName(meta?: CartItemMeta) {
+  const m = toSafeString(meta?.material);
+  if (m === "pasta_di_zucchero") return "Cialda personalizzata (Pasta di zucchero)";
+  if (m === "ostia") return "Cialda personalizzata (Ostia)";
+  return "Cialda personalizzata";
+}
+
+function compactStripeMeta(meta?: CartItemMeta) {
+  if (!meta) return {};
+  const out: Record<string, string> = {};
+
+  const shape = toSafeString(meta.shape);
+  const material = toSafeString(meta.material);
+  const text = toSafeString(meta.text);
+  const imageUrl = toSafeString(meta.imageUrl);
+  const href = toSafeString(meta.href);
+
+  if (shape) out.shape = shape.slice(0, 80);
+  if (material) out.material = material.slice(0, 80);
+  if (text) out.text = text.slice(0, 120);
+  if (href) out.href = href.slice(0, 200);
+  if (imageUrl) out.imageUrl = imageUrl.slice(0, 200);
+
+  return out;
+}
+
+/* ---------------- ✅ Server pricing: prodotti + B2B + SKU per inventario ---------------- */
 
 type StrapiProduct = {
   id: number | null;
   documentId: string | null;
   slug: string | null;
   name: string | null;
+
   price: number | null;
+  compareAtPrice: number | null;
+
+  // prezzi aziende
+  companyPrice: number | null;
+  b2bPrice: number | null;
+  priceAziende: number | null;
+  priceCompany: number | null;
+  priceB2B: number | null;
+
+  // fallback legacy
   aziendaDiscountEligible: boolean;
+
+  // ✅ SKU (per inventario)
+  sku: string | null;
 };
+
+function toNumOrNull(v: any): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+function pickSkuFromStrapiRow(row: any): string | null {
+  const a = row?.attributes ?? row ?? {};
+
+  // Strapi può avere:
+  // - variants: relation array
+  // - variant: single relation
+  // - sku diretto (se lo hai messo sul prodotto)
+  const direct = typeof a?.sku === "string" ? a.sku : typeof row?.sku === "string" ? row.sku : null;
+  if (direct && direct.trim()) return direct.trim();
+
+  const variants = a?.variants?.data ?? a?.variants ?? null;
+  if (Array.isArray(variants) && variants.length) {
+    const v0 = variants[0];
+    const va = v0?.attributes ?? v0 ?? {};
+    const sku = typeof va?.sku === "string" ? va.sku : typeof v0?.sku === "string" ? v0.sku : null;
+    if (sku && sku.trim()) return sku.trim();
+  }
+
+  const variant = a?.variant?.data ?? a?.variant ?? null;
+  if (variant) {
+    const va = variant?.attributes ?? variant ?? {};
+    const sku = typeof va?.sku === "string" ? va.sku : typeof variant?.sku === "string" ? variant.sku : null;
+    if (sku && sku.trim()) return sku.trim();
+  }
+
+  return null;
+}
 
 function extractProduct(row: any): StrapiProduct {
   const a = row?.attributes ?? row ?? {};
   const id = typeof row?.id === "number" ? row.id : typeof a?.id === "number" ? a.id : null;
 
   const documentId =
-    typeof row?.documentId === "string" ? row.documentId :
-    typeof a?.documentId === "string" ? a.documentId : null;
+    typeof row?.documentId === "string" ? row.documentId : typeof a?.documentId === "string" ? a.documentId : null;
 
-  const slug =
-    typeof a?.slug === "string" ? a.slug :
-    typeof row?.slug === "string" ? row.slug : null;
+  const slug = typeof a?.slug === "string" ? a.slug : typeof row?.slug === "string" ? row.slug : null;
+  const name = typeof a?.name === "string" ? a.name : typeof row?.name === "string" ? row.name : null;
 
-  const name =
-    typeof a?.name === "string" ? a.name :
-    typeof row?.name === "string" ? row.name : null;
+  const price = toNumOrNull(a?.price ?? row?.price);
+  const compareAtPrice = toNumOrNull(a?.compareAtPrice ?? row?.compareAtPrice);
 
-  const priceRaw = a?.price ?? row?.price ?? null;
-  const price = typeof priceRaw === "number" ? priceRaw : (typeof priceRaw === "string" ? Number(priceRaw) : null);
+  const companyPrice = toNumOrNull(a?.companyPrice ?? row?.companyPrice);
+  const b2bPrice = toNumOrNull(a?.b2bPrice ?? row?.b2bPrice);
+  const priceAziende = toNumOrNull(a?.priceAziende ?? row?.priceAziende);
+  const priceCompany = toNumOrNull(a?.price_company ?? row?.price_company ?? a?.priceCompany ?? row?.priceCompany);
+  const priceB2B = toNumOrNull(a?.price_b2b ?? row?.price_b2b ?? a?.priceB2B ?? row?.priceB2B);
 
   const eligibleRaw =
-    a?.aziendaDiscountEligible ?? row?.aziendaDiscountEligible ??
-    a?.companyDiscountEligible ?? row?.companyDiscountEligible ??
+    a?.aziendaDiscountEligible ??
+    row?.aziendaDiscountEligible ??
+    a?.companyDiscountEligible ??
+    row?.companyDiscountEligible ??
     false;
+
+  const sku = pickSkuFromStrapiRow(row);
 
   return {
     id,
@@ -334,14 +499,19 @@ function extractProduct(row: any): StrapiProduct {
     slug: slug ? String(slug) : null,
     name: name ? String(name) : null,
     price: Number.isFinite(price as any) ? (price as number) : null,
+    compareAtPrice: Number.isFinite(compareAtPrice as any) ? (compareAtPrice as number) : null,
+    companyPrice: Number.isFinite(companyPrice as any) ? (companyPrice as number) : null,
+    b2bPrice: Number.isFinite(b2bPrice as any) ? (b2bPrice as number) : null,
+    priceAziende: Number.isFinite(priceAziende as any) ? (priceAziende as number) : null,
+    priceCompany: Number.isFinite(priceCompany as any) ? (priceCompany as number) : null,
+    priceB2B: Number.isFinite(priceB2B as any) ? (priceB2B as number) : null,
     aziendaDiscountEligible: Boolean(eligibleRaw),
+    sku,
   };
 }
 
 function addInFilter(qs: URLSearchParams, field: string, values: (string | number)[]) {
-  values.forEach((v, i) => {
-    qs.append(`filters[${field}][$in][${i}]`, String(v));
-  });
+  values.forEach((v, i) => qs.append(`filters[${field}][$in][${i}]`, String(v)));
 }
 
 async function fetchProductsByIdsOrSlugs(args: {
@@ -358,14 +528,40 @@ async function fetchProductsByIdsOrSlugs(args: {
   if (ids.length > 0) addInFilter(qs, "id", ids);
   if (slugs.length > 0) addInFilter(qs, "slug", slugs);
 
-  // fields essenziali
-  qs.append("fields[0]", "name");
-  qs.append("fields[1]", "slug");
-  qs.append("fields[2]", "price");
-  qs.append("fields[3]", "documentId");
-  qs.append("fields[4]", "aziendaDiscountEligible");
+  // Tentativo 1: fields + populate sku da variants/variant
+  const qs1 = new URLSearchParams(qs.toString());
+  const fields = [
+    "name",
+    "slug",
+    "price",
+    "compareAtPrice",
+    "documentId",
+    "aziendaDiscountEligible",
+    "companyPrice",
+    "b2bPrice",
+    "priceAziende",
+    "priceCompany",
+    "priceB2B",
+    "price_company",
+    "price_b2b",
+    "sku",
+  ];
+  fields.forEach((f, i) => qs1.append(`fields[${i}]`, f));
 
-  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs.toString()}`, { method: "GET" });
+  // ✅ populate SKU da varianti (se esistono)
+  qs1.append("populate[variants][fields][0]", "sku");
+  qs1.append("populate[variant][fields][0]", "sku");
+
+  const attempt = async (query: URLSearchParams) =>
+    strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${query.toString()}`, { method: "GET" });
+
+  let r = await attempt(qs1);
+
+  // Fallback: senza fields/populate
+  if (!r.res.ok && r.res.status === 400) {
+    r = await attempt(qs);
+  }
+
   if (!r.res.ok) {
     return { ok: false as const, status: r.res.status, details: r.data ?? r.text };
   }
@@ -391,10 +587,6 @@ function clampPercent(v: any) {
   return Math.max(0, Math.min(99, n));
 }
 
-/**
- * Cerca CustomerProfile dell'utente e (se AZIENDE + approvata) ritorna discountPercent.
- * Robusto: prova filters[user] e filters[users] perché il campo può chiamarsi diverso.
- */
 async function getCompanyCtx(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
@@ -407,20 +599,13 @@ async function getCompanyCtx(args: {
     const qs = new URLSearchParams();
     qs.set("pagination[pageSize]", "1");
     qs.set(`filters[${userField}][id][$eq]`, String(userId));
-
-    // populate azienda/e
     qs.append("populate[0]", "aziende");
     qs.append("populate[1]", "azienda");
-
-    // fields utili
     qs.append("fields[0]", "customerType");
 
-    const r = await strapiRequest(
-      STRAPI_URL,
-      STRAPI_API_TOKEN,
-      `/api/customer-profiles?${qs.toString()}`,
-      { method: "GET" }
-    );
+    const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/customer-profiles?${qs.toString()}`, {
+      method: "GET",
+    });
     if (!r.res.ok) return null;
 
     const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
@@ -428,29 +613,78 @@ async function getCompanyCtx(args: {
 
     const a = first?.attributes ?? first ?? {};
     const customerType = String(a?.customerType ?? "").toUpperCase();
-
     if (customerType !== "AZIENDE") return { discountPercent: 0, approved: false };
 
-    const rel =
-      a?.aziende?.data ?? a?.azienda?.data ?? a?.aziende ?? a?.azienda ?? null;
-
+    const rel = a?.aziende?.data ?? a?.azienda?.data ?? a?.aziende ?? a?.azienda ?? null;
     const company = Array.isArray(rel) ? rel[0] : rel;
     const ca = company?.attributes ?? company ?? {};
 
     const approved = Boolean(ca?.isApproved);
     const percent = clampPercent(ca?.discountPercent);
 
-    if (!approved || percent <= 0) return { discountPercent: 0, approved: false };
-    return { discountPercent: percent, approved: true };
+    if (!approved) return { discountPercent: 0, approved: false };
+
+    return { discountPercent: percent > 0 ? percent : 0, approved: true };
   };
 
-  // prova entrambi
   const a = await tryQuery("user");
   if (a) return a;
   const b = await tryQuery("users");
   if (b) return b;
 
   return { discountPercent: 0, approved: false };
+}
+
+function pickCompanyUnitPriceMajor(p: StrapiProduct): number | null {
+  const candidates = [p.companyPrice, p.b2bPrice, p.priceAziende, p.priceCompany, p.priceB2B].filter(
+    (x) => typeof x === "number" && Number.isFinite(x) && x > 0
+  ) as number[];
+  return candidates.length ? candidates[0] : null;
+}
+
+/* ---------------- ✅ INVENTORY CHECK (warehouse MAIN) ---------------- */
+
+async function checkInventoryOrThrow(args: {
+  items: Array<{ sku: string; qty: number; name: string }>;
+  warehouse: string;
+}) {
+  const { items, warehouse } = args;
+  if (!items.length) return;
+
+  // somma qty per sku (se stesso sku è in più righe)
+  const need = new Map<string, { qty: number; name: string }>();
+  for (const it of items) {
+    const sku = String(it.sku || "").trim();
+    if (!sku) continue;
+    const qty = Math.max(1, Math.floor(Number(it.qty) || 1));
+    const prev = need.get(sku);
+    need.set(sku, { qty: (prev?.qty ?? 0) + qty, name: prev?.name ?? it.name });
+  }
+
+  const skus = Array.from(need.keys());
+  if (!skus.length) return;
+
+  const availability = await getAvailability({ skus, warehouse });
+  const insufficient: Array<{ sku: string; requested: number; available: number; name: string }> = [];
+
+  for (const sku of skus) {
+    const requested = need.get(sku)!.qty;
+    const name = need.get(sku)!.name;
+    const row = (availability as any)?.data?.[warehouse]?.[sku] ?? null;
+    const available = row ? Number(row.available ?? 0) : 0;
+
+    if (!Number.isFinite(available) || available < requested) {
+      insufficient.push({ sku, requested, available: Number.isFinite(available) ? available : 0, name });
+    }
+  }
+
+  if (insufficient.length) {
+    const msg = insufficient.length === 1 ? "Prodotto non disponibile" : "Alcuni prodotti non sono disponibili";
+    const e: any = new Error(msg);
+    e.code = "OUT_OF_STOCK";
+    e.details = insufficient;
+    throw e;
+  }
 }
 
 // ---------- POST ----------
@@ -462,7 +696,8 @@ export async function POST(request: Request) {
     const SITE_URL_RAW = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
     if (!STRIPE_SECRET_KEY) return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
-    if (!STRIPE_SECRET_KEY.startsWith("sk_")) return json({ ok: false, error: "STRIPE_SECRET_KEY invalid (must start with sk_)" }, 500);
+    if (!STRIPE_SECRET_KEY.startsWith("sk_"))
+      return json({ ok: false, error: "STRIPE_SECRET_KEY invalid (must start with sk_)" }, 500);
     if (!STRAPI_URL) return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
     if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) {
       return json({ ok: false, error: "Missing STRAPI_API_TOKEN (Strapi → Settings → API Tokens)" }, 500);
@@ -480,7 +715,13 @@ export async function POST(request: Request) {
 
     const itemsIn = normalizeItems(body?.items);
     if (itemsIn.length === 0) {
-      return json({ ok: false, error: "Cart is empty or invalid items[] (need productId/id or slug + qty)" }, 400);
+      return json(
+        {
+          ok: false,
+          error: "Cart is empty or invalid items[] (need productId/id or slug + qty) OR custom meta.kind",
+        },
+        400
+      );
     }
     if (itemsIn.length > 100) return json({ ok: false, error: "Too many items (max 100)" }, 400);
 
@@ -493,7 +734,6 @@ export async function POST(request: Request) {
 
     const currency = normalizeCurrency(body?.currency);
 
-    // utente (se loggato) -> userId/email
     const cookieHeader = request.headers.get("cookie") || "";
     const userJwt = getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken");
 
@@ -502,41 +742,130 @@ export async function POST(request: Request) {
 
     if (userJwt) {
       try {
-        const meRes = await fetchWithTimeout(`${strapiBaseUrl(STRAPI_URL)}/api/users/me`, {
-          headers: { Authorization: `Bearer ${userJwt}` },
-        }, 10_000);
+        const meRes = await fetchWithTimeout(
+          `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
+          { headers: { Authorization: `Bearer ${userJwt}` } },
+          10_000
+        );
 
         if (meRes.ok) {
           const me = safeJsonParse(await meRes.text().catch(() => ""));
           if (typeof me?.id === "number") userId = me.id;
           if (typeof me?.email === "string") userEmail = me.email;
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
 
-    // ✅ contesto azienda (server-side)
     const companyCtx = await getCompanyCtx({ STRAPI_URL, STRAPI_API_TOKEN, userId });
-    const discountPercent = companyCtx.approved ? companyCtx.discountPercent : 0;
+    const isCompanyUser = companyCtx.approved === true;
 
-    // ✅ fetch prodotti reali da Strapi
-    const ids = Array.from(new Set(itemsIn.map((x) => x.productId ?? x.id).filter((n): n is number => typeof n === "number")));
-    const slugs = itemsIn
+    const customItems = itemsIn.filter((it) => isCialdaItem(it));
+    const strapiItems = itemsIn.filter((it) => !isCialdaItem(it));
+
+    const ids = Array.from(
+      new Set(
+        strapiItems
+          .map((x) =>
+            typeof x.productId === "number"
+              ? x.productId
+              : typeof x.id === "number"
+              ? x.id
+              : null
+          )
+          .filter((n): n is number => typeof n === "number")
+      )
+    );
+
+    const slugs = strapiItems
       .map((x) => x.slug)
       .filter((s): s is string => typeof s === "string" && s.trim().length > 0);
 
+    const prodRes =
+      ids.length || slugs.length
+        ? await fetchProductsByIdsOrSlugs({ STRAPI_URL, STRAPI_API_TOKEN, ids, slugs })
+        : { ok: true as const, byId: new Map<number, StrapiProduct>(), bySlug: new Map<string, StrapiProduct>() };
 
-    const prodRes = await fetchProductsByIdsOrSlugs({ STRAPI_URL, STRAPI_API_TOKEN, ids, slugs });
     if (!prodRes.ok) {
-      return json({ ok: false, error: "Failed fetching products from Strapi", status: prodRes.status, details: prodRes.details }, 502);
+      return json(
+        {
+          ok: false,
+          error: "Failed fetching products from Strapi",
+          status: (prodRes as any).status,
+          details: (prodRes as any).details,
+        },
+        502
+      );
+    }
+
+    // ✅ PRE-CHECK: inventario (warehouse MAIN) per gli SKU che esistono
+    // Se un prodotto non ha SKU, non possiamo verificare inventario: lo lasciamo passare (fallback).
+    {
+      const invItems: Array<{ sku: string; qty: number; name: string }> = [];
+
+      for (const it of strapiItems) {
+        const p =
+          (typeof it.productId === "number" ? prodRes.byId.get(it.productId) : undefined) ||
+          (typeof it.id === "number" ? prodRes.byId.get(it.id) : undefined) ||
+          (it.slug ? prodRes.bySlug.get(it.slug) : undefined) ||
+          null;
+
+        if (!p) continue;
+        if (p.sku) {
+          invItems.push({
+            sku: p.sku,
+            qty: it.qty,
+            name: p.name ?? it.name ?? "Prodotto",
+          });
+        }
+      }
+
+      try {
+        await checkInventoryOrThrow({ items: invItems, warehouse: "MAIN" });
+      } catch (e: any) {
+        if (e?.code === "OUT_OF_STOCK") {
+          return json(
+            {
+              ok: false,
+              error: "OUT_OF_STOCK",
+              message: "Alcuni prodotti non sono disponibili nelle quantità richieste.",
+              items: e?.details ?? [],
+            },
+            409
+          );
+        }
+        throw e;
+      }
     }
 
     // ✅ calcolo prezzi in minor per coerenza Stripe
     let baseSubtotalMinor = 0;
-    let discountedSubtotalMinor = 0;
+    let finalSubtotalMinor = 0;
 
-    const pricedItems = itemsIn.map((it) => {
+    const pricedItems: Array<{
+      productId: number | null;
+      slug: string | null;
+      name: string;
+      qty: number;
+
+      price: number;
+      basePrice: number;
+
+      isOnSale: boolean;
+
+      companyPricingApplied: boolean;
+      companyPriceUsed: boolean;
+      companyDiscountPercentApplied: number;
+
+      variantId: number | null;
+      imageUrl: string | null;
+      meta?: CartItemMeta;
+
+      // ✅ utile debug/log, e futuro
+      sku?: string | null;
+    }> = [];
+
+    // 1) prodotti Strapi
+    for (const it of strapiItems) {
       const p =
         (typeof it.productId === "number" ? prodRes.byId.get(it.productId) : undefined) ||
         (typeof it.id === "number" ? prodRes.byId.get(it.id) : undefined) ||
@@ -544,52 +873,117 @@ export async function POST(request: Request) {
         null;
 
       if (!p || !p.price || p.price <= 0) {
-        throw new Error(`Product not found or invalid price for item (productId=${String(it.productId ?? it.id)} slug=${String(it.slug)})`);
+        throw new Error(
+          `Product not found or invalid price for item (productId=${String(it.productId ?? it.id)} slug=${String(
+            it.slug
+          )})`
+        );
       }
 
-      const baseUnitMinor = toStripeUnitAmount(p.price, currency);
-      if (!baseUnitMinor || baseUnitMinor < 1) {
-        throw new Error(`Invalid base unit amount for "${p.name ?? it.name ?? "item"}"`);
+      const publicPriceMajor = p.price;
+      const compareAtMajor =
+        typeof p.compareAtPrice === "number" && p.compareAtPrice > publicPriceMajor ? p.compareAtPrice : null;
+
+      const baseUnitMajor = compareAtMajor ?? publicPriceMajor;
+      const isOnSale = !!compareAtMajor;
+
+      let finalUnitMajor = publicPriceMajor;
+
+      let companyPricingApplied = false;
+      let companyPriceUsed = false;
+      let companyDiscountPercentApplied = 0;
+
+      if (isCompanyUser) {
+        const b2b = pickCompanyUnitPriceMajor(p);
+        if (typeof b2b === "number" && b2b > 0) {
+          finalUnitMajor = b2b;
+          companyPricingApplied = true;
+          companyPriceUsed = true;
+        } else if (companyCtx.discountPercent > 0 && p.aziendaDiscountEligible === true) {
+          const percent = companyCtx.discountPercent;
+          const discounted = (publicPriceMajor * (100 - percent)) / 100;
+          if (Number.isFinite(discounted) && discounted > 0) {
+            finalUnitMajor = discounted;
+            companyPricingApplied = true;
+            companyDiscountPercentApplied = percent;
+          }
+        }
       }
 
-      const eligible = p.aziendaDiscountEligible === true;
-      const appliedPercent = eligible ? discountPercent : 0;
+      const baseUnitMinor = toStripeUnitAmount(baseUnitMajor, currency);
+      const finalUnitMinor = toStripeUnitAmount(finalUnitMajor, currency);
 
-      const discountedUnitMinor =
-        appliedPercent > 0
-          ? Math.round((baseUnitMinor * (100 - appliedPercent)) / 100)
-          : baseUnitMinor;
-
-      if (!discountedUnitMinor || discountedUnitMinor < 1) {
-        throw new Error(`Discount too high for "${p.name ?? it.name ?? "item"}" (unit would be < 1)`);
-      }
+      if (!baseUnitMinor || baseUnitMinor < 1) throw new Error(`Invalid base unit amount for "${p.name ?? it.name ?? "item"}"`);
+      if (!finalUnitMinor || finalUnitMinor < 1) throw new Error(`Invalid final unit amount for "${p.name ?? it.name ?? "item"}"`);
 
       baseSubtotalMinor += baseUnitMinor * it.qty;
-      discountedSubtotalMinor += discountedUnitMinor * it.qty;
+      finalSubtotalMinor += finalUnitMinor * it.qty;
 
-      return {
-        productId: p.id ?? it.productId ?? it.id ?? null,
+      pricedItems.push({
+        productId:
+          p.id ??
+          (typeof it.productId === "number" ? it.productId : typeof it.id === "number" ? it.id : null) ??
+          null,
         slug: p.slug ?? it.slug ?? null,
         name: p.name ?? it.name ?? "Articolo",
         qty: it.qty,
-        // ✅ prezzo finale che il cliente paga (unitario, major)
-        price: toMajor(discountedUnitMinor, currency),
-        // extra utili in order.items (JSON) senza rompere la UI
+        price: toMajor(finalUnitMinor, currency),
         basePrice: toMajor(baseUnitMinor, currency),
-        aziendaDiscountEligible: eligible,
-        discountPercentApplied: appliedPercent,
+        isOnSale,
+        companyPricingApplied,
+        companyPriceUsed,
+        companyDiscountPercentApplied,
         variantId: it.variantId ?? null,
         imageUrl: it.imageUrl ?? null,
-      };
-    });
+        meta: it.meta,
+        sku: p.sku ?? null,
+      });
+    }
 
-    const discountMinor = Math.max(0, baseSubtotalMinor - discountedSubtotalMinor);
+    // 2) custom items (cialde)
+    for (const it of customItems) {
+      const material = toSafeString(it?.meta?.material);
+      if (!isCialdaMaterial(material)) {
+        throw new Error(`Cialda: material non valido (atteso "ostia" o "pasta_di_zucchero")`);
+      }
 
-    // spedizione (se >0 la mettiamo anche in Stripe come line item)
+      const unitMajor = CIALDE_PRICE_MAJOR[material];
+      const unitMinor = toStripeUnitAmount(unitMajor, currency);
+      if (!unitMinor || unitMinor < 1) throw new Error("Cialda: prezzo non valido");
+
+      baseSubtotalMinor += unitMinor * it.qty;
+      finalSubtotalMinor += unitMinor * it.qty;
+
+      const safeMeta = sanitizeMeta(it.meta) ?? undefined;
+
+      if (safeMeta) {
+        const img = toSafeString(safeMeta.imageUrl) || toSafeString(it.imageUrl);
+        if (img) safeMeta.imageUrl = img.slice(0, 500);
+      }
+
+      pricedItems.push({
+        productId: null,
+        slug: null,
+        name: buildCialdaName(safeMeta),
+        qty: it.qty,
+        price: toMajor(unitMinor, currency),
+        basePrice: toMajor(unitMinor, currency),
+        isOnSale: false,
+        companyPricingApplied: false,
+        companyPriceUsed: false,
+        companyDiscountPercentApplied: 0,
+        variantId: it.variantId ?? null,
+        imageUrl: (safeMeta?.imageUrl as string) ?? it.imageUrl ?? null,
+        meta: safeMeta,
+      });
+    }
+
+    const discountMinor = Math.max(0, baseSubtotalMinor - finalSubtotalMinor);
+
     const shippingMajorIn = Math.max(0, clampNumber(body?.shippingTotal, 0));
-    const shippingMinor = shippingMajorIn > 0 ? (toStripeUnitAmount(shippingMajorIn, currency) ?? 0) : 0;
+    const shippingMinor = shippingMajorIn > 0 ? toStripeUnitAmount(shippingMajorIn, currency) ?? 0 : 0;
 
-    const totalMinor = discountedSubtotalMinor + shippingMinor;
+    const totalMinor = finalSubtotalMinor + shippingMinor;
     if (!Number.isFinite(totalMinor) || totalMinor <= 0) {
       return json({ ok: false, error: "Total must be > 0" }, 400);
     }
@@ -599,18 +993,33 @@ export async function POST(request: Request) {
     const shippingTotal = toMajor(shippingMinor, currency);
     const total = toMajor(totalMinor, currency);
 
-    // ✅ Stripe line items coerenti (sconto già applicato sui prezzi)
     const stripe = new Stripe(STRIPE_SECRET_KEY);
 
     const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = pricedItems.map((it) => {
       const unit_amount = toStripeUnitAmount(Number(it.price), currency);
       if (!unit_amount || unit_amount < 1) throw new Error(`Invalid unit_amount for "${it.name}"`);
+
+      const images: string[] = [];
+      const img = toSafeString(it.imageUrl);
+      if (img && /^https?:\/\//i.test(img)) images.push(img);
+
+      const maybeText = toSafeString(it.meta?.text);
+      const name =
+        maybeText &&
+        maybeText.length <= 40 &&
+        (it.meta?.kind === "cialda-personalizzata" || it.meta?.kind === "cialde-personalizzate")
+          ? `${it.name} – “${maybeText}”`
+          : it.name;
+
       return {
         quantity: it.qty,
         price_data: {
           currency: currency.toLowerCase(),
           unit_amount,
-          product_data: { name: it.name },
+          product_data: {
+            name,
+            ...(images.length ? { images } : {}),
+          },
         },
       };
     });
@@ -668,6 +1077,10 @@ export async function POST(request: Request) {
     }
 
     // 2) crea session Stripe
+    const hasCialda = pricedItems.some(
+      (x) => x.meta && (x.meta.kind === "cialda-personalizzata" || x.meta.kind === "cialde-personalizzate")
+    );
+
     const session = await stripe.checkout.sessions.create(
       {
         mode: "payment",
@@ -682,8 +1095,18 @@ export async function POST(request: Request) {
           orderId: orderId ? String(orderId) : "",
           userId: userId ? String(userId) : "",
           billingType,
-          // utile per debug
-          companyDiscountPercent: discountPercent ? String(discountPercent) : "0",
+          isCompanyUser: isCompanyUser ? "1" : "0",
+          ...(hasCialda
+            ? (() => {
+                const first = pricedItems.find(
+                  (x) => x.meta && (x.meta.kind === "cialda-personalizzata" || x.meta.kind === "cialde-personalizzate")
+                );
+                const compact = compactStripeMeta(first?.meta);
+                const out: Record<string, string> = {};
+                for (const k of Object.keys(compact)) out[`cialda_${k}`] = compact[k];
+                return out;
+              })()
+            : {}),
         },
       },
       { idempotencyKey: `checkout_${orderRef}` }
@@ -706,12 +1129,24 @@ export async function POST(request: Request) {
         sessionId: session.id,
         orderRef,
         totals: { subtotal, discountTotal, shippingTotal, total, currency },
-        companyDiscountApplied: discountPercent > 0,
-        companyDiscountPercent: discountPercent,
+        companyPricingApplied: isCompanyUser && pricedItems.some((x) => x.companyPricingApplied),
       },
       200
     );
   } catch (err: any) {
+    // ✅ gestione out-of-stock “hard”
+    if (err?.code === "OUT_OF_STOCK") {
+      return json(
+        {
+          ok: false,
+          error: "OUT_OF_STOCK",
+          message: err?.message || "Prodotti non disponibili",
+          items: err?.details ?? [],
+        },
+        409
+      );
+    }
+
     console.error("[checkout/start] UNHANDLED:", err);
     return json({ ok: false, error: "Unhandled error", details: err?.message ?? String(err) }, 500);
   }

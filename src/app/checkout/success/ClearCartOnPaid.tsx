@@ -30,21 +30,30 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * ClearCartOnPaid
+ * - Controlla /api/checkout/confirm?session_id=...
+ * - Se paid=true:
+ *   1) chiama cart.clear() (svuota stato + storage della key corrente)
+ *   2) pulisce chiavi legacy e la key nuova tf_cart_v2 (difesa extra)
+ *   3) salva flag in sessionStorage per evitare doppie esecuzioni
+ *
+ * In produzione non renderizza nulla.
+ */
 export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
-  const cart = useCart() as any;
+  // useCart in teoria non dovrebbe mai essere null: se manca Provider lancia errore.
+  // Quindi NON facciamo cast a any: restiamo tipati e “sicuri”.
+  const cart = useCart();
 
-  const clearFn = useMemo<(() => void) | null>(() => {
-    if (!cart) return null;
-    if (typeof cart.clear === "function") return cart.clear.bind(cart);
-    if (typeof cart.clearCart === "function") return cart.clearCart.bind(cart);
-    if (typeof cart.reset === "function") return cart.reset.bind(cart);
-    return null;
-  }, [cart]);
+  // clear è la funzione standard del tuo CartProvider
+  const clearFn = useMemo<(() => void)>(() => {
+    return cart.clear;
+  }, [cart.clear]);
 
   const processedRef = useRef<Set<string>>(new Set());
 
   const [status, setStatus] = useState<
-    "idle" | "checking" | "paid" | "not_paid" | "error" | "no_clear" | "missing"
+    "idle" | "checking" | "paid" | "not_paid" | "error" | "missing"
   >("idle");
 
   useEffect(() => {
@@ -54,19 +63,15 @@ export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
       return;
     }
 
-    if (!clearFn) {
-      setStatus("no_clear");
-      return;
-    }
-
-    // StrictMode guard (dev)
+    // StrictMode guard (dev): in dev React può montare/smontare due volte
     if (processedRef.current.has(sid)) return;
     processedRef.current.add(sid);
 
-    const key = `tf_cart_cleared_${sid}`;
+    const sessionFlagKey = `tf_cart_cleared_${sid}`;
 
+    // Se già pulito in questa sessione/tab, non rifare tutto
     try {
-      if (typeof window !== "undefined" && window.sessionStorage.getItem(key) === "1") {
+      if (typeof window !== "undefined" && window.sessionStorage.getItem(sessionFlagKey) === "1") {
         setStatus("paid");
         return;
       }
@@ -80,6 +85,7 @@ export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
     async function run() {
       setStatus("checking");
 
+      // tentativi ravvicinati: Stripe/confirm può arrivare leggermente dopo il redirect
       const delays = [0, 500, 900, 1400, 2000, 2600];
       const MAX_TRIES = delays.length;
 
@@ -93,52 +99,58 @@ export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
             if (cancelled) return;
           }
 
-          const res = await fetch(
-            `/api/checkout/confirm?session_id=${encodeURIComponent(sid)}`,
-            {
-              method: "GET",
-              cache: "no-store",
-              headers: { Accept: "application/json" },
-              signal: controller.signal,
-            }
-          );
+          const res = await fetch(`/api/checkout/confirm?session_id=${encodeURIComponent(sid)}`, {
+            method: "GET",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
 
           const json = (await res.json().catch(() => null)) as ConfirmResponse | null;
 
           if (cancelled) return;
 
           if (!res.ok || !json) {
+            // ritenta fino a MAX_TRIES
             if (attempt < MAX_TRIES) continue;
             setStatus("error");
             return;
           }
 
           if (isOk(json) && json.paid === true) {
-            // ✅ FIX: optional call (non rompe TS)
+            // ✅ Pagato: pulizia totale (stato + storage)
             try {
-              clearFn?.();
+              // 1) svuota stato e la key corrente del CartProvider
+              clearFn();
 
+              // 2) pulizia difensiva: vecchie chiavi + nuova chiave
               try {
-                window.localStorage.removeItem("tf_cart_v1");
-                window.localStorage.removeItem("tf_cart");
-                window.localStorage.removeItem("cart");
+                ["tf_cart_v1", "tf_cart", "cart", "tf_cart_v2"].forEach((k) => {
+                  try {
+                    window.localStorage.removeItem(k);
+                  } catch {
+                    // ignore singola key
+                  }
+                });
               } catch {
                 // ignore
               }
 
+              // 3) flag in sessionStorage per evitare doppia pulizia
               try {
-                window.sessionStorage.setItem(key, "1");
+                window.sessionStorage.setItem(sessionFlagKey, "1");
               } catch {
                 // ignore
               }
             } catch {
-              // non bloccare
+              // non bloccare: anche se qualcosa va storto, non fermiamo la pagina
             }
 
             setStatus("paid");
             return;
           }
 
+          // non ancora pagato
           if (attempt < MAX_TRIES) continue;
 
           setStatus("not_paid");
@@ -162,6 +174,7 @@ export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
     };
   }, [sessionId, clearFn]);
 
+  // In produzione: non mostrare nulla
   if (process.env.NODE_ENV === "production") return null;
 
   return (
@@ -177,8 +190,6 @@ export default function ClearCartOnPaid({ sessionId }: { sessionId: string }) {
           ? "pagato → carrello svuotato ✅"
           : status === "not_paid"
           ? "non ancora pagato"
-          : status === "no_clear"
-          ? "CartProvider non espone clear/clearCart/reset"
           : status === "missing"
           ? "sessionId mancante"
           : "errore confirm"}

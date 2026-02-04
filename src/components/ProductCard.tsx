@@ -12,9 +12,7 @@ function formatEUR(value: unknown) {
 }
 
 function getProductKey(product: any): string {
-  // Strapi 5: documentId è il migliore (string)
-  const key = String(product?.documentId ?? product?.id ?? product?.slug ?? "").trim();
-  return key;
+  return String(product?.documentId ?? product?.id ?? product?.slug ?? "").trim();
 }
 
 function getSlug(product: any): string {
@@ -23,6 +21,11 @@ function getSlug(product: any): string {
 
 function getName(product: any): string {
   return String(product?.name ?? "").trim();
+}
+
+function isRemoteStrapiUrl(src?: string) {
+  if (!src) return false;
+  return /^https?:\/\//i.test(src) && src.includes("onrender.com/uploads/");
 }
 
 export default function ProductCard({ product }: { product: Product }) {
@@ -36,13 +39,13 @@ export default function ProductCard({ product }: { product: Product }) {
   const badgeText = (p?.badge ?? undefined) as string | undefined;
   const inStock = p?.inStock;
 
-  // Se manca lo slug non possiamo navigare correttamente: meglio non renderizzare link rotti
   const href = slug ? `/prodotto/${slug}` : "#";
+
+  const disableOptimizer = isRemoteStrapiUrl(imgSrc);
 
   return (
     <div className="group overflow-hidden rounded-2xl border bg-white shadow-sm">
       <div className="relative">
-        {/* Link immagine */}
         <Link
           href={href}
           aria-label={name ? `Apri ${name}` : "Apri prodotto"}
@@ -55,6 +58,8 @@ export default function ProductCard({ product }: { product: Product }) {
               fill
               sizes="(max-width: 768px) 50vw, 25vw"
               className="object-cover transition-transform duration-300 group-hover:scale-105"
+              // ✅ evita 504 se Strapi è lento
+              unoptimized={disableOptimizer}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center bg-neutral-100 text-xs text-neutral-500">
@@ -63,29 +68,23 @@ export default function ProductCard({ product }: { product: Product }) {
           )}
         </Link>
 
-        {/* Badge (top-left) */}
         {badgeText ? (
           <div className="pointer-events-none absolute left-3 top-3 z-10">
             <Badge>{badgeText}</Badge>
           </div>
         ) : null}
 
-        {/* Non disponibile (bottom-left) */}
         {inStock === false ? (
           <div className="pointer-events-none absolute left-3 bottom-3 z-10 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold">
             Non disponibile
           </div>
         ) : null}
 
-        {/* Cuore (bottom-right) - Amazon-like:
-            - su desktop appare al hover
-            - su mobile rimane visibile */}
         {productKey ? (
           <div
             className={[
               "absolute bottom-2 right-2 z-30",
               "rounded-full bg-white/90 p-2 shadow",
-              // desktop: nascosto finché non hover
               "opacity-100 md:opacity-0 md:group-hover:opacity-100",
               "transition-opacity duration-150",
             ].join(" ")}
@@ -95,7 +94,6 @@ export default function ProductCard({ product }: { product: Product }) {
         ) : null}
       </div>
 
-      {/* Testo */}
       <div className="p-4">
         <Link href={href} className="block">
           <div className="line-clamp-2 font-semibold">{name || "Prodotto"}</div>

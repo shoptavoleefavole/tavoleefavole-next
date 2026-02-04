@@ -93,21 +93,17 @@ function extractMediaUrls(base: string, media: any): string[] {
 }
 
 function getImages(product: ProductLike): string[] {
-  // Caso 1: array
   if (Array.isArray((product as any)?.images) && (product as any).images.length) {
     const first = (product as any).images[0];
     if (typeof first === "string") return (product as any).images as string[];
     return extractMediaUrls(STRAPI_URL, (product as any).images);
   }
 
-  // Caso 2: media relation
   const fromMedia = extractMediaUrls(STRAPI_URL, (product as any)?.images);
   if (fromMedia.length) return fromMedia;
 
-  // Caso 3: string singola
   if (typeof product?.image === "string" && product.image) return [product.image];
 
-  // Caso 4: media in image
   const fromImage = extractMediaUrls(STRAPI_URL, (product as any)?.image);
   if (fromImage.length) return fromImage;
 
@@ -297,7 +293,6 @@ export default async function ProductPage({
   const product = bySlug;
   const images = getImages(product);
 
-  // ✅ id preferiti robusto
   const favId = favoriteKey(product);
 
   // Availability
@@ -307,7 +302,12 @@ export default async function ProductPage({
     : null;
 
   const row = defaultSku ? (availability as any)?.data?.MAIN?.[defaultSku] ?? null : null;
-  const isAvailable = row ? Number(row.available ?? 0) > 0 : product?.inStock !== false;
+
+  // ✅ regola robusta:
+  // - se ho row inventory => decide da available
+  // - se NON ho row => fallback su product.inStock (se esplicitamente false => esaurito)
+  const isAvailable =
+    row != null ? Number(row.available ?? 0) > 0 : product?.inStock !== false;
 
   // Category/Subcategory
   const catSlug = product?.category?.slug ?? null;
@@ -319,7 +319,7 @@ export default async function ProductPage({
   const catLabel = product?.category?.label ?? macro?.label ?? catSlug ?? "";
   const subLabel = product?.subcategory?.label ?? sub?.label ?? subSlug ?? "";
 
-  // Related (Strapi)
+  // Related
   const related = (await getRelatedProducts(product as any, 8)) as any[];
 
   const price = toNumber(product?.price) ?? 0;
@@ -332,7 +332,7 @@ export default async function ProductPage({
   );
 
   const cartId = String(product?.documentId ?? product?.id ?? product?.slug);
-  const cartImage = images?.[0] ?? product?.image ?? null;
+  const cartImage = (images?.[0] ?? product?.image ?? null) || undefined;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 lg:py-8">
@@ -350,7 +350,6 @@ export default async function ProductPage({
 
       <div className="mt-5 grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-7">
-          {/* ✅ Gallery con cuore in basso a destra */}
           <div className="relative">
             <ProductGallery images={images} alt={product.name} />
 
@@ -455,11 +454,10 @@ export default async function ProductPage({
               ) : null}
             </div>
 
-            {/* CTA carrello */}
             <div className="mt-6 rounded-2xl border border-border bg-background p-4">
               <div className="text-sm font-extrabold">Acquisto</div>
 
-              {isAvailable && price > 0 ? (
+              {price > 0 ? (
                 <div className="mt-3">
                   <AddToCartButton
                     id={cartId}
@@ -468,6 +466,10 @@ export default async function ProductPage({
                     image={cartImage}
                     price={price}
                     qty={1}
+                    // ✅ difesa in profondità:
+                    inStock={isAvailable}
+                    disabledLabel="Non disponibile"
+                    disabled={isAvailable === false}
                   />
                 </div>
               ) : (
@@ -477,13 +479,11 @@ export default async function ProductPage({
                     disabled
                     className="h-11 w-full rounded-xl border border-border bg-surface px-4 text-sm font-extrabold text-text/50"
                   >
-                    {price <= 0 ? "Non acquistabile" : "Esaurito"}
+                    Non acquistabile
                   </button>
-                  {price <= 0 ? (
-                    <div className="mt-2 text-xs text-text/60">
-                      Controlla che il prodotto su Strapi abbia il campo <b>price</b> compilato.
-                    </div>
-                  ) : null}
+                  <div className="mt-2 text-xs text-text/60">
+                    Controlla che il prodotto su Strapi abbia il campo <b>price</b> compilato.
+                  </div>
                 </div>
               )}
 
@@ -561,7 +561,6 @@ export default async function ProductPage({
                       />
                     ) : null}
 
-                    {/* ✅ cuore bottom-right sull’immagine dei suggeriti */}
                     {relFavId ? (
                       <div className="absolute bottom-2 right-2 z-20 rounded-full bg-white/90 p-2 shadow">
                         <FavoriteToggleButton productId={relFavId} />

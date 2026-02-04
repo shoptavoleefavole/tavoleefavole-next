@@ -2,16 +2,19 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Container from "@/components/Container";
 import { categories, products, getCurrentOccasion } from "@/lib/data";
-import DebugCartPanel from "@/components/DebugCartPanel";
+import DebugCartPanelClient from "./DebugCartPanelClient";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export const metadata = {
   title: "Debug",
 };
 
 export default function DebugPage() {
-  // Sicurezza: la pagina /debug non deve essere pubblica in produzione.
+  // ✅ /debug non deve esistere in produzione
   if (process.env.NODE_ENV !== "development") {
-    return notFound();
+    notFound();
   }
 
   const occ = getCurrentOccasion();
@@ -38,13 +41,14 @@ export default function DebugPage() {
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-text">Ricorrenza attiva</dt>
-                <dd className="text-text">{occ.name}</dd>
+                <dd className="text-text">{occ?.name ?? "-"}</dd>
               </div>
             </dl>
           </div>
 
           <div className="rounded-2xl border border-border bg-background p-5 lg:col-span-2">
             <div className="text-sm font-semibold text-text">Link rapidi</div>
+
             <div className="mt-3 flex flex-wrap gap-2">
               <Link className="rounded-full bg-surface px-3 py-2 text-sm hover:bg-surface-2" href="/">
                 Home
@@ -73,7 +77,7 @@ export default function DebugPage() {
         </div>
 
         <div className="mt-6">
-          <DebugCartPanel />
+          <DebugCartPanelClient />
         </div>
       </div>
     </Container>

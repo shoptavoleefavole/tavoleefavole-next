@@ -14,28 +14,36 @@ import Footer from "@/components/Footer";
 import MobileBottomNav from "@/components/MobileBottomNav";
 import Analytics from "@/components/Analytics";
 import FavoritesProvider from "@/components/favorites/FavoritesProvider";
+import WhatsAppFloatingButton from "@/components/WhatsAppFloatingButton";
 
 function normalizeSiteUrl(input: string) {
-  // Se l'utente inserisce "www.sito.it" senza protocollo, aggiungiamo https://
-  if (input.startsWith("http://") || input.startsWith("https://")) return input;
-  return `https://${input}`;
+  const s = String(input || "").trim();
+  if (!s) return "http://localhost:3000";
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://${s}`;
 }
 
 const rawSiteUrl =
   process.env.NEXT_PUBLIC_SITE_URL ||
-  (process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000");
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
-const siteUrl = normalizeSiteUrl(rawSiteUrl);
-const site = new URL(siteUrl);
+let siteUrl = normalizeSiteUrl(rawSiteUrl);
+let site: URL;
+
+try {
+  siteUrl = siteUrl.replace(/\/+$/, "");
+  site = new URL(siteUrl);
+} catch {
+  siteUrl = "http://localhost:3000";
+  site = new URL(siteUrl);
+}
 
 const defaultTitle = "Tavole & Favole";
-const defaultDescription = "E-commerce scaffold in Next.js + TypeScript (mock)";
+const defaultDescription =
+  "Ingredienti e accessori per pasticceria, cake design, confetti e specialità dolciarie. Spedizioni, resi e assistenza chiari.";
 
 export const metadata: Metadata = {
   metadataBase: site,
-
   title: { template: `%s | ${defaultTitle}`, default: defaultTitle },
   description: defaultDescription,
 
@@ -68,6 +76,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="it">
       <body className="min-h-dvh bg-background text-text antialiased">
+        {/* Skip link accessibilità */}
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-background focus:px-4 focus:py-2 focus:text-sm focus:shadow-md"
@@ -75,21 +84,15 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Salta al contenuto
         </a>
 
-        {/* ✅ Iubenda: carica lo script UNA SOLA VOLTA (Privacy/Cookie links funzionano ovunque) */}
-        <Script
-          src="https://cdn.iubenda.com/iubenda.js"
-          strategy="afterInteractive"
-        />
+        {/* Iubenda: carica lo script UNA SOLA VOLTA */}
+        <Script src="https://cdn.iubenda.com/iubenda.js" strategy="afterInteractive" />
 
         <AppProviders>
-          {/* ✅ Provider preferiti globale: header + pagine + mobile nav */}
           <FavoritesProvider>
             <div className="flex min-h-dvh flex-col">
-              {/* HEADER STICKY (Topbar + Header + Navbar desktop) */}
               <div className="sticky top-0 z-[9999] isolate bg-background shadow-sm">
                 <Topbar />
 
-                {/* Header è client (usaSearchParams) -> Suspense per evitare bailout */}
                 <Suspense
                   fallback={
                     <div className="border-b border-border">
@@ -102,8 +105,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <Header />
                 </Suspense>
 
-                {/* ✅ Navbar SOLO desktop (evita doppio "Menu" su mobile) */}
-                <div className="hidden md:block border-t border-border bg-background">
+                <div className="hidden border-t border-border bg-background md:block">
                   <div className="mx-auto max-w-7xl px-4">
                     <Navbar />
                   </div>
@@ -115,14 +117,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               </main>
 
               <Footer />
-
-              {/* Mobile bottom nav */}
               <MobileBottomNav />
             </div>
+
+            <WhatsAppFloatingButton />
           </FavoritesProvider>
         </AppProviders>
 
-        {/* ✅ Analytics placeholder (carica solo se env abilitate) */}
         <Analytics />
       </body>
     </html>
