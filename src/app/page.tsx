@@ -1,21 +1,13 @@
-// src/app/page.tsx
 import Link from "next/link";
 import Image from "next/image";
 
 import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getAvailability } from "@/lib/inventory.server";
-import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
+import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
-
-type HomeCat = {
-  slug: string;
-  label: string;
-  icon?: string | null;
-  subCount: number;
-};
 
 type HomeProduct = {
   id: string; // usato in cart ecc.
@@ -39,9 +31,7 @@ function waUrl(text: string) {
 /* ---------------- Strapi env ---------------- */
 
 const STRAPI_URL =
-  process.env.NEXT_PUBLIC_STRAPI_URL ||
-  process.env.STRAPI_URL ||
-  "http://localhost:1337";
+  process.env.NEXT_PUBLIC_STRAPI_URL || process.env.STRAPI_URL || "http://localhost:1337";
 
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
@@ -112,11 +102,21 @@ function extractMediaUrls(base: string, media: any): string[] {
     .filter(Boolean);
 }
 
+/* ---------------- ✅ Deadline helper (anti-freeze) ---------------- */
+
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((resolve) => {
+      setTimeout(() => resolve(fallback), ms);
+    }),
+  ]);
+}
+
 /* ---------------- ✅ Fetch robusto (NO crash) ---------------- */
 
-// Timeout “nostro”: evita blocchi di 5 minuti quando Render è in cold start
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
-  const timeoutMs = init.timeoutMs ?? 12_000; // 12s default
+  const timeoutMs = init.timeoutMs ?? 10_000;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -131,7 +131,11 @@ type FetchStrapiResult =
   | { ok: true; status: number; json: any }
   | { ok: false; status: number; json: null; text?: string };
 
-async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStrapiResult> {
+async function fetchStrapi(
+  pathOrUrl: string,
+  opts: { revalidate?: number; timeoutMs?: number } = {}
+): Promise<FetchStrapiResult> {
+  const { revalidate = 60, timeoutMs = 10_000 } = opts;
   const base = baseStrapiUrl();
 
   const fullUrl =
@@ -145,7 +149,6 @@ async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStr
     return h;
   };
 
-  // helper “safe read”
   const readJsonSafe = async (res: Response) => {
     const text = await res.text().catch(() => "");
     const parsed = text ? safeJsonParse(text) : null;
@@ -153,10 +156,9 @@ async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStr
   };
 
   try {
-    // 1) tenta con token (se presente)
     if (STRAPI_TOKEN) {
       const res = await fetchWithTimeout(fullUrl, {
-        timeoutMs: 15_000, // un filo più alto per Render
+        timeoutMs,
         headers: makeHeaders(true),
         next: { revalidate },
       });
@@ -166,17 +168,14 @@ async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStr
         return { ok: true, status: res.status, json };
       }
 
-      // se non è 401/403 → errore “soft”, non blocca la home
       if (res.status !== 401 && res.status !== 403) {
         const { text } = await readJsonSafe(res);
         return { ok: false, status: res.status, json: null, text: text.slice(0, 1200) };
       }
-      // se 401/403: fallback senza token
     }
 
-    // 2) fallback public
     const res2 = await fetchWithTimeout(fullUrl, {
-      timeoutMs: 15_000,
+      timeoutMs,
       headers: makeHeaders(false),
       next: { revalidate },
     });
@@ -189,7 +188,6 @@ async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStr
     const { text } = await readJsonSafe(res2);
     return { ok: false, status: res2.status, json: null, text: text.slice(0, 1200) };
   } catch (e: any) {
-    // 🔥 IMPORTANTISSIMO: MAI throw → mai crash UI
     const isAbort = e?.name === "AbortError";
     return {
       ok: false,
@@ -198,47 +196,6 @@ async function fetchStrapi(pathOrUrl: string, revalidate = 60): Promise<FetchStr
       text: isAbort ? "Timeout Strapi (cold start o rete lenta)" : String(e?.message || "fetch failed"),
     };
   }
-}
-
-/* ---------------- CATEGORIES (Home) ---------------- */
-
-function normalizeCategory(row: any): HomeCat | null {
-  const a = row?.attributes ?? row ?? {};
-  const slug = String(a?.slug ?? "").trim();
-  if (!slug) return null;
-
-  const label = safeLabel(a?.label ?? a?.name ?? a?.title, slug);
-
-  const iconRaw =
-    a?.icon?.url ??
-    a?.icon?.data?.attributes?.url ??
-    a?.icon?.attributes?.url ??
-    a?.iconUrl ??
-    null;
-
-  const icon = absUrl(baseStrapiUrl(), iconRaw);
-
-  const subsData = a?.subcategories?.data ?? a?.subcategories ?? [];
-  const subCount = Array.isArray(subsData) ? subsData.length : 0;
-
-  return { slug, label, icon, subCount };
-}
-
-async function fetchHomeCategories(): Promise<HomeCat[]> {
-  const qs = new URLSearchParams();
-  qs.set("fields[0]", "label");
-  qs.set("fields[1]", "slug");
-  qs.set("populate[icon][fields][0]", "url");
-  qs.set("populate[subcategories][fields][0]", "label");
-  qs.set("populate[subcategories][fields][1]", "slug");
-  qs.set("pagination[pageSize]", "100");
-  qs.set("sort[0]", "createdAt:asc");
-
-  const r = await fetchStrapi(`/api/categories?${qs.toString()}`, 60);
-  if (!r.ok) return [];
-
-  const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-  return data.map(normalizeCategory).filter(Boolean) as HomeCat[];
 }
 
 /* ---------------- PRODUCTS (Home) ---------------- */
@@ -256,14 +213,16 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   const strapiId = typeof row?.id === "number" ? row.id : toNumber(row?.id) ?? null;
 
   const base = baseStrapiUrl();
-  const imgs =
-    extractMediaUrls(base, a?.images).length > 0
-      ? extractMediaUrls(base, a?.images)
-      : extractMediaUrls(base, a?.image).length > 0
-      ? extractMediaUrls(base, a?.image)
-      : extractMediaUrls(base, a?.cover).length > 0
-      ? extractMediaUrls(base, a?.cover)
-      : extractMediaUrls(base, a?.thumbnail);
+  const mediaCandidates = [a?.images, a?.image, a?.cover, a?.thumbnail];
+
+  let imgs: string[] = [];
+  for (const m of mediaCandidates) {
+    const u = extractMediaUrls(base, m);
+    if (u.length) {
+      imgs = u;
+      break;
+    }
+  }
 
   const image = imgs[0] ?? undefined;
   const id = String(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? slug);
@@ -286,27 +245,47 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
 
 async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
-  qs.set("populate[images]", "*");
+  qs.set("fields[0]", "slug");
+  qs.set("fields[1]", "name");
+  qs.set("fields[2]", "price");
+  qs.set("fields[3]", "compareAtPrice");
+  qs.set("fields[4]", "shortDescription");
+  qs.set("fields[5]", "inStock");
+  qs.set("populate[images][fields][0]", "url");
+  qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, 60);
-  if (!r.ok) return [];
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9_000,
+  });
 
+  if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
 async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
-  qs.set("populate[images]", "*");
+  qs.set("fields[0]", "slug");
+  qs.set("fields[1]", "name");
+  qs.set("fields[2]", "price");
+  qs.set("fields[3]", "compareAtPrice");
+  qs.set("fields[4]", "shortDescription");
+  qs.set("fields[5]", "inStock");
+  qs.set("populate[images][fields][0]", "url");
+  qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, 60);
-  if (!r.ok) return [];
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9_000,
+  });
 
+  if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
@@ -329,6 +308,11 @@ async function withAvailability(items: HomeProduct[]) {
   });
 }
 
+async function withAvailabilitySafe(items: HomeProduct[], timeoutMs = 2_500) {
+  if (!items.length) return items;
+  return withDeadline(withAvailability(items), timeoutMs, items);
+}
+
 /* ---------------- UI ---------------- */
 
 function Hero() {
@@ -346,12 +330,11 @@ function Hero() {
           </p>
 
           <h1 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-5xl">
-            Ingredienti e accessori per pasticceria, confetti e cake design.
+            Tutto per pasticceria, cake design e confetti — consegna rapida e assistenza reale.
           </h1>
 
           <p className="mt-4 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-            Selezioniamo prodotti affidabili e facili da usare, con navigazione chiara e schede complete:
-            un’esperienza semplice, come ti aspetti da un e-commerce serio.
+            Prodotti selezionati, schede chiare e checkout semplice. Spediamo rapidamente oppure ritiri in negozio: come preferisci.
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3">
@@ -363,10 +346,10 @@ function Hero() {
             </Link>
 
             <Link
-              href="/spedizioni"
+              href="/cialde-personalizzate"
               className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
             >
-              Spedizioni & tempi
+              Cialde personalizzate
             </Link>
 
             <Link
@@ -424,60 +407,6 @@ function Hero() {
   );
 }
 
-function CategoryGrid({ categories }: { categories: HomeCat[] }) {
-  return (
-    <section className="mt-12">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-extrabold tracking-tight">Esplora per categoria</h2>
-          <p className="mt-1 text-sm text-text/70">Seleziona una macroarea e trova subito i prodotti.</p>
-        </div>
-
-        <Link href="/catalogo" className="text-sm font-semibold text-link hover:text-link-hover">
-          Vedi tutto
-        </Link>
-      </div>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {categories.map((c) => (
-          <Link
-            key={c.slug}
-            href={`/categoria/${c.slug}`}
-            className="group rounded-2xl border border-border bg-background p-5 hover:bg-surface-2 hover:shadow-sm transition flex items-center gap-4"
-          >
-            <div className="shrink-0">
-              {c.icon ? (
-                <div className="grid h-12 w-12 place-items-center rounded-2xl border border-border bg-background">
-                  <Image
-                    src={c.icon}
-                    alt=""
-                    width={28}
-                    height={28}
-                    className="h-7 w-7"
-                    unoptimized
-                    aria-hidden="true"
-                  />
-                </div>
-              ) : (
-                <div className="h-12 w-12 rounded-2xl border border-border bg-surface" aria-hidden="true" />
-              )}
-            </div>
-
-            <div className="min-w-0">
-              <div className="text-base font-extrabold leading-tight">{c.label}</div>
-              <div className="mt-1 text-sm text-text/70">
-                {c.subCount > 0 ? `${c.subCount} sottocategorie` : "Scopri i prodotti"}
-              </div>
-            </div>
-
-            <span className="ml-auto text-text/40 group-hover:text-text/60">→</span>
-          </Link>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function ProductRail(props: {
   title: string;
   subtitle?: string;
@@ -508,7 +437,8 @@ function ProductRail(props: {
 
             const canBuy = (p.inStock ?? true) && p.price > 0;
 
-            const favoriteProductId = p.strapiId ?? (Number.isFinite(Number(p.id)) ? Number(p.id) : p.id);
+            const favoriteProductId =
+              p.strapiId ?? (Number.isFinite(Number(p.id)) ? Number(p.id) : p.id);
 
             return (
               <div
@@ -628,68 +558,187 @@ function InfoCards() {
 }
 
 const CIALDE_PAGE_HREF = "/cialde-personalizzate";
+const BISCOTTI_PAGE_HREF = "/stampe-biscotti-personalizzate";
 
-function PersonalizedWaferHero() {
+function PersonalizedPrintsCarouselBlock() {
   return (
     <section className="mt-10">
+      {/* ✅ NO styled-jsx: questo è un normale <style> compatibile con Server Components */}
+      <style>{`
+        @keyframes tfSlideA {
+          0% { opacity: 1; visibility: visible; transform: translateY(0); }
+          45% { opacity: 1; visibility: visible; transform: translateY(0); }
+          50% { opacity: 0; visibility: hidden; transform: translateY(6px); }
+          100% { opacity: 0; visibility: hidden; transform: translateY(6px); }
+        }
+        @keyframes tfSlideB {
+          0% { opacity: 0; visibility: hidden; transform: translateY(6px); }
+          49% { opacity: 0; visibility: hidden; transform: translateY(6px); }
+          55% { opacity: 1; visibility: visible; transform: translateY(0); }
+          95% { opacity: 1; visibility: visible; transform: translateY(0); }
+          100% { opacity: 0; visibility: hidden; transform: translateY(6px); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .tf-slideA { animation: none !important; opacity: 1 !important; visibility: visible !important; transform: none !important; }
+          .tf-slideB { animation: none !important; opacity: 0 !important; visibility: hidden !important; transform: none !important; }
+        }
+      `}</style>
+
       <div className="relative overflow-hidden rounded-3xl border border-border bg-background">
         <div aria-hidden="true" className="pointer-events-none absolute inset-0">
           <div className="absolute -left-24 -top-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
           <div className="absolute -right-24 -bottom-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
         </div>
 
-        <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
-          <div className="lg:col-span-6">
-            <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
-              Personalizzazione rapida
-            </p>
+        <div className="relative grid">
+          {/* SLIDE A: CIALDE */}
+          <div className="tf-slideA col-start-1 row-start-1" style={{ animation: "tfSlideA 8s infinite ease-in-out" }}>
+            <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
+              <div className="lg:col-span-6">
+                <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
+                  Stampe personalizzate • Per torte
+                </p>
 
-            <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
-              Cialde personalizzate per la tua torta
-            </h2>
+                <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
+                  Cialde personalizzate per la tua torta
+                </h2>
 
-            <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-              Carica un’immagine, scrivi una dedica e completa l’ordine in pochi minuti.
-            </p>
+                <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
+                  Carica un’immagine, scrivi una dedica e completa l’ordine in pochi minuti.
+                </p>
 
-            <div className="mt-6">
-              <div className="text-sm font-extrabold">Come funziona</div>
-
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                {[
-                  { n: "1", t: "Scegli formato" },
-                  { n: "2", t: "Scrivi la dedica" },
-                  { n: "3", t: "Carica l’immagine" },
-                ].map((x) => (
-                  <div key={x.n} className="rounded-2xl border border-border bg-surface p-4">
-                    <div className="text-xs font-extrabold text-text/70">Step {x.n}</div>
-                    <div className="mt-1 text-sm font-extrabold">{x.t}</div>
+                <div className="mt-6">
+                  <div className="text-sm font-extrabold">Come funziona</div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    {[
+                      { n: "1", t: "Scegli formato" },
+                      { n: "2", t: "Scrivi la dedica" },
+                      { n: "3", t: "Carica l’immagine" },
+                    ].map((x) => (
+                      <div key={x.n} className="rounded-2xl border border-border bg-surface p-4">
+                        <div className="text-xs font-extrabold text-text/70">Step {x.n}</div>
+                        <div className="mt-1 text-sm font-extrabold">{x.t}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
+
+                <div className="mt-7 flex flex-wrap items-center gap-3">
+                  <Link
+                    href={CIALDE_PAGE_HREF}
+                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+                  >
+                    Personalizza ora
+                  </Link>
+
+                  <a
+                    href={waUrl("Ciao! Vorrei info sulle cialde personalizzate 😊")}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
+                  >
+                    WhatsApp
+                  </a>
+                </div>
+
+                <p className="mt-3 text-xs text-text/70">
+                  Stampa nitida e colori brillanti. Consegna a casa o ritiro in negozio.
+                </p>
               </div>
-            </div>
 
-            <div className="mt-7 flex flex-wrap items-center gap-3">
-              <Link
-                href={CIALDE_PAGE_HREF}
-                className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-              >
-                Personalizza ora
-              </Link>
-
-              <a
-                href={waUrl("Ciao! Vorrei info sulle cialde personalizzate 😊")}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm font-semibold text-link hover:text-link-hover"
-              >
-                Hai dubbi? WhatsApp →
-              </a>
+              <div className="lg:col-span-6">
+                <CialdeExamplesCarousel />
+              </div>
             </div>
           </div>
 
-          <div className="lg:col-span-6">
-            <CialdeExamplesCarousel />
+          {/* SLIDE B: BISCOTTI */}
+          <div className="tf-slideB col-start-1 row-start-1" style={{ animation: "tfSlideB 8s infinite ease-in-out" }}>
+            <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
+              <div className="lg:col-span-6">
+                <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
+                  Stampe personalizzate • Per biscotti
+                </p>
+
+                <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
+                  Stampe per biscotti su foglio A4
+                </h2>
+
+                <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
+                  Stampe tonde da ritagliare (4,5 · 5 · 6 cm). Perfette per decorare biscotti in modo rapido e pulito.
+                </p>
+
+                <div className="mt-6">
+                  <div className="text-sm font-extrabold">Come funziona</div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    {[
+                      { n: "1", t: "Scegli la dimensione" },
+                      { n: "2", t: "Carica immagine e testo" },
+                      { n: "3", t: "Ricevi o ritira" },
+                    ].map((x) => (
+                      <div key={x.n} className="rounded-2xl border border-border bg-surface p-4">
+                        <div className="text-xs font-extrabold text-text/70">Step {x.n}</div>
+                        <div className="mt-1 text-sm font-extrabold">{x.t}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-7 flex flex-wrap items-center gap-3">
+                  <Link
+                    href={BISCOTTI_PAGE_HREF}
+                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+                  >
+                    Personalizza biscotti
+                  </Link>
+
+                  <a
+                    href={waUrl("Ciao! Vorrei info sulle stampe per biscotti su foglio A4 😊")}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
+                  >
+                    WhatsApp
+                  </a>
+                </div>
+
+
+
+                <p className="mt-3 text-xs text-text/70">
+                  Foglio A4 con stampe da ritagliare. Consegna a casa o ritiro in negozio.
+                </p>
+              </div>
+
+              <div className="lg:col-span-6">
+                <div className="overflow-hidden rounded-3xl border border-border bg-background">
+                  <div className="relative aspect-[16/11] bg-surface">
+                    <Image
+                      src="https://images.unsplash.com/photo-1519869325930-281384150729?auto=format&fit=crop&w=1600&q=70"
+                      alt="Esempio biscotti decorati"
+                      fill
+                      sizes="(min-width: 1024px) 50vw, 100vw"
+                      className="object-cover"
+                      unoptimized
+                    />
+                  </div>
+
+                  <div className="grid gap-2 p-4 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-border bg-surface p-4">
+                      <div className="text-xs font-extrabold text-text/70">Formati</div>
+                      <div className="mt-1 text-sm font-extrabold">4,5 · 5 · 6 cm</div>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-surface p-4">
+                      <div className="text-xs font-extrabold text-text/70">Consiglio</div>
+                      <div className="mt-1 text-sm font-extrabold">30 sec in freezer per staccare meglio</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 text-xs text-text/60">
+                  Immagine demo (poi la sostituiamo con una foto reale del prodotto).
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -700,38 +749,29 @@ function PersonalizedWaferHero() {
 /* ---------------- PAGE ---------------- */
 
 export default async function Home() {
-  // ✅ anche se Strapi è down/lento, NON deve crashare nulla
-  const [catsRaw, latestRaw, saleCandRaw] = await Promise.all([
-    fetchHomeCategories(),
-    fetchLatestProducts(12),
-    fetchSaleCandidates(24),
-  ]);
+  const latestP = withDeadline(fetchLatestProducts(12), 9_500, []);
+  const saleP = withDeadline(fetchSaleCandidates(24), 9_500, []);
 
-  const categories =
-    catsRaw.length > 0
-      ? catsRaw.slice(0, 8)
-      : [
-          { slug: "prodotti-per-pasticceria", label: "Prodotti per pasticceria", icon: null, subCount: 0 },
-          { slug: "decorazioni-per-dolci", label: "Decorazioni per dolci", icon: null, subCount: 0 },
-          { slug: "confetti", label: "Confetti", icon: null, subCount: 0 },
-        ];
+  const [latestRaw, saleCandRaw] = await Promise.all([latestP, saleP]);
 
   const sale = saleCandRaw
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
     .slice(0, 12);
 
-  const [latest, saleWithStock] = await Promise.all([
-    withAvailability(latestRaw.slice(0, 12)),
-    withAvailability(sale),
-  ]);
+  const latestStockP = withDeadline(
+    withAvailabilitySafe(latestRaw.slice(0, 12), 2_500),
+    2_800,
+    latestRaw.slice(0, 12)
+  );
+  const saleStockP = withDeadline(withAvailabilitySafe(sale, 2_500), 2_800, sale);
+
+  const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-10">
       <Hero />
 
-      <PersonalizedWaferHero />
-
-      <CategoryGrid categories={categories} />
+      <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (
         <ProductRail

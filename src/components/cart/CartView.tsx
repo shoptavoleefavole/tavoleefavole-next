@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Container from "@/components/Container";
@@ -11,18 +10,120 @@ import { formatEUR } from "@/lib/format";
 
 const FREE_SHIPPING_THRESHOLD = 79;
 
+// Client-safe: Next inlines NEXT_PUBLIC_*
+const STRAPI_PUBLIC_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
+
 function clampQty(v: unknown): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return 1;
   return Math.max(1, Math.floor(n));
 }
+
 function safeNumber(v: unknown, fallback = 0) {
+  if (typeof v === "string") {
+    const n = Number(v.replace(",", "."));
+    return Number.isFinite(n) ? n : fallback;
+  }
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 }
+
 function safeString(v: unknown, fallback = "") {
   const s = String(v ?? "").trim();
   return s || fallback;
+}
+
+// Se arriva "/uploads/..." dal carrello, rendila assoluta con STRAPI_PUBLIC_URL
+function normalizeImageUrl(raw: unknown): string {
+  const s = safeString(raw, "");
+  if (!s) return "";
+
+  // già assoluta / data / blob
+  if (
+    s.startsWith("http://") ||
+    s.startsWith("https://") ||
+    s.startsWith("data:") ||
+    s.startsWith("blob:")
+  ) {
+    return s;
+  }
+
+  // assets locali del frontend
+  if (s.startsWith("/brand/") || s.startsWith("/placeholder") || s.startsWith("/images/")) {
+    return s;
+  }
+
+  // classico caso Strapi: /uploads/...
+  if (s.startsWith("/uploads/") && STRAPI_PUBLIC_URL) {
+    return `${STRAPI_PUBLIC_URL}${s}`;
+  }
+
+  // fallback: lascia com’è
+  return s;
+}
+
+/** Immagine super-robusta:
+ * - timeout -> fallback
+ * - onError -> fallback
+ * - evita hang lunghi quando origin è lento/down
+ */
+function SafeImg({
+  src,
+  alt,
+  className,
+  fallbackSrc = "/brand/tavoleefavole-logo.svg",
+  timeoutMs = 7000,
+}: {
+  src?: string;
+  alt: string;
+  className?: string;
+  fallbackSrc?: string;
+  timeoutMs?: number;
+}) {
+  const normalized = normalizeImageUrl(src);
+  const [currentSrc, setCurrentSrc] = useState<string>(normalized || fallbackSrc);
+  const loadedRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    loadedRef.current = false;
+
+    const next = normalizeImageUrl(src);
+    setCurrentSrc(next || fallbackSrc);
+
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      if (!loadedRef.current) setCurrentSrc(fallbackSrc);
+    }, timeoutMs);
+
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [src, fallbackSrc, timeoutMs]);
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={currentSrc}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      decoding="async"
+      onLoad={() => {
+        loadedRef.current = true;
+        if (timerRef.current) window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }}
+      onError={() => {
+        loadedRef.current = true;
+        if (timerRef.current) window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+
+        if (currentSrc !== fallbackSrc) setCurrentSrc(fallbackSrc);
+      }}
+    />
+  );
 }
 
 function TruckIcon() {
@@ -119,6 +220,18 @@ type Quote = {
   error?: string;
 };
 
+async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
+  const timeoutMs = init.timeoutMs ?? 12_000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export default function CartView() {
   const { items, summary, removeItem, setQty, clear } = useCart();
 
@@ -152,7 +265,6 @@ export default function CartView() {
           items: items.map((it) => ({
             lineId: it.lineId,
             qty: clampQty(it.qty),
-            // per prodotti Strapi
             id: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
             productId: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
             slug: it.slug,
@@ -161,24 +273,29 @@ export default function CartView() {
           })),
         };
 
-        const res = await fetch("/api/cart/quote", {
+        const res = await fetchWithTimeout("/api/cart/quote", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify(payload),
           signal: controller.signal,
+          timeoutMs: 12_000,
         });
 
         const data = (await res.json().catch(() => null)) as Quote | null;
 
         if (!res.ok || !data?.ok) {
-          setQuote({ ok: false, error: data?.error || `Quote fallita (HTTP ${res.status})` });
+          const msg = data?.error || `Quote fallita (HTTP ${res.status})`;
+          setQuote({ ok: false, error: msg });
           return;
         }
 
         setQuote(data);
       } catch (e: any) {
-        if (e?.name === "AbortError") return;
+        if (e?.name === "AbortError") {
+          setQuote({ ok: false, error: "Timeout: aggiornamento prezzi troppo lento. Riprova tra poco." });
+          return;
+        }
         setQuote({ ok: false, error: e?.message ? String(e.message) : "Errore quote" });
       } finally {
         setQuoteBusy(false);
@@ -241,11 +358,12 @@ export default function CartView() {
         discountTotal: 0,
       };
 
-      const res = await fetch("/api/checkout/start", {
+      const res = await fetchWithTimeout("/api/checkout/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify(payload),
+        timeoutMs: 20_000,
       });
 
       const text = await res.text().catch(() => "");
@@ -271,7 +389,11 @@ export default function CartView() {
 
       window.location.href = url;
     } catch (e: any) {
-      setCheckoutError(e?.message ? String(e.message) : "Errore imprevisto durante il checkout.");
+      if (e?.name === "AbortError") {
+        setCheckoutError("Timeout: checkout troppo lento. Riprova tra poco.");
+      } else {
+        setCheckoutError(e?.message ? String(e.message) : "Errore imprevisto durante il checkout.");
+      }
     } finally {
       setTimeout(() => setCheckoutBusy(false), 250);
     }
@@ -379,14 +501,15 @@ export default function CartView() {
               </div>
 
               {items.map((it) => {
-                const img = it.image ?? "/placeholder.jpg";
                 const slug = safeString(it.slug);
                 const isLinkable = !!slug;
 
-                const qi = quoteMap.get(it.lineId);
-                const unit = typeof qi?.unitPrice === "number" ? qi.unitPrice : it.price;
+                const qi = it.lineId ? quoteMap.get(it.lineId) : undefined;
+                const unit = typeof qi?.unitPrice === "number" ? qi.unitPrice : safeNumber(it.price, 0);
                 const base = typeof qi?.baseUnitPrice === "number" ? qi.baseUnitPrice : null;
                 const hasStrike = typeof base === "number" && base > unit;
+
+                const img = normalizeImageUrl(it.image) || "/brand/tavoleefavole-logo.svg";
 
                 return (
                   <div
@@ -394,7 +517,7 @@ export default function CartView() {
                     className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]"
                   >
                     <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface">
-                      <Image src={img} alt={it.name} fill className="object-cover" sizes="120px" />
+                      <SafeImg src={img} alt={safeString(it.name, "Prodotto")} className="h-full w-full object-cover" />
                     </div>
 
                     <div className="flex flex-col gap-3">
@@ -402,7 +525,7 @@ export default function CartView() {
                         <div className="min-w-0">
                           {isLinkable ? (
                             <Link
-                              href={`/prodotto/${slug}`}
+                              href={`/prodotto/${encodeURIComponent(slug)}`}
                               className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2"
                             >
                               {it.name}

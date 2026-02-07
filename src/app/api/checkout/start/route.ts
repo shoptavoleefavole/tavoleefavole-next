@@ -1,4 +1,3 @@
-// src/app/api/checkout/start/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { getAvailability } from "@/lib/inventory.server";
@@ -7,13 +6,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * ✅ Server-pricing robusto (Step 3):
- * - Il carrello può essere usato anche da guest (nessun requisito login).
- * - Prezzi “standard” e “in offerta” vengono SEMPRE da Strapi (price + compareAtPrice se presente).
- * - Prezzi AZIENDE: applicati SOLO se l’utente è realmente “azienda” su Strapi (CustomerProfile/Azienda approved).
- * - “Cialda personalizzata”: prezzo calcolato server-side da meta.material (ostia / pasta_di_zucchero).
- * - NON ci fidiamo del price del client.
- * - ✅ NEW: blocco checkout se inventario (warehouse MAIN) non copre qty (SKU-based).
+ * ✅ Server-pricing robusto:
+ * - Guest ok
+ * - Prezzi sempre da Strapi
+ * - Prezzi aziende solo se approved
+ * - Cialde: prezzo server-side
+ * - Inventory check (SKU, warehouse MAIN)
  */
 
 type CartItemMeta = Record<string, any>;
@@ -48,7 +46,7 @@ function json(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-route": "v12-server-pricing-b2b-guest-cialde-inventory",
+      "x-checkout-route": "v14-no-undici-timeout-retry",
     },
   });
 }
@@ -111,7 +109,6 @@ function sanitizeMeta(meta: any): CartItemMeta | undefined {
   for (const k of allow) {
     const v = meta[k];
     if (v == null) continue;
-
     if (typeof v === "string") out[k] = v.slice(0, 500);
     else if (typeof v === "number" || typeof v === "boolean") out[k] = v;
   }
@@ -229,7 +226,24 @@ function strapiBaseUrl(raw: string) {
   return String(raw || "").replace(/\/+$/, "");
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, ms = 12_000) {
+const STRAPI_TIMEOUT_MS = (() => {
+  const n = Number(process.env.STRAPI_TIMEOUT_MS || 25000);
+  return Number.isFinite(n) ? Math.max(5000, n) : 25000;
+})();
+
+function isRetryableFetchError(e: any) {
+  const code = e?.cause?.code || e?.code;
+  return (
+    e?.name === "AbortError" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EAI_AGAIN" ||
+    String(e?.message || "").toLowerCase().includes("fetch failed")
+  );
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 30_000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
@@ -239,14 +253,33 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 12_000) {
   }
 }
 
+async function fetchWithRetry(url: string, init: RequestInit = {}, ms = STRAPI_TIMEOUT_MS) {
+  let lastErr: any;
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await fetchWithTimeout(url, init, ms);
+    } catch (e: any) {
+      lastErr = e;
+
+      if (!isRetryableFetchError(e) || i === 2) break;
+
+      // backoff: 500ms, 1000ms
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
+    }
+  }
+
+  throw lastErr;
+}
+
 async function strapiRequest(
   STRAPI_URL: string,
   STRAPI_API_TOKEN: string,
   path: string,
   init: RequestInit,
-  timeoutMs = 12_000
+  timeoutMs = STRAPI_TIMEOUT_MS
 ) {
-  const res = await fetchWithTimeout(
+  const res = await fetchWithRetry(
     `${strapiBaseUrl(STRAPI_URL)}${path}`,
     {
       ...init,
@@ -407,7 +440,7 @@ function compactStripeMeta(meta?: CartItemMeta) {
   return out;
 }
 
-/* ---------------- ✅ Server pricing: prodotti + B2B + SKU per inventario ---------------- */
+/* ---------------- ✅ Server pricing: prodotti + B2B + SKU ---------------- */
 
 type StrapiProduct = {
   id: number | null;
@@ -418,17 +451,13 @@ type StrapiProduct = {
   price: number | null;
   compareAtPrice: number | null;
 
-  // prezzi aziende
   companyPrice: number | null;
   b2bPrice: number | null;
   priceAziende: number | null;
   priceCompany: number | null;
   priceB2B: number | null;
 
-  // fallback legacy
   aziendaDiscountEligible: boolean;
-
-  // ✅ SKU (per inventario)
   sku: string | null;
 };
 
@@ -439,11 +468,6 @@ function toNumOrNull(v: any): number | null {
 
 function pickSkuFromStrapiRow(row: any): string | null {
   const a = row?.attributes ?? row ?? {};
-
-  // Strapi può avere:
-  // - variants: relation array
-  // - variant: single relation
-  // - sku diretto (se lo hai messo sul prodotto)
   const direct = typeof a?.sku === "string" ? a.sku : typeof row?.sku === "string" ? row.sku : null;
   if (direct && direct.trim()) return direct.trim();
 
@@ -498,13 +522,13 @@ function extractProduct(row: any): StrapiProduct {
     documentId,
     slug: slug ? String(slug) : null,
     name: name ? String(name) : null,
-    price: Number.isFinite(price as any) ? (price as number) : null,
-    compareAtPrice: Number.isFinite(compareAtPrice as any) ? (compareAtPrice as number) : null,
-    companyPrice: Number.isFinite(companyPrice as any) ? (companyPrice as number) : null,
-    b2bPrice: Number.isFinite(b2bPrice as any) ? (b2bPrice as number) : null,
-    priceAziende: Number.isFinite(priceAziende as any) ? (priceAziende as number) : null,
-    priceCompany: Number.isFinite(priceCompany as any) ? (priceCompany as number) : null,
-    priceB2B: Number.isFinite(priceB2B as any) ? (priceB2B as number) : null,
+    price,
+    compareAtPrice,
+    companyPrice,
+    b2bPrice,
+    priceAziende,
+    priceCompany,
+    priceB2B,
     aziendaDiscountEligible: Boolean(eligibleRaw),
     sku,
   };
@@ -524,11 +548,9 @@ async function fetchProductsByIdsOrSlugs(args: {
 
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "100");
-
   if (ids.length > 0) addInFilter(qs, "id", ids);
   if (slugs.length > 0) addInFilter(qs, "slug", slugs);
 
-  // Tentativo 1: fields + populate sku da variants/variant
   const qs1 = new URLSearchParams(qs.toString());
   const fields = [
     "name",
@@ -548,7 +570,6 @@ async function fetchProductsByIdsOrSlugs(args: {
   ];
   fields.forEach((f, i) => qs1.append(`fields[${i}]`, f));
 
-  // ✅ populate SKU da varianti (se esistono)
   qs1.append("populate[variants][fields][0]", "sku");
   qs1.append("populate[variant][fields][0]", "sku");
 
@@ -556,15 +577,9 @@ async function fetchProductsByIdsOrSlugs(args: {
     strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${query.toString()}`, { method: "GET" });
 
   let r = await attempt(qs1);
+  if (!r.res.ok && r.res.status === 400) r = await attempt(qs);
 
-  // Fallback: senza fields/populate
-  if (!r.res.ok && r.res.status === 400) {
-    r = await attempt(qs);
-  }
-
-  if (!r.res.ok) {
-    return { ok: false as const, status: r.res.status, details: r.data ?? r.text };
-  }
+  if (!r.res.ok) return { ok: false as const, status: r.res.status, details: r.data ?? r.text };
 
   const arr = Array.isArray(r.data?.data) ? r.data.data : [];
   const products = arr.map(extractProduct);
@@ -623,16 +638,10 @@ async function getCompanyCtx(args: {
     const percent = clampPercent(ca?.discountPercent);
 
     if (!approved) return { discountPercent: 0, approved: false };
-
     return { discountPercent: percent > 0 ? percent : 0, approved: true };
   };
 
-  const a = await tryQuery("user");
-  if (a) return a;
-  const b = await tryQuery("users");
-  if (b) return b;
-
-  return { discountPercent: 0, approved: false };
+  return (await tryQuery("user")) || (await tryQuery("users")) || { discountPercent: 0, approved: false };
 }
 
 function pickCompanyUnitPriceMajor(p: StrapiProduct): number | null {
@@ -642,7 +651,7 @@ function pickCompanyUnitPriceMajor(p: StrapiProduct): number | null {
   return candidates.length ? candidates[0] : null;
 }
 
-/* ---------------- ✅ INVENTORY CHECK (warehouse MAIN) ---------------- */
+/* ---------------- ✅ INVENTORY CHECK ---------------- */
 
 async function checkInventoryOrThrow(args: {
   items: Array<{ sku: string; qty: number; name: string }>;
@@ -651,7 +660,6 @@ async function checkInventoryOrThrow(args: {
   const { items, warehouse } = args;
   if (!items.length) return;
 
-  // somma qty per sku (se stesso sku è in più righe)
   const need = new Map<string, { qty: number; name: string }>();
   for (const it of items) {
     const sku = String(it.sku || "").trim();
@@ -742,11 +750,11 @@ export async function POST(request: Request) {
 
     if (userJwt) {
       try {
-        const meRes = await fetchWithTimeout(
-          `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
-          { headers: { Authorization: `Bearer ${userJwt}` } },
-          10_000
-        );
+        const meRes = await fetchWithRetry(
+        `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
+        { headers: { Authorization: `Bearer ${userJwt}` } },
+        15_000
+      );
 
         if (meRes.ok) {
           const me = safeJsonParse(await meRes.text().catch(() => ""));
@@ -766,11 +774,7 @@ export async function POST(request: Request) {
       new Set(
         strapiItems
           .map((x) =>
-            typeof x.productId === "number"
-              ? x.productId
-              : typeof x.id === "number"
-              ? x.id
-              : null
+            typeof x.productId === "number" ? x.productId : typeof x.id === "number" ? x.id : null
           )
           .filter((n): n is number => typeof n === "number")
       )
@@ -785,7 +789,7 @@ export async function POST(request: Request) {
         ? await fetchProductsByIdsOrSlugs({ STRAPI_URL, STRAPI_API_TOKEN, ids, slugs })
         : { ok: true as const, byId: new Map<number, StrapiProduct>(), bySlug: new Map<string, StrapiProduct>() };
 
-    if (!prodRes.ok) {
+    if (!(prodRes as any).ok) {
       return json(
         {
           ok: false,
@@ -797,26 +801,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // ✅ PRE-CHECK: inventario (warehouse MAIN) per gli SKU che esistono
-    // Se un prodotto non ha SKU, non possiamo verificare inventario: lo lasciamo passare (fallback).
+    // ✅ inventory pre-check
     {
       const invItems: Array<{ sku: string; qty: number; name: string }> = [];
 
       for (const it of strapiItems) {
         const p =
-          (typeof it.productId === "number" ? prodRes.byId.get(it.productId) : undefined) ||
-          (typeof it.id === "number" ? prodRes.byId.get(it.id) : undefined) ||
-          (it.slug ? prodRes.bySlug.get(it.slug) : undefined) ||
+          (typeof it.productId === "number" ? (prodRes as any).byId.get(it.productId) : undefined) ||
+          (typeof it.id === "number" ? (prodRes as any).byId.get(it.id) : undefined) ||
+          (it.slug ? (prodRes as any).bySlug.get(it.slug) : undefined) ||
           null;
 
         if (!p) continue;
-        if (p.sku) {
-          invItems.push({
-            sku: p.sku,
-            qty: it.qty,
-            name: p.name ?? it.name ?? "Prodotto",
-          });
-        }
+        if (p.sku) invItems.push({ sku: p.sku, qty: it.qty, name: p.name ?? it.name ?? "Prodotto" });
       }
 
       try {
@@ -824,12 +821,7 @@ export async function POST(request: Request) {
       } catch (e: any) {
         if (e?.code === "OUT_OF_STOCK") {
           return json(
-            {
-              ok: false,
-              error: "OUT_OF_STOCK",
-              message: "Alcuni prodotti non sono disponibili nelle quantità richieste.",
-              items: e?.details ?? [],
-            },
+            { ok: false, error: "OUT_OF_STOCK", message: "Quantità non disponibile.", items: e?.details ?? [] },
             409
           );
         }
@@ -837,7 +829,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // ✅ calcolo prezzi in minor per coerenza Stripe
+    // ✅ pricing
     let baseSubtotalMinor = 0;
     let finalSubtotalMinor = 0;
 
@@ -846,30 +838,23 @@ export async function POST(request: Request) {
       slug: string | null;
       name: string;
       qty: number;
-
       price: number;
       basePrice: number;
-
       isOnSale: boolean;
-
       companyPricingApplied: boolean;
       companyPriceUsed: boolean;
       companyDiscountPercentApplied: number;
-
       variantId: number | null;
       imageUrl: string | null;
       meta?: CartItemMeta;
-
-      // ✅ utile debug/log, e futuro
       sku?: string | null;
     }> = [];
 
-    // 1) prodotti Strapi
     for (const it of strapiItems) {
       const p =
-        (typeof it.productId === "number" ? prodRes.byId.get(it.productId) : undefined) ||
-        (typeof it.id === "number" ? prodRes.byId.get(it.id) : undefined) ||
-        (it.slug ? prodRes.bySlug.get(it.slug) : undefined) ||
+        (typeof it.productId === "number" ? (prodRes as any).byId.get(it.productId) : undefined) ||
+        (typeof it.id === "number" ? (prodRes as any).byId.get(it.id) : undefined) ||
+        (it.slug ? (prodRes as any).bySlug.get(it.slug) : undefined) ||
         null;
 
       if (!p || !p.price || p.price <= 0) {
@@ -912,18 +897,15 @@ export async function POST(request: Request) {
 
       const baseUnitMinor = toStripeUnitAmount(baseUnitMajor, currency);
       const finalUnitMinor = toStripeUnitAmount(finalUnitMajor, currency);
-
-      if (!baseUnitMinor || baseUnitMinor < 1) throw new Error(`Invalid base unit amount for "${p.name ?? it.name ?? "item"}"`);
-      if (!finalUnitMinor || finalUnitMinor < 1) throw new Error(`Invalid final unit amount for "${p.name ?? it.name ?? "item"}"`);
+      if (!baseUnitMinor || baseUnitMinor < 1) throw new Error(`Invalid base unit for "${p.name ?? it.name ?? "item"}"`);
+      if (!finalUnitMinor || finalUnitMinor < 1)
+        throw new Error(`Invalid final unit for "${p.name ?? it.name ?? "item"}"`);
 
       baseSubtotalMinor += baseUnitMinor * it.qty;
       finalSubtotalMinor += finalUnitMinor * it.qty;
 
       pricedItems.push({
-        productId:
-          p.id ??
-          (typeof it.productId === "number" ? it.productId : typeof it.id === "number" ? it.id : null) ??
-          null,
+        productId: p.id ?? null,
         slug: p.slug ?? it.slug ?? null,
         name: p.name ?? it.name ?? "Articolo",
         qty: it.qty,
@@ -940,12 +922,9 @@ export async function POST(request: Request) {
       });
     }
 
-    // 2) custom items (cialde)
     for (const it of customItems) {
       const material = toSafeString(it?.meta?.material);
-      if (!isCialdaMaterial(material)) {
-        throw new Error(`Cialda: material non valido (atteso "ostia" o "pasta_di_zucchero")`);
-      }
+      if (!isCialdaMaterial(material)) throw new Error(`Cialda: material non valido`);
 
       const unitMajor = CIALDE_PRICE_MAJOR[material];
       const unitMinor = toStripeUnitAmount(unitMajor, currency);
@@ -955,11 +934,6 @@ export async function POST(request: Request) {
       finalSubtotalMinor += unitMinor * it.qty;
 
       const safeMeta = sanitizeMeta(it.meta) ?? undefined;
-
-      if (safeMeta) {
-        const img = toSafeString(safeMeta.imageUrl) || toSafeString(it.imageUrl);
-        if (img) safeMeta.imageUrl = img.slice(0, 500);
-      }
 
       pricedItems.push({
         productId: null,
@@ -984,9 +958,7 @@ export async function POST(request: Request) {
     const shippingMinor = shippingMajorIn > 0 ? toStripeUnitAmount(shippingMajorIn, currency) ?? 0 : 0;
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
-    if (!Number.isFinite(totalMinor) || totalMinor <= 0) {
-      return json({ ok: false, error: "Total must be > 0" }, 400);
-    }
+    if (!Number.isFinite(totalMinor) || totalMinor <= 0) return json({ ok: false, error: "Total must be > 0" }, 400);
 
     const subtotal = toMajor(baseSubtotalMinor, currency);
     const discountTotal = toMajor(discountMinor, currency);
@@ -1016,10 +988,7 @@ export async function POST(request: Request) {
         price_data: {
           currency: currency.toLowerCase(),
           unit_amount,
-          product_data: {
-            name,
-            ...(images.length ? { images } : {}),
-          },
+          product_data: { name, ...(images.length ? { images } : {}) },
         },
       };
     });
@@ -1035,7 +1004,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // 1) crea ordine su Strapi
     const orderPayload = {
       data: {
         orderStatus: "PENDING_PAYMENT",
@@ -1071,12 +1039,8 @@ export async function POST(request: Request) {
 
     const { orderId, documentId } = extractOrderRefs(orderCreate.data);
     const orderRef = String(documentId || orderId || "").trim();
+    if (!orderRef) return json({ ok: false, error: "Order created but missing id/documentId" }, 500);
 
-    if (!orderRef) {
-      return json({ ok: false, error: "Order created but missing id/documentId", details: orderCreate.data }, 500);
-    }
-
-    // 2) crea session Stripe
     const hasCialda = pricedItems.some(
       (x) => x.meta && (x.meta.kind === "cialda-personalizzata" || x.meta.kind === "cialde-personalizzate")
     );
@@ -1112,7 +1076,6 @@ export async function POST(request: Request) {
       { idempotencyKey: `checkout_${orderRef}` }
     );
 
-    // 3) salva stripeSessionId su Strapi
     await bestEffortUpdateStripeSessionId({
       STRAPI_URL,
       STRAPI_API_TOKEN,
@@ -1134,16 +1097,31 @@ export async function POST(request: Request) {
       200
     );
   } catch (err: any) {
-    // ✅ gestione out-of-stock “hard”
     if (err?.code === "OUT_OF_STOCK") {
+      return json({ ok: false, error: "OUT_OF_STOCK", message: err?.message, items: err?.details ?? [] }, 409);
+    }
+
+    if (isRetryableFetchError(err)) {
       return json(
         {
           ok: false,
-          error: "OUT_OF_STOCK",
-          message: err?.message || "Prodotti non disponibili",
-          items: err?.details ?? [],
+          error: "STRAPI_TIMEOUT",
+          message: "Connessione a Strapi troppo lenta. Riprova tra pochi secondi.",
+          details: err?.message ?? String(err),
         },
-        409
+        504
+      );
+    }
+
+        if (isRetryableFetchError(err)) {
+      return json(
+        {
+          ok: false,
+          error: "STRAPI_TIMEOUT",
+          message: "Connessione a Strapi troppo lenta. Riprova tra qualche secondo.",
+          details: err?.message ?? String(err),
+        },
+        504
       );
     }
 

@@ -1,71 +1,130 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useMemo } from "react";
 import Container from "@/components/Container";
+import { useCart } from "@/components/cart/CartProvider";
 
-export default function Topbar() {
+function HomeIcon({ className = "" }: { className?: string }) {
   return (
-    <div className="border-b border-border bg-primary/10">
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function GridIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function UserIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M20 21a8 8 0 10-16 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M12 13a4 4 0 100-8 4 4 0 000 8z" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function CartIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M6 6h15l-2 9H7L6 6z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M6 6L5 3H2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M8 20a1 1 0 100-2 1 1 0 000 2zM18 20a1 1 0 100-2 1 1 0 000 2z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function isActivePath(pathname: string, href: string) {
+  if (href === "/") return pathname === "/";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export default function MobileBottomNav() {
+  const pathname = usePathname() ?? "/";
+  const { summary } = useCart();
+
+  const cartCount = Number(summary?.count ?? 0);
+
+  const items = useMemo(
+    () => [
+      { href: "/", label: "Home", icon: HomeIcon },
+      { href: "/catalogo", label: "Catalogo", icon: GridIcon },
+      { href: "/account", label: "Account", icon: UserIcon },
+      { href: "/carrello", label: "Carrello", icon: CartIcon, badge: cartCount },
+    ],
+    [cartCount]
+  );
+
+  function openMenu() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("mobile-menu:open"));
+    }
+  }
+
+  return (
+    <nav
+      className="md:hidden fixed inset-x-0 bottom-0 z-[9999] border-t border-border bg-background/95 backdrop-blur"
+      aria-label="Navigazione principale mobile"
+    >
       <Container>
-        <div className="py-2 text-sm text-muted-text">
-          {/* MOBILE: 2 righe centrate */}
-          <div className="md:hidden flex flex-col items-center justify-center gap-1 text-center leading-snug">
-            {/* Riga 1: Assistenza + Orari (compattati) */}
-            <div className="px-2">
-              <span className="font-semibold text-text">Assistenza:</span>{" "}
-              <a className="text-link hover:text-link-hover" href="tel:+393482483901">
-                +39 348 2483901
-              </a>
-              <span className="mx-2 opacity-60">•</span>
-              <span className="font-semibold text-text">Orari:</span>{" "}
-              <span className="whitespace-nowrap">09:00–12:45</span>{" "}
-              <span className="opacity-60">/</span>{" "}
-              <span className="whitespace-nowrap">16:30–20:00</span>{" "}
-              <span className="whitespace-nowrap">
-                (Gio. p.m. <span className="font-bold text-text">CHIUSO</span>)
-              </span>
-            </div>
+        <div className="grid grid-cols-5 items-center py-2">
+          {/* Menu (apre drawer Header) */}
+          <button
+            type="button"
+            onClick={openMenu}
+            className="flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-muted-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            aria-label="Apri menu"
+          >
+            <MenuIcon />
+            MENU
+          </button>
 
-            {/* Riga 2: Mail + Spedizione */}
-            <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-2">
-              <a className="text-link hover:text-link-hover" href="mailto:support@example.com">
-                support@example.com
-              </a>
+          {items.map((it) => {
+            const active = isActivePath(pathname, it.href);
+            const Icon = it.icon;
 
-              <span className="rounded-full bg-background/70 px-3 py-1 text-xs text-text">
-                Spedizione gratuita sopra 79€
-              </span>
-            </div>
-          </div>
+            return (
+              <Link
+                key={it.href}
+                href={it.href}
+                className={`relative flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                  active ? "text-text" : "text-muted-text"
+                }`}
+                aria-current={active ? "page" : undefined}
+              >
+                <Icon />
+                {it.label}
 
-          {/* DESKTOP: centrato + pill a destra (come prima, più ordinato) */}
-          <div className="hidden md:flex items-center justify-between gap-4">
-            {/* Spacer sinistro per mantenere centratura ottica */}
-            <div className="w-48" />
-
-            <div className="flex flex-1 flex-wrap items-center justify-center gap-x-4 gap-y-1 text-center">
-              <span>
-                Assistenza:{" "}
-                <a className="text-link hover:text-link-hover" href="tel:+393482483901">
-                  +39 348 2483901
-                </a>
-              </span>
-
-              <span>
-                Orari: 09:00/12:45 - 16:30/20:00 (Giovedì pomeriggio{" "}
-                <strong className="text-text">CHIUSO</strong>)
-              </span>
-
-              <a className="text-link hover:text-link-hover" href="mailto:support@example.com">
-                support@example.com
-              </a>
-            </div>
-
-            <div className="w-48 flex justify-end">
-              <span className="rounded-full bg-background/70 px-3 py-1 text-xs text-text">
-                Spedizione gratuita sopra 79€
-              </span>
-            </div>
-          </div>
+                {"badge" in it && (it.badge ?? 0) > 0 ? (
+                  <span className="absolute right-3 top-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[11px] font-bold text-accent-contrast">
+                    {it.badge}
+                  </span>
+                ) : null}
+              </Link>
+            );
+          })}
         </div>
       </Container>
-    </div>
+    </nav>
   );
 }

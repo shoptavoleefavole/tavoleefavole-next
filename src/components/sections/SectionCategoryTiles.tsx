@@ -12,9 +12,10 @@ export default function SectionCategoryTiles() {
       <Container>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-text">Esplora per categoria</h2>
-            <p className="mt-1 text-sm text-muted-text">Blocchi ispirazionali con immagini placeholder.</p>
+            <h2 className="text-2xl font-semibold text-text">Categorie</h2>
+            <p className="mt-1 text-sm text-muted-text">Seleziona una categoria per iniziare.</p>
           </div>
+
           <Link href={`/ricorrenze/${occ.slug}`} className="text-sm text-link hover:text-link-hover">
             Ricorrenza attiva: {occ.name}
           </Link>
@@ -36,13 +37,17 @@ export default function SectionCategoryTiles() {
                   sizes="(max-width: 768px) 100vw, 50vw"
                 />
               </div>
+
               <div className="p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-base font-semibold text-text">{c.name}</div>
                     <div className="mt-1 line-clamp-2 text-sm text-muted-text">{c.description}</div>
                   </div>
-                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-surface-2 text-text" aria-hidden="true">
+                  <span
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-surface-2 text-text"
+                    aria-hidden="true"
+                  >
                     →
                   </span>
                 </div>

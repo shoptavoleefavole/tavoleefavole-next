@@ -1,3 +1,4 @@
+// src/app/api/stripe/webhook/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { Buffer } from "buffer";
@@ -19,10 +20,7 @@ function requireEnv(name: string) {
 }
 
 function strapiBaseUrl() {
-  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(
-    /\/+$/,
-    ""
-  );
+  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(/\/+$/, "");
 }
 
 function safeJsonParse(text: string) {
@@ -33,19 +31,28 @@ function safeJsonParse(text: string) {
   }
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 20_000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function strapiFetch(path: string, init?: RequestInit) {
   const base = strapiBaseUrl();
   const token = process.env.STRAPI_API_TOKEN;
   if (!token) throw new Error("Missing STRAPI_API_TOKEN (serve per leggere/aggiornare ordini via webhook)");
 
-  const res = await fetch(`${base}${path}`, {
+  const res = await fetchWithTimeout(`${base}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       ...(init?.headers || {}),
     },
-    cache: "no-store",
   });
 
   const text = await res.text().catch(() => "");
@@ -53,85 +60,50 @@ async function strapiFetch(path: string, init?: RequestInit) {
   return { res, data, text };
 }
 
+async function findFirstOrderByFilter(qs: URLSearchParams) {
+  qs.set("pagination[pageSize]", "1");
+  const { res, data, text } = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
+  if (!res.ok) return { ok: false as const, status: res.status, details: data ?? text };
+  const first = Array.isArray(data?.data) ? data.data[0] : null;
+  return { ok: true as const, first };
+}
+
 async function findOrder(params: { sessionId: string; orderRef?: string | null; orderId?: string | null }) {
   const { sessionId, orderRef, orderId } = params;
 
-  // 1) per stripeSessionId
+  // 1) stripeSessionId
   {
     const qs = new URLSearchParams();
     qs.set("filters[stripeSessionId][$eq]", sessionId);
-    qs.set("pagination[pageSize]", "1");
-    const { res, data } = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
-    if (res.ok) {
-      const first = Array.isArray(data?.data) ? data.data[0] : null;
-      if (first) return first;
-    }
+    const r = await findFirstOrderByFilter(qs);
+    if (r.ok && r.first) return r.first;
   }
 
-  // 2) per documentId (orderRef)
+  // 2) documentId
   if (orderRef) {
     const qs = new URLSearchParams();
     qs.set("filters[documentId][$eq]", orderRef);
-    qs.set("pagination[pageSize]", "1");
-    const { res, data } = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
-    if (res.ok) {
-      const first = Array.isArray(data?.data) ? data.data[0] : null;
-      if (first) return first;
-    }
+    const r = await findFirstOrderByFilter(qs);
+    if (r.ok && r.first) return r.first;
   }
 
-  // 3) per id numerico (orderId)
-  if (orderId && /^\d+$—all?/.test(orderId) === false && /^\d+$/.test(orderId)) {
+  // 3) numeric id
+  if (orderId && /^\d+$/.test(orderId)) {
     const qs = new URLSearchParams();
     qs.set("filters[id][$eq]", orderId);
-    qs.set("pagination[pageSize]", "1");
-    const { res, data } = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
-    if (res.ok) {
-      const first = Array.isArray(data?.data) ? data.data[0] : null;
-      if (first) return first;
-    }
+    const r = await findFirstOrderByFilter(qs);
+    if (r.ok && r.first) return r.first;
   }
 
   return null;
 }
 
-async function updateOrderWithFallback(orderRow: any, payload: any) {
-  const idNumeric = orderRow?.id; // quasi sempre c’è
-  const attrs = orderRow?.attributes ?? {};
-  const documentId = orderRow?.documentId ?? attrs?.documentId ?? null;
-
-  // 1) prova con id numerico
-  if (idNumeric != null) {
-    const r1 = await strapiFetch(`/api/orders/${encodeURIComponent(String(idNumeric))}`, {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    });
-    if (r1.res.ok) return { ok: true, via: "id", status: r1.res.status };
-    // se non ok, non ritorno: provo fallback
-  }
-
-  // 2) fallback con documentId
-  if (documentId) {
-    const r2 = await strapiFetch(`/api/orders/${encodeURIComponent(String(documentId))}`, {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    });
-    if (r2.res.ok) return { ok: true, via: "documentId", status: r2.res.status };
-    return { ok: false, status: r2.res.status, details: r2.data ?? r2.text };
-  }
-
-  return { ok: false, status: 404, details: "Missing id/documentId on orderRow" };
-}
-
-function isZeroDecimalCurrency(currency: string) {
-  const zero = new Set(["BIF","CLP","DJF","GNF","JPY","KMF","KRW","MGA","PYG","RWF","UGX","VND","VUV","XAF","XOF","XPF"]);
-  return zero.has(String(currency || "").toUpperCase());
-}
-
-function toMajor(amountMinor: number | null | undefined, currency: string) {
-  if (typeof amountMinor !== "number" || !Number.isFinite(amountMinor)) return null;
-  if (isZeroDecimalCurrency(currency)) return amountMinor;
-  return amountMinor / 100;
+async function updateOrderByNumericId(orderId: number, payload: any) {
+  const r = await strapiFetch(`/api/orders/${encodeURIComponent(String(orderId))}`, {
+    method: "PUT",
+    body: JSON.stringify({ data: payload }),
+  });
+  return r;
 }
 
 function sleep(ms: number) {
@@ -140,6 +112,9 @@ function sleep(ms: number) {
 
 export async function POST(req: Request) {
   try {
+    // ✅ log per capire subito se arrivano webhook
+    console.log("[stripe/webhook] HIT", new Date().toISOString());
+
     const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
     const STRIPE_WEBHOOK_SECRET = requireEnv("STRIPE_WEBHOOK_SECRET");
 
@@ -147,17 +122,18 @@ export async function POST(req: Request) {
     if (!sig) return json({ ok: false, error: "Missing stripe-signature header" }, 400);
 
     const rawBuf = Buffer.from(await req.arrayBuffer());
-
     const stripe = new Stripe(STRIPE_SECRET_KEY);
 
     let event: Stripe.Event;
     try {
       event = stripe.webhooks.constructEvent(rawBuf, sig, STRIPE_WEBHOOK_SECRET);
     } catch (e: any) {
+      console.error("[stripe/webhook] invalid signature", e?.message || e);
       return json({ ok: false, error: "Invalid signature", details: e?.message || String(e) }, 400);
     }
 
-    // Ignora tutto tranne checkout.session.completed
+    console.log("[stripe/webhook] type =", event.type);
+
     if (event.type !== "checkout.session.completed") {
       return json({ ok: true, ignored: true, type: event.type }, 200);
     }
@@ -169,91 +145,57 @@ export async function POST(req: Request) {
       (session.metadata?.orderRef ? String(session.metadata.orderRef) : null) ||
       (session.client_reference_id ? String(session.client_reference_id) : null);
 
-    const orderId =
-      session.metadata?.orderId ? String(session.metadata.orderId) : null;
+    const orderIdMeta = session.metadata?.orderId ? String(session.metadata.orderId) : null;
 
-    const currency = String(session.currency || "eur").toUpperCase();
-
-    // ✅ retry: evita race condition (ordine appena creato / stripeSessionId non ancora scritto)
+    // ✅ retry: ordine appena creato / stripeSessionId scritto “dopo”
     let orderRow: any = null;
-    for (let i = 0; i < 6; i++) {
-      orderRow = await findOrder({ sessionId, orderRef, orderId });
+    for (let i = 0; i < 8; i++) {
+      orderRow = await findOrder({ sessionId, orderRef, orderId: orderIdMeta });
       if (orderRow) break;
-      await sleep(250 + i * 200);
+      await sleep(300 + i * 250);
     }
 
     if (!orderRow) {
-      // 500 così Stripe ritenta (meglio di “silenziare” e perdere l’update)
+      console.error("[stripe/webhook] order NOT found", { sessionId, orderRef, orderIdMeta });
       return json(
         {
           ok: false,
           error: "Order not found on Strapi (will retry).",
-          debug: {
-            sessionId,
-            orderRef,
-            orderId,
-            metadata: session.metadata ?? null,
-            client_reference_id: session.client_reference_id ?? null,
-          },
+          debug: { sessionId, orderRef, orderId: orderIdMeta },
         },
         500
       );
     }
 
-    // Line items (best effort)
-    let items: any[] | null = null;
-    try {
-      const li = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 100 });
-      items = (li.data || []).map((x) => {
-        const qty = x.quantity ?? 0;
-        const unitMinor = x.price?.unit_amount ?? null;
-        const unit = toMajor(unitMinor, currency) ?? 0;
-        return {
-          id: x.price?.product ? String(x.price.product) : x.price?.id ? String(x.price.id) : null,
-          name: x.description ?? "Articolo",
-          qty,
-          price: unit,
-        };
-      });
-    } catch {
-      items = null;
+    const numericId = typeof orderRow?.id === "number" ? orderRow.id : null;
+    if (!numericId) {
+      console.error("[stripe/webhook] missing numeric id on orderRow", orderRow);
+      return json({ ok: false, error: "Order row missing numeric id (will retry)" }, 500);
     }
 
-    const subtotal = toMajor(session.amount_subtotal ?? null, currency);
-    const total = toMajor(session.amount_total ?? null, currency);
-    const shippingTotal = toMajor(session.total_details?.amount_shipping ?? 0, currency) ?? 0;
-    const discountTotal = toMajor(session.total_details?.amount_discount ?? 0, currency) ?? 0;
-
+    const stripePaymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
     const customerEmail =
-      session.customer_details?.email ??
-      session.customer_email ??
-      session.metadata?.customerEmail ??
-      null;
+      session.customer_details?.email ?? session.customer_email ?? session.metadata?.customerEmail ?? null;
 
-    const stripePaymentIntentId =
-      typeof session.payment_intent === "string" ? session.payment_intent : null;
-
-    const updatePayload: any = {
+    const payload: any = {
       orderStatus: "PAID",
       stripeSessionId: sessionId,
       stripePaymentIntentId,
       customerEmail,
-      currency,
-      shippingTotal,
-      discountTotal,
     };
 
-    if (subtotal != null) updatePayload.subtotal = subtotal;
-    if (total != null) updatePayload.total = total;
-    if (items && items.length > 0) updatePayload.items = items;
+    const upd = await updateOrderByNumericId(numericId, payload);
 
-    const upd = await updateOrderWithFallback(orderRow, updatePayload);
-    if (!upd.ok) {
-      // 500 => Stripe ritenta
-      return json({ ok: false, error: "Failed updating order on Strapi", details: upd }, 500);
+    if (!upd.res.ok) {
+      console.error("[stripe/webhook] Strapi update failed", upd.res.status, upd.data ?? upd.text);
+      return json(
+        { ok: false, error: "Failed updating order on Strapi", status: upd.res.status, details: upd.data ?? upd.text },
+        500
+      );
     }
 
-    return json({ ok: true, updated: true, via: upd.via, sessionId }, 200);
+    console.log("[stripe/webhook] updated order", numericId, "=> PAID");
+    return json({ ok: true, updated: true, orderId: numericId, sessionId }, 200);
   } catch (e: any) {
     console.error("[stripe/webhook] error:", e);
     return json({ ok: false, error: "Webhook error", details: e?.message || String(e) }, 500);

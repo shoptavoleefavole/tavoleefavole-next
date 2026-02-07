@@ -1,13 +1,13 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { useRouter, useSearchParams } from "next/navigation";
-import { createPortal } from "react-dom";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import Container from "@/components/Container";
+import MobileMenu from "@/components/MobileMenu";
 import { useCart } from "@/components/cart/CartProvider";
 import { formatEUR } from "@/lib/format";
 
@@ -15,14 +15,6 @@ function MenuIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CloseIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -46,32 +38,29 @@ function CartIcon({ className = "" }: { className?: string }) {
   );
 }
 
-function ChevronRight({ className = "" }: { className?: string }) {
-  return (
-    <svg className={className} width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path d="M7.5 5L12.5 10L7.5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /* ---------------------------
-   Categorie da Strapi (robuste)
+   Categorie (fail-safe)
 ---------------------------- */
 type NavSub = { slug: string; label: string };
-type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
+export type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
 
-const STRAPI_URL =
-  process.env.NEXT_PUBLIC_STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_BASE_URL || "";
+// fallback (menu sempre usabile)
+const FALLBACK_CATEGORIES: NavCat[] = [
+  { slug: "prodotti-per-pasticceria", label: "Prodotti per pasticceria", icon: null, subcategories: [] },
+  { slug: "decorazioni-per-dolci", label: "Decorazioni per dolci", icon: null, subcategories: [] },
+  { slug: "confetti", label: "Confetti", icon: null, subcategories: [] },
+];
 
-const FETCH_TIMEOUT_MS = 8000;
+// ⚠️ usato SOLO per trasformare /uploads/... in URL assoluto per <img>.
+const PUBLIC_STRAPI_URL = String(process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
 
-function absUrl(base: string, maybeUrl: string | null | undefined) {
-  if (!maybeUrl) return null;
-  const u = String(maybeUrl).trim();
-  if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
-  if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
-  return u;
+const FETCH_TIMEOUT_MS = 6500;
+const STORAGE_KEY = "tf_nav_categories_v1";
+const STORAGE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+function safeString(v: unknown, fallback = "") {
+  const s = String(v ?? "").trim();
+  return s || fallback;
 }
 
 function safeJsonParse(text: string): any {
@@ -82,86 +71,109 @@ function safeJsonParse(text: string): any {
   }
 }
 
+function normalizeAssetUrl(raw: unknown): string | null {
+  const s = safeString(raw, "");
+  if (!s) return null;
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("blob:")) return s;
+  if (s.startsWith("/uploads/") && PUBLIC_STRAPI_URL) return `${PUBLIC_STRAPI_URL}${s}`;
+  return s;
+}
+
 function isNavSub(x: any): x is NavSub {
   return x && typeof x === "object" && typeof x.slug === "string" && typeof x.label === "string";
 }
 
 function isNavCat(x: any): x is NavCat {
-  return (
-    x &&
-    typeof x === "object" &&
-    typeof x.slug === "string" &&
-    typeof x.label === "string" &&
-    Array.isArray(x.subcategories)
-  );
+  return x && typeof x === "object" && typeof x.slug === "string" && typeof x.label === "string" && Array.isArray(x.subcategories);
 }
 
 function normalizeStrapiCategory(row: any): NavCat | null {
   const a = row?.attributes ?? row ?? {};
-  const slug: string | undefined = a?.slug;
+  const slug = safeString(a?.slug, "");
   if (!slug) return null;
 
-  const label: string = a?.label ?? a?.name ?? a?.title ?? slug;
+  const label = safeString(a?.label ?? a?.name ?? a?.title, slug);
 
   const iconRaw =
     a?.icon?.data?.attributes?.url ??
     a?.icon?.attributes?.url ??
     a?.icon?.url ??
     a?.iconUrl ??
-    a?.icon ?? // ✅ se l’API route restituisce già una stringa
+    a?.icon ??
     null;
 
-  const icon = STRAPI_URL ? absUrl(STRAPI_URL, iconRaw) : iconRaw;
+  const icon = normalizeAssetUrl(iconRaw);
 
   const subsData = a?.subcategories?.data ?? a?.subcategories ?? [];
   const subcategories: NavSub[] = Array.isArray(subsData)
     ? subsData
         .map((s: any) => {
           const sa = s?.attributes ?? s ?? {};
-          const sSlug = sa?.slug;
+          const sSlug = safeString(sa?.slug, "");
           if (!sSlug) return null;
-          const sLabel = sa?.label ?? sa?.name ?? sa?.title ?? sSlug;
-          return { slug: String(sSlug), label: String(sLabel) };
+          const sLabel = safeString(sa?.label ?? sa?.name ?? sa?.title, sSlug);
+          return { slug: sSlug, label: sLabel };
         })
         .filter(isNavSub)
     : [];
 
-  return { slug: String(slug), label: String(label), icon, subcategories };
+  return { slug, label, icon, subcategories };
 }
 
-async function fetchHeaderCategoriesFromStrapi(signal?: AbortSignal): Promise<NavCat[]> {
-  if (!STRAPI_URL) return [];
-
-  const qs = new URLSearchParams();
-  qs.set("populate[subcategories]", "*");
-  qs.set("populate[icon]", "*");
-  qs.set("pagination[pageSize]", "100");
-  qs.set("sort[0]", "createdAt:asc");
-
-  const url = `${STRAPI_URL.replace(/\/$/, "")}/api/categories?${qs.toString()}`;
-
-  const res = await fetch(url, { cache: "no-store", signal });
-  const text = await res.text().catch(() => "");
-  const json = safeJsonParse(text);
-  if (!res.ok) return [];
-
-  const data: any[] = Array.isArray(json?.data) ? json.data : [];
-  return data.map(normalizeStrapiCategory).filter(isNavCat);
-}
-
-async function fetchHeaderCategoriesRobust(signal?: AbortSignal): Promise<NavCat[]> {
+function loadFromStorage(): NavCat[] | null {
   try {
-    const res = await fetch("/api/nav/categories", { cache: "no-store", signal });
-    if (res.ok) {
-      const json = await res.json().catch(() => null);
-      const data: any[] = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
-      const normalized = data.map(normalizeStrapiCategory).filter(isNavCat);
-      if (normalized.length) return normalized;
-    }
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const json = safeJsonParse(raw);
+    const ts = Number(json?.ts ?? 0);
+    const data = json?.data;
+
+    if (!Number.isFinite(ts) || Date.now() - ts > STORAGE_TTL_MS) return null;
+    if (!Array.isArray(data)) return null;
+
+    const normalized = data.map(normalizeStrapiCategory).filter(isNavCat);
+    return normalized.length ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveToStorage(cats: NavCat[]) {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ts: Date.now(), data: cats }));
   } catch {
     // noop
   }
-  return fetchHeaderCategoriesFromStrapi(signal);
+}
+
+async function fetchWithTimeout(url: string, ms: number, signal?: AbortSignal) {
+  const controller = new AbortController();
+  const t = window.setTimeout(() => controller.abort(), ms);
+
+  const onAbort = () => controller.abort();
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    return res;
+  } finally {
+    window.clearTimeout(t);
+    if (signal) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function fetchHeaderCategories(signal?: AbortSignal): Promise<NavCat[]> {
+  try {
+    const res = await fetchWithTimeout("/api/nav/categories", FETCH_TIMEOUT_MS, signal);
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+
+    const rawList: any[] = Array.isArray(json?.data) ? json.data : Array.isArray(json) ? json : [];
+    const normalized = rawList.map(normalizeStrapiCategory).filter(isNavCat);
+    return normalized.length ? normalized : [];
+  } catch {
+    return [];
+  }
 }
 
 /* ---------------------------
@@ -170,47 +182,56 @@ async function fetchHeaderCategoriesRobust(signal?: AbortSignal): Promise<NavCat
 export default function Header() {
   const { summary } = useCart();
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
 
   const [cat, setCat] = useState(searchParams.get("categoria") ?? "");
   const [q, setQ] = useState(searchParams.get("q") ?? "");
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Drawer accordion (macro aperta)
-  const [openMacroSlug, setOpenMacroSlug] = useState<string | null>(null);
-
-  // Categorie reali
   const [categories, setCategories] = useState<NavCat[]>([]);
   const [catsLoaded, setCatsLoaded] = useState(false);
 
-  const safeCategories = useMemo(() => (Array.isArray(categories) ? categories : []), [categories]);
-  const hasManyCategories = safeCategories.length > 0;
-
-  const drawerRef = useRef<HTMLDivElement | null>(null);
-
-  // Portal mount flag + guard anti-hydration per badge/contatori
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   const cartCount = mounted ? summary.count : 0;
   const cartTotal = mounted ? summary.total : 0;
 
-  // fetch categorie
+  // sync state con URL
+  useEffect(() => {
+    const nextCat = searchParams.get("categoria") ?? "";
+    const nextQ = searchParams.get("q") ?? "";
+    if (nextCat !== cat) setCat(nextCat);
+    if (nextQ !== q) setQ(nextQ);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  // prefill immediato da storage
+  useEffect(() => {
+    if (!mounted) return;
+    const cached = loadFromStorage();
+    if (cached?.length) setCategories(cached);
+  }, [mounted]);
+
+  // fetch categorie (solo API interna)
   useEffect(() => {
     let alive = true;
     const controller = new AbortController();
-    const t = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     (async () => {
       try {
-        const cats = await fetchHeaderCategoriesRobust(controller.signal);
+        const cats = await fetchHeaderCategories(controller.signal);
         if (!alive) return;
-        setCategories(cats);
-      } catch {
-        if (!alive) return;
-        setCategories([]);
+
+        if (cats.length) {
+          setCategories(cats);
+          saveToStorage(cats);
+        } else {
+          setCategories((prev) => (prev.length ? prev : []));
+        }
       } finally {
-        window.clearTimeout(t);
         if (!alive) return;
         setCatsLoaded(true);
       }
@@ -218,49 +239,45 @@ export default function Header() {
 
     return () => {
       alive = false;
-      window.clearTimeout(t);
       controller.abort();
     };
   }, []);
 
+  const safeCategories = useMemo(() => (Array.isArray(categories) ? categories : []), [categories]);
+
+  const displayedCategories = useMemo(() => {
+    if (safeCategories.length > 0) return safeCategories;
+    if (catsLoaded) return FALLBACK_CATEGORIES;
+    return [];
+  }, [safeCategories, catsLoaded]);
+
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const sp = new URLSearchParams(searchParams.toString());
 
-    if (cat) sp.set("categoria", cat);
-    else sp.delete("categoria");
+    const nextQ = q.trim();
+    const nextCat = cat.trim();
 
-    if (q.trim()) sp.set("q", q.trim());
-    else sp.delete("q");
+    // ✅ se vuoto: non fare nulla (niente reload inutile)
+    if (!nextCat && !nextQ) return;
+
+    const sp = new URLSearchParams();
+    const sort = searchParams.get("sort");
+    if (sort) sp.set("sort", sort);
+
+    if (nextCat) sp.set("categoria", nextCat);
+    if (nextQ) sp.set("q", nextQ);
 
     const qs = sp.toString();
-    router.push(qs ? `/catalogo?${qs}` : `/`);
+    const target = qs ? `/catalogo?${qs}` : `/catalogo`;
+
+    // ✅ evita push inutile se sei già sulla stessa URL
+    const current = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
+    if (current === target) return;
+
+    router.push(target);
   }
 
-  // Reset accordion quando chiudi il drawer
-  useEffect(() => {
-    if (!mobileMenuOpen) setOpenMacroSlug(null);
-  }, [mobileMenuOpen]);
-
-  // Scroll lock + ESC to close (mobile drawer)
-  useEffect(() => {
-    if (!mobileMenuOpen) return;
-
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileMenuOpen(false);
-    }
-    window.addEventListener("keydown", onKeyDown);
-
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [mobileMenuOpen]);
-
-  // ✅ Open/close drawer da BottomNav (evento globale)
+  // Open/close menu da eventi globali (bottom nav, ecc.)
   useEffect(() => {
     function onOpen() {
       setMobileMenuOpen(true);
@@ -278,167 +295,7 @@ export default function Header() {
     };
   }, []);
 
-  function closeMenu() {
-    setMobileMenuOpen(false);
-  }
-
-  const drawer = mobileMenuOpen ? (
-    <div className="fixed inset-0 z-[99999]" role="dialog" aria-modal="true" aria-label="Menu">
-      {/* Overlay clickabile */}
-      <button type="button" className="absolute inset-0 bg-black/40" aria-label="Chiudi menu" onClick={closeMenu} />
-
-      {/* Pannello */}
-      <div ref={drawerRef} className="absolute left-0 top-0 h-dvh w-[86%] max-w-[360px] bg-background shadow-xl">
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <span className="text-base font-extrabold">Menu</span>
-          <button
-            type="button"
-            onClick={closeMenu}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label="Chiudi"
-          >
-            <CloseIcon />
-          </button>
-        </div>
-
-        <div className="h-[calc(100dvh-56px)] overflow-y-auto px-3 py-3 pb-24">
-          {/* scorciatoie in alto */}
-          <div className="grid grid-cols-2 gap-2 px-1">
-            <Link
-              href="/account"
-              onClick={closeMenu}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-border bg-background px-3 py-3 text-sm font-extrabold hover:bg-surface-2"
-            >
-              <UserIcon />
-              Account
-            </Link>
-
-            <Link
-              href="/carrello"
-              onClick={closeMenu}
-              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-border bg-background px-3 py-3 text-sm font-extrabold hover:bg-surface-2"
-            >
-              <CartIcon />
-              Carrello ({cartCount})
-            </Link>
-          </div>
-
-          <div className="my-4 border-t border-border" />
-
-          {/* Home + Catalogo */}
-          <div className="space-y-2 px-1">
-            <Link
-              href="/"
-              onClick={closeMenu}
-              className="flex items-center justify-between rounded-2xl border border-border bg-background px-4 py-3 text-sm font-extrabold hover:bg-surface-2"
-            >
-              <span>Home</span>
-              <ChevronRight className="opacity-60" />
-            </Link>
-
-            <Link
-              href="/catalogo"
-              onClick={closeMenu}
-              className="flex items-center justify-between rounded-2xl border border-border bg-background px-4 py-3 text-sm font-extrabold hover:bg-surface-2"
-            >
-              <span>Catalogo</span>
-              <ChevronRight className="opacity-60" />
-            </Link>
-          </div>
-
-          <div className="my-4 border-t border-border" />
-
-          {/* ✅ CATEGORIE */}
-          <div className="px-1">
-            <div className="px-1 text-xs font-extrabold uppercase tracking-wide text-muted-text">
-              Categorie
-            </div>
-
-            {!catsLoaded ? (
-              <div className="mt-3 rounded-2xl border border-border bg-background p-4 text-sm text-muted-text">
-                Caricamento categorie…
-              </div>
-            ) : !hasManyCategories ? (
-              <div className="mt-3 rounded-2xl border border-border bg-background p-4 text-sm text-muted-text">
-                Nessuna categoria configurata.
-              </div>
-            ) : (
-              <ul className="mt-3 space-y-2">
-                {safeCategories.map((c) => {
-                  const isOpen = openMacroSlug === c.slug;
-                  const hasSubs = (c.subcategories ?? []).length > 0;
-
-                  return (
-                    <li key={c.slug} className="rounded-2xl border border-border bg-background">
-                      <button
-                        type="button"
-                        onClick={() => setOpenMacroSlug(isOpen ? null : c.slug)}
-                        className="flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left hover:bg-surface-2"
-                        aria-expanded={isOpen}
-                        aria-controls={`macro-${c.slug}`}
-                      >
-                        <span className="flex min-w-0 items-center gap-3">
-                          {c.icon ? (
-                            <Image
-                              src={c.icon}
-                              alt=""
-                              width={22}
-                              height={22}
-                              sizes="22px"
-                              loading="lazy"
-                              unoptimized
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <span className="h-[22px] w-[22px] rounded-md bg-surface-2" aria-hidden="true" />
-                          )}
-
-                          <span className="min-w-0 truncate text-sm font-extrabold">{c.label}</span>
-                        </span>
-
-                        <ChevronRight
-                          className={`shrink-0 transition-transform ${
-                            hasSubs && isOpen ? "rotate-90" : ""
-                          } ${hasSubs ? "" : "opacity-60"}`}
-                        />
-                      </button>
-
-                      {isOpen ? (
-                        <div id={`macro-${c.slug}`} className="px-4 pb-3">
-                          <div className="ml-8 grid gap-1">
-                            <Link
-                              href={`/categoria/${c.slug}`}
-                              onClick={closeMenu}
-                              className="rounded-xl px-3 py-2 text-sm font-semibold hover:bg-surface-2"
-                            >
-                              Tutti
-                            </Link>
-
-                            {(c.subcategories ?? []).map((sub) => (
-                              <Link
-                                key={sub.slug}
-                                href={`/categoria/${c.slug}/${sub.slug}`}
-                                onClick={closeMenu}
-                                className="rounded-xl px-3 py-2 text-sm font-semibold hover:bg-surface-2"
-                              >
-                                {sub.label}
-                              </Link>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          <div className="h-8" />
-        </div>
-      </div>
-    </div>
-  ) : null;
+  const searchPlaceholder = "Cerca vaniglia, confetti, stampi…";
 
   return (
     <header className="border-b border-border bg-background/90 backdrop-blur">
@@ -506,10 +363,7 @@ export default function Header() {
             />
           </Link>
 
-          <form
-            onSubmit={onSubmit}
-            className="flex flex-1 items-center overflow-hidden rounded-full border border-border bg-white h-11"
-          >
+          <form onSubmit={onSubmit} className="flex flex-1 items-center overflow-hidden rounded-full border border-border bg-white h-11">
             <div className="flex items-center border-r border-border h-11">
               <select
                 value={cat}
@@ -519,7 +373,7 @@ export default function Header() {
               >
                 <option value="">Tutte</option>
                 {!catsLoaded ? <option disabled>Caricamento…</option> : null}
-                {safeCategories.map((c) => (
+                {displayedCategories.map((c) => (
                   <option key={c.slug} value={c.slug}>
                     {c.label}
                   </option>
@@ -528,10 +382,13 @@ export default function Header() {
             </div>
 
             <input
+              type="search"
+              enterKeyHint="search"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Cerca..."
+              placeholder={searchPlaceholder}
               className="h-11 flex-1 px-3 text-sm outline-none"
+              aria-label="Cerca prodotti"
             />
 
             <button
@@ -575,10 +432,7 @@ export default function Header() {
         </div>
 
         {/* MOBILE search */}
-        <form
-          onSubmit={onSubmit}
-          className="md:hidden pb-3 flex h-11 items-center overflow-hidden rounded-full border border-border bg-white"
-        >
+        <form onSubmit={onSubmit} className="md:hidden pb-3 flex h-11 items-center overflow-hidden rounded-full border border-border bg-white">
           <div className="flex items-center border-r border-border h-11">
             <select
               value={cat}
@@ -588,7 +442,7 @@ export default function Header() {
             >
               <option value="">Tutte</option>
               {!catsLoaded ? <option disabled>Caricamento…</option> : null}
-              {safeCategories.map((c) => (
+              {displayedCategories.map((c) => (
                 <option key={c.slug} value={c.slug}>
                   {c.label}
                 </option>
@@ -597,10 +451,13 @@ export default function Header() {
           </div>
 
           <input
+            type="search"
+            enterKeyHint="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Cerca..."
+            placeholder={searchPlaceholder}
             className="h-11 flex-1 px-3 text-sm outline-none"
+            aria-label="Cerca prodotti"
           />
 
           <button
@@ -612,8 +469,14 @@ export default function Header() {
         </form>
       </Container>
 
-      {/* ✅ Drawer via Portal: fullscreen garantito */}
-      {mounted && drawer ? createPortal(drawer, document.body) : null}
+      {/* ✅ UNICA implementazione menu mobile */}
+      <MobileMenu
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        categories={displayedCategories}
+        catsLoaded={catsLoaded}
+        cartCount={cartCount}
+      />
     </header>
   );
 }

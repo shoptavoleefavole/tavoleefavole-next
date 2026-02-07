@@ -16,27 +16,35 @@ import Analytics from "@/components/Analytics";
 import FavoritesProvider from "@/components/favorites/FavoritesProvider";
 import WhatsAppFloatingButton from "@/components/WhatsAppFloatingButton";
 
-function normalizeSiteUrl(input: string) {
-  const s = String(input || "").trim();
-  if (!s) return "http://localhost:3000";
-  if (/^https?:\/\//i.test(s)) return s;
-  return `https://${s}`;
+function normalizeSiteUrl(input: unknown) {
+  const raw = String(input ?? "").trim();
+
+  // dev fallback
+  if (!raw) return "http://localhost:3000";
+
+  // se già con protocollo, ok
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+
+  // se arriva "mydomain.com" o "www...", aggiungo https
+  return `https://${raw}`.replace(/\/+$/, "");
 }
 
-const rawSiteUrl =
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+function computeSite() {
+  const rawSiteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
-let siteUrl = normalizeSiteUrl(rawSiteUrl);
-let site: URL;
+  const siteUrl = normalizeSiteUrl(rawSiteUrl);
 
-try {
-  siteUrl = siteUrl.replace(/\/+$/, "");
-  site = new URL(siteUrl);
-} catch {
-  siteUrl = "http://localhost:3000";
-  site = new URL(siteUrl);
+  try {
+    return { siteUrl, site: new URL(siteUrl) };
+  } catch {
+    const fallback = "http://localhost:3000";
+    return { siteUrl: fallback, site: new URL(fallback) };
+  }
 }
+
+const { siteUrl, site } = computeSite();
 
 const defaultTitle = "Tavole & Favole";
 const defaultDescription =
@@ -46,6 +54,10 @@ export const metadata: Metadata = {
   metadataBase: site,
   title: { template: `%s | ${defaultTitle}`, default: defaultTitle },
   description: defaultDescription,
+
+  alternates: {
+    canonical: siteUrl,
+  },
 
   openGraph: {
     title: defaultTitle,
@@ -74,7 +86,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="it">
+    <html lang="it" suppressHydrationWarning>
       <body className="min-h-dvh bg-background text-text antialiased">
         {/* Skip link accessibilità */}
         <a
