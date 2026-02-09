@@ -24,7 +24,7 @@ const STRAPI_TOKEN =
   "";
 
 const FETCH_TIMEOUT_MS = Number(process.env.CATEGORY_STRAPI_TIMEOUT_MS ?? 6500);
-const PAGE_SIZE = 200; // per ora: lista ampia ma non infinita
+const PAGE_SIZE = 200;
 
 function safeDecode(v: unknown) {
   const s = String(v ?? "").trim();
@@ -60,6 +60,20 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
   return u;
+}
+
+function toNumberOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toIntOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function toBoolOrNull(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
 }
 
 async function fetchWithTimeout(
@@ -104,7 +118,6 @@ async function fetchStrapi(pathOrUrl: string): Promise<FetchStrapiResult> {
       const { text, json } = await read(res);
       if (res.ok) return { ok: true, status: res.status, json, text };
       if (res.status !== 401 && res.status !== 403) return { ok: false, status: res.status, json, text, reason: "http" };
-      // fallback pubblico su 401/403
     }
 
     const res2 = await fetchWithTimeout(fullUrl, { headers: headersNoAuth });
@@ -205,15 +218,25 @@ function normalizeProduct(row: any) {
 
   const imageUrl = absUrl(baseStrapiUrl(), imageUrlRaw);
 
+  // ✅ inventario Strapi
+  const stockQty = toIntOrNull(a?.stockQty);
+  const trackInventory = toBoolOrNull(a?.trackInventory);
+
   return {
     id: row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? null,
     documentId: row?.documentId ?? a?.documentId ?? null,
     name: safeStr(a?.name ?? a?.title, "Prodotto"),
     slug: safeStr(a?.slug),
-    price: a?.price ?? null,
-    compareAtPrice: a?.compareAtPrice ?? null,
+    price: toNumberOrNull(a?.price),
+    compareAtPrice: toNumberOrNull(a?.compareAtPrice),
     shortDescription: a?.shortDescription ?? "",
-    inStock: a?.inStock ?? undefined,
+    // legacy
+    inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
+
+    // ✅ nuovi campi
+    stockQty,
+    trackInventory,
+
     variants,
     image: imageUrl,
     imageUrl,
@@ -239,8 +262,12 @@ async function fetchProductsByMacro(macroSlug: string) {
     qs.set("fields[2]", "price");
     qs.set("fields[3]", "compareAtPrice");
     qs.set("fields[4]", "shortDescription");
-    qs.set("fields[5]", "inStock");
-    qs.set("fields[6]", "createdAt");
+
+    // ✅ inventario
+    qs.set("fields[5]", "stockQty");
+    qs.set("fields[6]", "trackInventory");
+
+    qs.set("fields[7]", "createdAt");
 
     qs.set("populate[images][fields][0]", "url");
     qs.set("populate[images][fields][1]", "formats");
@@ -258,7 +285,6 @@ async function fetchProductsByMacro(macroSlug: string) {
 
     if (!r.ok) return { kind: "unavailable" as const, items: [] as any[] };
 
-    // validation => prova la chiave dopo
     const isValidation = r.status === 400 && r.json?.error?.name === "ValidationError";
     if (isValidation) continue;
 
@@ -266,7 +292,6 @@ async function fetchProductsByMacro(macroSlug: string) {
     return { kind: "ok" as const, items: data.map(normalizeProduct) };
   }
 
-  // tutte validation => vuoto, ma niente crash
   return { kind: "ok" as const, items: [] as any[] };
 }
 
@@ -291,14 +316,22 @@ export default async function MacroPage({
   const prodRes = await fetchProductsByMacro(macroSlug);
   const items = prodRes.items ?? [];
 
-  // Availability (mai deve rompere)
-  const skus = Array.from(
-    new Set(
-      items
-        .map((x: any) => getDefaultSku(x))
-        .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
-    )
-  );
+  // ✅ Chi ha stockQty/trackInventory non ha bisogno della availability esterna
+  const needsExternalAvailability = items.some((it: any) => {
+    const track = it?.trackInventory !== false;
+    const hasQty = typeof it?.stockQty === "number";
+    return track && !hasQty;
+  });
+
+  const skus = needsExternalAvailability
+    ? Array.from(
+        new Set(
+          items
+            .map((x: any) => getDefaultSku(x))
+            .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
+        )
+      )
+    : [];
 
   let bySku: any = {};
   try {
@@ -309,13 +342,27 @@ export default async function MacroPage({
   }
 
   const itemsWithStock = items.map((it: any) => {
+    const track = it?.trackInventory !== false; // default true
+    const hasQty = typeof it?.stockQty === "number";
     const sku = getDefaultSku(it);
+
     const row = sku ? bySku?.[sku] ?? null : null;
     const available = Number(row?.available ?? 0);
 
+    // ✅ priorità:
+    // 1) trackInventory=false => sempre true
+    // 2) stockQty presente => stockQty>0
+    // 3) altrimenti availability (se presente)
+    // 4) fallback legacy inStock
+    const computedInStock =
+      track === false ? true :
+      hasQty ? it.stockQty > 0 :
+      sku ? available > 0 :
+      Boolean(it?.inStock);
+
     return {
       ...it,
-      inStock: sku ? available > 0 : Boolean(it?.inStock),
+      inStock: computedInStock,
       inventory: row,
       sku,
     };

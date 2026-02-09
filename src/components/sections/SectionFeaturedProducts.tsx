@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Container from "@/components/Container";
 import ProductCard from "@/components/ProductCard";
-import { products } from "@/lib/data";
+import AddToCartButton from "@/components/cart/AddToCartButton";
+import { products as mockProducts } from "@/lib/data";
 import type { HomeCta } from "@/config/home";
 
 type Props = {
@@ -12,6 +13,12 @@ type Props = {
   subtitle?: string;
   viewAll?: HomeCta;
   limit?: number;
+
+  /**
+   * ✅ In futuro: passa qui i prodotti reali da Strapi (server-side)
+   * Esempio: <SectionFeaturedProducts products={productsFromStrapi} />
+   */
+  products?: any[];
 };
 
 function ArrowLeftIcon({ className = "" }: { className?: string }) {
@@ -30,12 +37,37 @@ function ArrowRightIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function toId(p: any): string {
+  return String(p?.documentId ?? p?.id ?? "").trim();
+}
+
+function toSlug(p: any): string {
+  return String(p?.slug ?? "").trim();
+}
+
+function toName(p: any): string {
+  return String(p?.name ?? "Prodotto").trim();
+}
+
+function toImage(p: any): string | undefined {
+  return p?.image ?? undefined;
+}
+
+function toPrice(p: any): number {
+  const n = Number(p?.price);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
 export default function SectionFeaturedProducts(props: Props) {
   const limit = props.limit ?? 8;
-  const featured = useMemo(() => products.slice(0, limit), [limit]);
+
+  // ✅ Fonte dati: se props.products esiste usa quello, altrimenti mock
+  const source = (props.products?.length ? props.products : mockProducts) as any[];
+
+  const featured = useMemo(() => source.slice(0, limit), [source, limit]);
 
   const title = props.title ?? "Prodotti in evidenza";
-  const subtitle = props.subtitle ?? "Selezione mock basata su popolarità.";
+  const subtitle = props.subtitle ?? "Selezione consigliata del momento.";
   const viewAll = props.viewAll ?? { label: "Vedi tutti", href: "/catalogo" };
 
   // Desktop carousel
@@ -78,7 +110,6 @@ export default function SectionFeaturedProducts(props: Props) {
     const el = railRef.current;
     if (!el) return;
 
-    // Scorri di ~1 "pagina" (con un po' di margine)
     const amount = Math.max(240, Math.floor(el.clientWidth * 0.9));
     el.scrollBy({ left: dir * amount, behavior: "smooth" });
   }
@@ -92,30 +123,40 @@ export default function SectionFeaturedProducts(props: Props) {
             {subtitle ? <p className="mt-1 text-sm text-muted-text smart-wrap">{subtitle}</p> : null}
           </div>
 
-          <Link href={viewAll.href} className="text-sm text-link hover:text-link-hover tap-target">
-            {viewAll.label}
-          </Link>
+          {viewAll?.href ? (
+            <Link href={viewAll.href} className="text-sm text-link hover:text-link-hover tap-target">
+              {viewAll.label}
+            </Link>
+          ) : null}
         </div>
 
-        {/*
-          MOBILE: rail touch con scroll-snap (invariato)
-        */}
+        {/* MOBILE */}
         <div className="mt-6 md:hidden">
           <div className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-2 no-scrollbar [scroll-snap-type:x_mandatory]">
             {featured.map((p) => (
-              <div key={p.id} className="w-[240px] flex-none [scroll-snap-align:start]">
-                <ProductCard product={p} />
+              <div key={toId(p) || toSlug(p)} className="w-[240px] flex-none [scroll-snap-align:start] h-full">
+                <ProductCard
+                  product={p}
+                  footer={
+                    <AddToCartButton
+                      id={toId(p)}
+                      slug={toSlug(p)}
+                      name={toName(p)}
+                      image={toImage(p)}
+                      price={toPrice(p)}
+                      stockQty={p?.stockQty ?? null}
+                      trackInventory={p?.trackInventory}
+                    />
+                  }
+                />
               </div>
             ))}
           </div>
         </div>
 
-        {/*
-          DESKTOP: carousel con frecce + snap
-        */}
+        {/* DESKTOP */}
         <div className="mt-6 hidden md:block">
           <div className="relative">
-            {/* Freccia sinistra */}
             {canScroll ? (
               <button
                 type="button"
@@ -130,7 +171,6 @@ export default function SectionFeaturedProducts(props: Props) {
               </button>
             ) : null}
 
-            {/* Freccia destra */}
             {canScroll ? (
               <button
                 type="button"
@@ -145,23 +185,31 @@ export default function SectionFeaturedProducts(props: Props) {
               </button>
             ) : null}
 
-            {/* Rail */}
             <div
               ref={railRef}
               className={`-mx-2 flex gap-4 overflow-x-auto px-2 pb-2 no-scrollbar [scroll-snap-type:x_mandatory]
                 ${canScroll ? "scroll-smooth" : ""}`}
             >
               {featured.map((p) => (
-                <div
-                  key={p.id}
-                  className="w-[260px] lg:w-[280px] flex-none [scroll-snap-align:start]"
-                >
-                  <ProductCard product={p} />
+                <div key={toId(p) || toSlug(p)} className="w-[260px] lg:w-[280px] flex-none [scroll-snap-align:start] h-full">
+                  <ProductCard
+                    product={p}
+                    footer={
+                      <AddToCartButton
+                        id={toId(p)}
+                        slug={toSlug(p)}
+                        name={toName(p)}
+                        image={toImage(p)}
+                        price={toPrice(p)}
+                        stockQty={p?.stockQty ?? null}
+                        trackInventory={p?.trackInventory}
+                      />
+                    }
+                  />
                 </div>
               ))}
             </div>
 
-            {/* Fade laterali “Deghi-like” (solo se scrollabile) */}
             {canScroll ? (
               <>
                 <div

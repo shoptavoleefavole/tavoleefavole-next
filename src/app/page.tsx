@@ -16,10 +16,16 @@ type HomeProduct = {
   name: string;
   price: number;
   compareAtPrice?: number | null;
-  image?: string; // string | undefined
+  image?: string;
   images: string[];
   shortDescription?: string;
   sku?: string | null;
+
+  // ✅ Inventario Strapi (fonte verità)
+  stockQty?: number | null;
+  trackInventory?: boolean | null;
+
+  // (legacy / fallback)
   inStock?: boolean;
 };
 
@@ -71,6 +77,15 @@ function safeJsonParse(text: string): any {
 function toNumber(v: any): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function toInt(v: any): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function toBool(v: any): boolean | null {
+  return typeof v === "boolean" ? v : null;
 }
 
 function getDefaultSku(item: any): string | null {
@@ -228,6 +243,10 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   const id = String(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? slug);
   const sku = getDefaultSku(a);
 
+  // ✅ inventario Strapi
+  const stockQty = toInt(a?.stockQty);
+  const trackInventory = toBool(a?.trackInventory);
+
   return {
     id,
     strapiId,
@@ -239,6 +258,11 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
     images: imgs,
     shortDescription: String(a?.shortDescription ?? "").trim() || undefined,
     sku,
+
+    stockQty,
+    trackInventory,
+
+    // fallback (se esiste ancora in Strapi)
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
   };
 }
@@ -250,7 +274,11 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[2]", "price");
   qs.set("fields[3]", "compareAtPrice");
   qs.set("fields[4]", "shortDescription");
-  qs.set("fields[5]", "inStock");
+
+  // ✅ inventario
+  qs.set("fields[5]", "stockQty");
+  qs.set("fields[6]", "trackInventory");
+
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
@@ -273,7 +301,11 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[2]", "price");
   qs.set("fields[3]", "compareAtPrice");
   qs.set("fields[4]", "shortDescription");
-  qs.set("fields[5]", "inStock");
+
+  // ✅ inventario
+  qs.set("fields[5]", "stockQty");
+  qs.set("fields[6]", "trackInventory");
+
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
@@ -290,6 +322,10 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
+/**
+ * ✅ Manteniamo la tua availability esterna, ma NON deve sovrascrivere lo stock Strapi.
+ * Quindi: aggiorniamo `inStock` solo se manca stockQty (o trackInventory è nullo).
+ */
 async function withAvailability(items: HomeProduct[]) {
   const skus = Array.from(
     new Set(items.map((p) => p.sku).filter((x): x is string => typeof x === "string" && x.length > 0))
@@ -301,6 +337,12 @@ async function withAvailability(items: HomeProduct[]) {
   const bySku = (availability as any)?.data?.MAIN ?? {};
 
   return items.map((p) => {
+    const track = p.trackInventory !== false; // default true
+    const hasQty = typeof p.stockQty === "number";
+
+    // ✅ Se Strapi ci dà stockQty e trackInventory=true, NON tocchiamo inStock
+    if (track && hasQty) return p;
+
     if (!p.sku) return p;
     const row = bySku?.[p.sku] ?? null;
     const available = Number(row?.available ?? 0);
@@ -435,7 +477,15 @@ function ProductRail(props: {
             const hasSale =
               p.compareAtPrice != null && Number(p.compareAtPrice) > Number(p.price) && p.price > 0;
 
-            const canBuy = (p.inStock ?? true) && p.price > 0;
+            // ✅ Regola disponibilità:
+            // - se trackInventory=false -> sempre acquistabile
+            // - se stockQty è numero -> acquistabile solo se > 0
+            // - altrimenti fallback su p.inStock
+            const track = p.trackInventory !== false;
+            const hasQty = typeof p.stockQty === "number";
+            const isOutOfStock = track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
+
+            const canBuy = !isOutOfStock && p.price > 0;
 
             const favoriteProductId =
               p.strapiId ?? (Number.isFinite(Number(p.id)) ? Number(p.id) : p.id);
@@ -489,7 +539,11 @@ function ProductRail(props: {
                       image={p.image}
                       price={p.price}
                       qty={1}
-                      inStock={p.inStock ?? true}
+                      // ✅ passiamo inventario Strapi
+                      stockQty={p.stockQty ?? null}
+                      trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
+                      // fallback (non usato se stockQty c'è)
+                      inStock={!isOutOfStock}
                       disabledLabel="Esaurito"
                     />
                   ) : (
@@ -563,7 +617,6 @@ const BISCOTTI_PAGE_HREF = "/stampe-biscotti-personalizzate";
 function PersonalizedPrintsCarouselBlock() {
   return (
     <section className="mt-10">
-      {/* ✅ NO styled-jsx: questo è un normale <style> compatibile con Server Components */}
       <style>{`
         @keyframes tfSlideA {
           0% { opacity: 1; visibility: visible; transform: translateY(0); }
@@ -591,7 +644,6 @@ function PersonalizedPrintsCarouselBlock() {
         </div>
 
         <div className="relative grid">
-          {/* SLIDE A: CIALDE */}
           <div className="tf-slideA col-start-1 row-start-1" style={{ animation: "tfSlideA 8s infinite ease-in-out" }}>
             <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
               <div className="lg:col-span-6">
@@ -652,7 +704,6 @@ function PersonalizedPrintsCarouselBlock() {
             </div>
           </div>
 
-          {/* SLIDE B: BISCOTTI */}
           <div className="tf-slideB col-start-1 row-start-1" style={{ animation: "tfSlideB 8s infinite ease-in-out" }}>
             <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
               <div className="lg:col-span-6">
@@ -701,8 +752,6 @@ function PersonalizedPrintsCarouselBlock() {
                     WhatsApp
                   </a>
                 </div>
-
-
 
                 <p className="mt-3 text-xs text-text/70">
                   Foglio A4 con stampe da ritagliare. Consegna a casa o ritiro in negozio.

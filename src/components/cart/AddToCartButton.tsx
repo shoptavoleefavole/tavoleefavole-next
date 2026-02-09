@@ -28,8 +28,17 @@ type Props = {
   /** se true, disabilita il bottone (forzato) */
   disabled?: boolean;
 
-  /** se false, NON può entrare nel carrello (UI + sicurezza) */
+  /**
+   * Compatibilità vecchia: se false, NON può entrare nel carrello
+   * (ma ora consigliamo stockQty/trackInventory)
+   */
   inStock?: boolean;
+
+  /** ✅ Nuovo: quantità stock (se presente, guida la disponibilità) */
+  stockQty?: number | null;
+
+  /** ✅ Nuovo: se false, sempre acquistabile */
+  trackInventory?: boolean;
 
   /** opzionale: meta per prodotti personalizzati (es. cialde) */
   meta?: CartItemMeta;
@@ -56,6 +65,11 @@ function toSafeQty(v: unknown): number {
   return Math.max(1, Math.floor(n));
 }
 
+function toFiniteNumberOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export default function AddToCartButton({
   id,
   slug,
@@ -69,6 +83,8 @@ export default function AddToCartButton({
   disabledLabel = "Non disponibile",
   disabled = false,
   inStock = true,
+  stockQty,
+  trackInventory,
   meta,
   onAdded,
 }: Props) {
@@ -93,8 +109,18 @@ export default function AddToCartButton({
     };
   }, [id, slug, name, image, price, qty]);
 
+  // ✅ Disponibilità robusta:
+  // 1) Se trackInventory === false => sempre acquistabile
+  // 2) Se stockQty è un numero => acquistabile solo se > 0
+  // 3) Altrimenti fallback su inStock (vecchio)
+  const track = trackInventory !== false; // default true
+  const qtyNumber = stockQty === null ? null : toFiniteNumberOrNull(stockQty);
+
+  const computedInStock =
+    track === false ? true : qtyNumber !== null ? qtyNumber > 0 : inStock !== false;
+
   // Regole di disabilitazione “a prova di sicurezza”
-  const isUnavailable = inStock === false;
+  const isUnavailable = computedInStock === false;
   const isNotBuyable = normalized.price <= 0 || !normalized.id || !normalized.slug;
   const isDisabled = busy || disabled || isUnavailable || isNotBuyable;
 
@@ -116,7 +142,7 @@ export default function AddToCartButton({
           } as any,
           normalized.qty,
           meta,
-          { inStock }
+          { inStock: computedInStock }
         )
       );
 
@@ -141,7 +167,13 @@ export default function AddToCartButton({
     ? loadingLabel
     : label;
 
-  const text = busy ? loadingLabel : isUnavailable ? disabledLabel : isNotBuyable ? "Non acquistabile" : label;
+  const text = busy
+    ? loadingLabel
+    : isUnavailable
+    ? disabledLabel
+    : isNotBuyable
+    ? "Non acquistabile"
+    : label;
 
   return (
     <button
@@ -151,21 +183,8 @@ export default function AddToCartButton({
       onClick={handleClick}
       aria-label={text}
       title={title}
-      data-in-stock={String(inStock)}
+      data-in-stock={String(computedInStock)}
       data-disabled={String(disabled)}
-      style={
-        // Se usi Tailwind (className), lo style non serve.
-        // Ma se NON passi className, questo fallback mantiene un bottone decente.
-        className
-          ? undefined
-          : {
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid #ddd",
-              cursor: isDisabled ? "not-allowed" : "pointer",
-              fontWeight: 900,
-            }
-      }
     >
       {text}
     </button>

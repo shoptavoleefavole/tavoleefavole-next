@@ -4,6 +4,7 @@ import Link from "next/link";
 import Container from "@/components/Container";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import ProductCard from "@/components/ProductCard";
+import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getOccasionBySlug, getProductsForOccasion, occasions } from "@/lib/data";
 
 type OccasionParams = { slug: string };
@@ -11,7 +12,6 @@ type OccasionParams = { slug: string };
 export async function generateMetadata({
   params,
 }: {
-  // ✅ Next 15 types: params spesso è Promise
   params: Promise<OccasionParams>;
 }): Promise<Metadata> {
   const { slug } = await params;
@@ -19,13 +19,30 @@ export async function generateMetadata({
 
   return {
     title: occ ? `Ricorrenza: ${occ.name}` : "Ricorrenza",
-    description: occ?.description ?? "Pagina ricorrenza (mock)",
+    description: occ?.description ?? "Pagina ricorrenza",
     openGraph: {
       title: occ ? `Ricorrenza: ${occ.name}` : "Ricorrenza",
-      description: occ?.description ?? "Pagina ricorrenza (mock)",
+      description: occ?.description ?? "Pagina ricorrenza",
       images: occ?.heroImage ? [{ url: occ.heroImage }] : [],
     },
   };
+}
+
+function toId(p: any): string {
+  return String(p?.documentId ?? p?.id ?? "").trim();
+}
+function toSlug(p: any): string {
+  return String(p?.slug ?? "").trim();
+}
+function toName(p: any): string {
+  return String(p?.name ?? "Prodotto").trim();
+}
+function toImage(p: any): string | undefined {
+  return p?.image ?? undefined;
+}
+function toPrice(p: any): number {
+  const n = Number(p?.price);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 export default async function OccasionPage({
@@ -92,8 +109,23 @@ export default async function OccasionPage({
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {list.map((p) => (
-                <ProductCard key={p.id} product={p} />
+              {list.map((p: any) => (
+                <div key={toId(p) || toSlug(p)} className="h-full">
+                  <ProductCard
+                    product={p}
+                    footer={
+                      <AddToCartButton
+                        id={toId(p)}
+                        slug={toSlug(p)}
+                        name={toName(p)}
+                        image={toImage(p)}
+                        price={toPrice(p)}
+                        stockQty={p?.stockQty ?? null}
+                        trackInventory={p?.trackInventory}
+                      />
+                    }
+                  />
+                </div>
               ))}
             </div>
           )}

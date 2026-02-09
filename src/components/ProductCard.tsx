@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Product } from "@/lib/types";
@@ -28,7 +29,18 @@ function isRemoteStrapiUrl(src?: string) {
   return /^https?:\/\//i.test(src) && src.includes("onrender.com/uploads/");
 }
 
-export default function ProductCard({ product }: { product: Product }) {
+function toFiniteNumberOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+export default function ProductCard({
+  product,
+  footer,
+}: {
+  product: Product;
+  footer?: ReactNode;
+}) {
   const p: any = product;
 
   const slug = getSlug(p);
@@ -37,14 +49,23 @@ export default function ProductCard({ product }: { product: Product }) {
 
   const imgSrc = (p?.image ?? undefined) as string | undefined;
   const badgeText = (p?.badge ?? undefined) as string | undefined;
-  const inStock = p?.inStock;
+
+  // ✅ Nuova logica inventario (robusta)
+  // trackInventory: default true
+  const trackInventory: boolean = p?.trackInventory !== false;
+
+  // stockQty: deve essere numero
+  const stockQty: number | null = toFiniteNumberOrNull(p?.stockQty);
+
+  // ✅ "Non disponibile" SOLO se stockQty è presente ed è <= 0 (e trackInventory true)
+  // Se stockQty non arriva (null), NON mostriamo "Non disponibile" per evitare falsi negativi.
+  const isOutOfStock = trackInventory && stockQty !== null && stockQty <= 0;
 
   const href = slug ? `/prodotto/${slug}` : "#";
-
   const disableOptimizer = isRemoteStrapiUrl(imgSrc);
 
   return (
-    <div className="group overflow-hidden rounded-2xl border bg-white shadow-sm">
+    <div className="group h-full overflow-hidden rounded-2xl border bg-white shadow-sm flex flex-col">
       <div className="relative">
         <Link
           href={href}
@@ -74,7 +95,8 @@ export default function ProductCard({ product }: { product: Product }) {
           </div>
         ) : null}
 
-        {inStock === false ? (
+        {/* ✅ Mostra SOLO se realmente esaurito */}
+        {isOutOfStock ? (
           <div className="pointer-events-none absolute left-3 bottom-3 z-10 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold">
             Non disponibile
           </div>
@@ -94,14 +116,20 @@ export default function ProductCard({ product }: { product: Product }) {
         ) : null}
       </div>
 
-      <div className="p-4">
+      {/* ✅ layout a colonna per allineare eventuale footer/CTA */}
+      <div className="p-4 flex flex-col flex-1">
         <Link href={href} className="block">
-          <div className="line-clamp-2 font-semibold">{name || "Prodotto"}</div>
+          {/* min-h = altezze più uniformi tra card */}
+          <div className="line-clamp-2 min-h-[2.75rem] font-semibold">{name || "Prodotto"}</div>
         </Link>
 
         <div className="mt-2 flex items-baseline gap-2">
           <div className="font-bold">{formatEUR(p?.price)}</div>
         </div>
+
+        {/* ✅ Se in futuro vuoi mettere qui il bottone "Aggiungi al carrello",
+            questo footer resta sempre allineato in basso */}
+        {footer ? <div className="mt-auto pt-4">{footer}</div> : null}
       </div>
     </div>
   );

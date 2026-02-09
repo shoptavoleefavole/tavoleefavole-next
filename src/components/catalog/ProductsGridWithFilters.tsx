@@ -8,15 +8,23 @@ import { formatEUR } from "@/lib/format";
 
 type Product = {
   id: string;
+  documentId?: string;
   slug: string;
   name: string;
   price: number | string;
   compareAtPrice?: number | string | null;
   image?: string;
+  imageUrl?: string;
   isNew?: boolean;
+
+  // legacy/fallback
   inStock?: boolean;
 
-  // opzionali (mock/compat): se esistono li usiamo, altrimenti fallback
+  // ✅ inventario Strapi
+  stockQty?: number | null;
+  trackInventory?: boolean | null;
+
+  // opzionali (mock/compat)
   popularity?: number;
   createdAt?: string; // ISO string
 };
@@ -34,6 +42,32 @@ function toTime(v: unknown): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+function toIntOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function isBool(v: unknown): v is boolean {
+  return typeof v === "boolean";
+}
+
+/**
+ * ✅ Regola unica disponibilità:
+ * - trackInventory=false  => sempre disponibile
+ * - trackInventory=true (default) e stockQty numero => disponibile solo se stockQty > 0
+ * - altrimenti fallback su inStock (se presente)
+ * - default finale: true (non blocchiamo acquisto senza dati certi)
+ */
+function isProductInStock(p: Product): boolean {
+  const track = p.trackInventory !== false; // default true
+  const qty = toIntOrNull(p.stockQty);
+
+  if (!track) return true;
+  if (typeof qty === "number") return qty > 0;
+  if (isBool(p.inStock)) return p.inStock;
+  return true;
+}
+
 export default function ProductsGridWithFilters({
   items,
   emptyText = "Nessun prodotto trovato.",
@@ -47,14 +81,12 @@ export default function ProductsGridWithFilters({
   const pathname = usePathname() ?? "/catalogo";
   const searchParams = useSearchParams();
 
-  // ✅ q: inizializza da URL se presente, altrimenti usa initialQuery
   const [q, setQ] = useState(() => searchParams.get("q") ?? initialQuery);
 
   const [inStockOnly, setInStockOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [saleOnly, setSaleOnly] = useState(false);
 
-  // ✅ sort: da URL -> default "popularity"
   const [sort, setSort] = useState<SortValue>(() => {
     const raw = (searchParams.get("sort") ?? "popularity").toLowerCase();
     if (raw === "price_asc") return "price_asc";
@@ -63,7 +95,6 @@ export default function ProductsGridWithFilters({
     return "popularity";
   });
 
-  // ✅ se l’utente cambia la URL manualmente, allinea lo state (solo q/sort)
   useEffect(() => {
     const urlQ = searchParams.get("q") ?? "";
     if (urlQ !== q) setQ(urlQ);
@@ -103,7 +134,6 @@ export default function ProductsGridWithFilters({
     setSaleOnly(false);
     setSort("popularity");
 
-    // ✅ ripulisce solo i parametri che gestiamo qui (preserva `categoria`)
     setParam("q", null);
     setParam("sort", null);
   }
@@ -118,7 +148,9 @@ export default function ProductsGridWithFilters({
     let list = items.filter((p) => {
       if (query && !p.name?.toLowerCase().includes(query)) return false;
 
-      if (inStockOnly && p.inStock === false) return false;
+      const inStock = isProductInStock(p);
+      if (inStockOnly && !inStock) return false;
+
       if (newOnly && !p.isNew) return false;
 
       const hasSale = p.compareAtPrice != null && toNumber(p.compareAtPrice) > toNumber(p.price);
@@ -127,7 +159,6 @@ export default function ProductsGridWithFilters({
       return true;
     });
 
-    // ✅ sorting richiesto
     switch (sort) {
       case "price_asc":
         list = [...list].sort((a, b) => toNumber(a.price) - toNumber(b.price));
@@ -139,17 +170,14 @@ export default function ProductsGridWithFilters({
 
       case "newest":
         list = [...list].sort((a, b) => {
-          // 1) se c’è createdAt, usalo
           const ta = toTime((a as any).createdAt);
           const tb = toTime((b as any).createdAt);
           if (ta !== 0 || tb !== 0) return tb - ta;
 
-          // 2) fallback: isNew
           const na = Number(!!a.isNew);
           const nb = Number(!!b.isNew);
           if (na !== nb) return nb - na;
 
-          // 3) fallback stabile: id
           return String(b.id).localeCompare(String(a.id));
         });
         break;
@@ -157,17 +185,15 @@ export default function ProductsGridWithFilters({
       case "popularity":
       default:
         list = [...list].sort((a, b) => {
-          // 1) se esiste popularity nel mock, usalo
           const pa = Number((a as any).popularity ?? 0);
           const pb = Number((b as any).popularity ?? 0);
           if (pa !== pb) return pb - pa;
 
-          // 2) fallback: inStock prima (più utile in ecommerce)
-          const sa = Number(a.inStock !== false);
-          const sb = Number(b.inStock !== false);
+          // disponibili prima
+          const sa = Number(isProductInStock(a));
+          const sb = Number(isProductInStock(b));
           if (sa !== sb) return sb - sa;
 
-          // 3) fallback stabile
           return String(a.id).localeCompare(String(b.id));
         });
         break;
@@ -262,18 +288,21 @@ export default function ProductsGridWithFilters({
             const compare = p.compareAtPrice != null ? toNumber(p.compareAtPrice) : null;
             const hasSale = compare != null && compare > price;
 
-            // 🔒 id: proviamo a tenerlo stabile, altrimenti fallback su slug
-            const id = (p as any).documentId ?? p.id ?? p.slug;
+            const id = (p as any).documentId ?? p.documentId ?? p.id ?? p.slug;
             const slug = p.slug ?? String(p.id);
 
-            // immagini: preferiamo p.image / p.imageUrl; fallback logo
-            const image = (p as any).imageUrl ?? p.image ?? "/brand/tavoleefavole-logo.svg";
+            const image = (p as any).imageUrl ?? p.imageUrl ?? p.image ?? "/brand/tavoleefavole-logo.svg";
 
-            const disabled = p.inStock === false;
+            const inStock = isProductInStock(p);
+            const notBuyable = price <= 0;
+            const isDisabled = !inStock || notBuyable;
 
             return (
-              <div key={String(id)} className="rounded-2xl border border-border bg-background p-3 hover:shadow-sm">
-                {/* Link solo su immagine + titolo (così il bottone non naviga) */}
+              <div
+                key={String(id)}
+                className="rounded-2xl border border-border bg-background p-3 hover:shadow-sm flex h-full flex-col"
+              >
+                {/* Link solo su immagine + titolo */}
                 <Link href={`/prodotto/${slug}`} className="block">
                   <div className="aspect-[4/3] overflow-hidden rounded-xl bg-surface-2/60">
                     {image ? (
@@ -300,16 +329,30 @@ export default function ProductsGridWithFilters({
                   {hasSale ? (
                     <span className="rounded-full border border-border px-2 py-0.5 text-xs font-semibold">Offerta</span>
                   ) : null}
-                  {disabled ? (
+                  {!inStock ? (
                     <span className="rounded-full border border-red-200 px-2 py-0.5 text-xs font-semibold text-red-600">
                       Non disponibile
                     </span>
                   ) : null}
                 </div>
 
-                {/* ✅ CTA carrello */}
-                <div className="mt-3 flex justify-end">
-                  <AddToCartButton id={id} slug={slug} name={p.name} image={image} price={price} qty={1} />
+                {/* ✅ CTA sempre in basso e allineata */}
+                <div className="mt-auto pt-3">
+                  <AddToCartButton
+                    id={String(id)}
+                    slug={slug}
+                    name={p.name}
+                    image={image}
+                    price={price}
+                    qty={1}
+                    inStock={inStock}
+                    disabled={isDisabled}
+                    disabledLabel={notBuyable ? "Non acquistabile" : "Esaurito"}
+                    className="h-11 w-full rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    // ✅ passiamo anche inventario (se il tuo AddToCartButton lo supporta)
+                    stockQty={typeof p.stockQty === "number" ? p.stockQty : undefined}
+                    trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
+                  />
                 </div>
               </div>
             );
