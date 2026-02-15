@@ -247,11 +247,20 @@ const variants: ProductVariant[] = Array.isArray(variantsData)
 
 // -------- fetch helpers (robusti)
 
-async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), init.timeoutMs ?? FETCH_TIMEOUT_MS);
+
+  // non propagare timeoutMs a fetch
+  const { timeoutMs: _timeoutMs, ...rest } = init;
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    // ✅ IMPORTANTISSIMO:
+    // non forziamo cache:no-store qui, altrimenti confligge con next.revalidate
+    return await fetch(url, { ...rest, signal: controller.signal });
   } finally {
     clearTimeout(t);
   }
