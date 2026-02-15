@@ -1,6 +1,5 @@
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
-import { getAvailability } from "@/lib/inventory.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +11,11 @@ export const dynamic = "force-dynamic";
  * - Prezzi aziende solo se approved
  * - Cialde: prezzo server-side
  * - Inventory check (SKU, warehouse MAIN)
+ *
+ * ✅ Hardening:
+ * - no secrets in response
+ * - no throw/import-time env checks (build-safe)
+ * - retry+timeout per Strapi
  */
 
 type CartItemMeta = Record<string, any>;
@@ -41,19 +45,19 @@ type ApiBody = {
   customerEmail?: string;
 };
 
-function json(data: any, status = 200) {
+function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-route": "v14-no-undici-timeout-retry",
+      "x-checkout-route": "start",
     },
   });
 }
 
 function safeJsonParse(text: string) {
   try {
-    return JSON.parse(text);
+    return text ? JSON.parse(text) : null;
   } catch {
     return null;
   }
@@ -261,10 +265,7 @@ async function fetchWithRetry(url: string, init: RequestInit = {}, ms = STRAPI_T
       return await fetchWithTimeout(url, init, ms);
     } catch (e: any) {
       lastErr = e;
-
       if (!isRetryableFetchError(e) || i === 2) break;
-
-      // backoff: 500ms, 1000ms
       await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
     }
   }
@@ -279,11 +280,13 @@ async function strapiRequest(
   init: RequestInit,
   timeoutMs = STRAPI_TIMEOUT_MS
 ) {
+  const url = `${strapiBaseUrl(STRAPI_URL)}${path}`;
   const res = await fetchWithRetry(
-    `${strapiBaseUrl(STRAPI_URL)}${path}`,
+    url,
     {
       ...init,
       headers: {
+        Accept: "application/json",
         Authorization: `Bearer ${STRAPI_API_TOKEN}`,
         "Content-Type": "application/json",
         ...(init.headers || {}),
@@ -294,7 +297,7 @@ async function strapiRequest(
 
   const text = await res.text().catch(() => "");
   const data = text ? safeJsonParse(text) : null;
-  return { res, text, data };
+  return { res, text, data, url };
 }
 
 /** Stripe: zero-decimal currencies */
@@ -672,6 +675,9 @@ async function checkInventoryOrThrow(args: {
   const skus = Array.from(need.keys());
   if (!skus.length) return;
 
+  // ✅ lazy import (build-safe se mancano ENV in inventory.server)
+  const { getAvailability } = await import("@/lib/inventory.server");
+
   const availability = await getAvailability({ skus, warehouse });
   const insufficient: Array<{ sku: string; requested: number; available: number; name: string }> = [];
 
@@ -703,41 +709,34 @@ export async function POST(request: Request) {
     const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN || "";
     const SITE_URL_RAW = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 
-    if (!STRIPE_SECRET_KEY) return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
-    if (!STRIPE_SECRET_KEY.startsWith("sk_"))
-      return json({ ok: false, error: "STRIPE_SECRET_KEY invalid (must start with sk_)" }, 500);
-    if (!STRAPI_URL) return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
-    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) {
-      return json({ ok: false, error: "Missing STRAPI_API_TOKEN (Strapi → Settings → API Tokens)" }, 500);
-    }
+    // ✅ env check SOLO qui (mai a top-level)
+    if (!STRIPE_SECRET_KEY) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
+    if (!STRIPE_SECRET_KEY.startsWith("sk_")) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
+    if (!STRAPI_URL) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
+    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
 
     let SITE_URL: string;
     try {
       SITE_URL = normalizeSiteUrl(SITE_URL_RAW);
     } catch {
-      return json({ ok: false, error: "NEXT_PUBLIC_SITE_URL is not a valid URL", value: SITE_URL_RAW }, 500);
+      return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
     }
 
     const { body, raw } = await readBodySafe(request);
-    if (!body) return json({ ok: false, error: "Invalid JSON body", debug: { raw: raw?.slice(0, 600) } }, 400);
+    if (!body) {
+      const debug = process.env.NODE_ENV === "development" ? { raw: raw?.slice(0, 600) } : undefined;
+      return jsonNoStore({ ok: false, error: "Invalid JSON body", ...(debug ? { debug } : {}) }, 400);
+    }
 
     const itemsIn = normalizeItems(body?.items);
-    if (itemsIn.length === 0) {
-      return json(
-        {
-          ok: false,
-          error: "Cart is empty or invalid items[] (need productId/id or slug + qty) OR custom meta.kind",
-        },
-        400
-      );
-    }
-    if (itemsIn.length > 100) return json({ ok: false, error: "Too many items (max 100)" }, 400);
+    if (itemsIn.length === 0) return jsonNoStore({ ok: false, error: "Cart is empty or invalid items[]" }, 400);
+    if (itemsIn.length > 100) return jsonNoStore({ ok: false, error: "Too many items (max 100)" }, 400);
 
     const billingType: BillingType = normalizeBillingType(body?.billingType);
     const billingSnapshot = normalizeBillingSnapshot(body?.billingSnapshot, billingType);
     if (billingType === "AZIENDE") {
       const err = validateCompanySnapshot(billingSnapshot);
-      if (err) return json({ ok: false, error: err }, 400);
+      if (err) return jsonNoStore({ ok: false, error: err }, 400);
     }
 
     const currency = normalizeCurrency(body?.currency);
@@ -751,10 +750,10 @@ export async function POST(request: Request) {
     if (userJwt) {
       try {
         const meRes = await fetchWithRetry(
-        `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
-        { headers: { Authorization: `Bearer ${userJwt}` } },
-        15_000
-      );
+          `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
+          { headers: { Authorization: `Bearer ${userJwt}`, Accept: "application/json" } },
+          15_000
+        );
 
         if (meRes.ok) {
           const me = safeJsonParse(await meRes.text().catch(() => ""));
@@ -773,9 +772,7 @@ export async function POST(request: Request) {
     const ids = Array.from(
       new Set(
         strapiItems
-          .map((x) =>
-            typeof x.productId === "number" ? x.productId : typeof x.id === "number" ? x.id : null
-          )
+          .map((x) => (typeof x.productId === "number" ? x.productId : typeof x.id === "number" ? x.id : null))
           .filter((n): n is number => typeof n === "number")
       )
     );
@@ -790,15 +787,7 @@ export async function POST(request: Request) {
         : { ok: true as const, byId: new Map<number, StrapiProduct>(), bySlug: new Map<string, StrapiProduct>() };
 
     if (!(prodRes as any).ok) {
-      return json(
-        {
-          ok: false,
-          error: "Failed fetching products from Strapi",
-          status: (prodRes as any).status,
-          details: (prodRes as any).details,
-        },
-        502
-      );
+      return jsonNoStore({ ok: false, error: "Failed fetching products from Strapi" }, 502);
     }
 
     // ✅ inventory pre-check
@@ -820,7 +809,7 @@ export async function POST(request: Request) {
         await checkInventoryOrThrow({ items: invItems, warehouse: "MAIN" });
       } catch (e: any) {
         if (e?.code === "OUT_OF_STOCK") {
-          return json(
+          return jsonNoStore(
             { ok: false, error: "OUT_OF_STOCK", message: "Quantità non disponibile.", items: e?.details ?? [] },
             409
           );
@@ -858,11 +847,7 @@ export async function POST(request: Request) {
         null;
 
       if (!p || !p.price || p.price <= 0) {
-        throw new Error(
-          `Product not found or invalid price for item (productId=${String(it.productId ?? it.id)} slug=${String(
-            it.slug
-          )})`
-        );
+        throw new Error(`Product not found or invalid price (id=${String(it.productId ?? it.id)} slug=${String(it.slug)})`);
       }
 
       const publicPriceMajor = p.price;
@@ -898,8 +883,7 @@ export async function POST(request: Request) {
       const baseUnitMinor = toStripeUnitAmount(baseUnitMajor, currency);
       const finalUnitMinor = toStripeUnitAmount(finalUnitMajor, currency);
       if (!baseUnitMinor || baseUnitMinor < 1) throw new Error(`Invalid base unit for "${p.name ?? it.name ?? "item"}"`);
-      if (!finalUnitMinor || finalUnitMinor < 1)
-        throw new Error(`Invalid final unit for "${p.name ?? it.name ?? "item"}"`);
+      if (!finalUnitMinor || finalUnitMinor < 1) throw new Error(`Invalid final unit for "${p.name ?? it.name ?? "item"}"`);
 
       baseSubtotalMinor += baseUnitMinor * it.qty;
       finalSubtotalMinor += finalUnitMinor * it.qty;
@@ -958,7 +942,7 @@ export async function POST(request: Request) {
     const shippingMinor = shippingMajorIn > 0 ? toStripeUnitAmount(shippingMajorIn, currency) ?? 0 : 0;
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
-    if (!Number.isFinite(totalMinor) || totalMinor <= 0) return json({ ok: false, error: "Total must be > 0" }, 400);
+    if (!Number.isFinite(totalMinor) || totalMinor <= 0) return jsonNoStore({ ok: false, error: "Total must be > 0" }, 400);
 
     const subtotal = toMajor(baseSubtotalMinor, currency);
     const discountTotal = toMajor(discountMinor, currency);
@@ -1026,20 +1010,25 @@ export async function POST(request: Request) {
     });
 
     if (!orderCreate.res.ok) {
-      return json(
+      const details =
+        process.env.NODE_ENV === "development"
+          ? orderCreate.data ?? { raw: orderCreate.text?.slice(0, 2500) }
+          : undefined;
+
+      return jsonNoStore(
         {
           ok: false,
           error: "Order create failed on Strapi",
           status: orderCreate.res.status,
-          details: orderCreate.data ?? { raw: orderCreate.text?.slice(0, 2500) },
+          ...(details ? { details } : {}),
         },
-        orderCreate.res.status
+        502
       );
     }
 
     const { orderId, documentId } = extractOrderRefs(orderCreate.data);
     const orderRef = String(documentId || orderId || "").trim();
-    if (!orderRef) return json({ ok: false, error: "Order created but missing id/documentId" }, 500);
+    if (!orderRef) return jsonNoStore({ ok: false, error: "Order created but missing id/documentId" }, 500);
 
     const hasCialda = pricedItems.some(
       (x) => x.meta && (x.meta.kind === "cialda-personalizzata" || x.meta.kind === "cialde-personalizzate")
@@ -1085,7 +1074,7 @@ export async function POST(request: Request) {
       orderRef,
     });
 
-    return json(
+    return jsonNoStore(
       {
         ok: true,
         url: session.url,
@@ -1098,34 +1087,24 @@ export async function POST(request: Request) {
     );
   } catch (err: any) {
     if (err?.code === "OUT_OF_STOCK") {
-      return json({ ok: false, error: "OUT_OF_STOCK", message: err?.message, items: err?.details ?? [] }, 409);
+      return jsonNoStore({ ok: false, error: "OUT_OF_STOCK", message: err?.message, items: err?.details ?? [] }, 409);
     }
 
     if (isRetryableFetchError(err)) {
-      return json(
-        {
-          ok: false,
-          error: "STRAPI_TIMEOUT",
-          message: "Connessione a Strapi troppo lenta. Riprova tra pochi secondi.",
-          details: err?.message ?? String(err),
-        },
-        504
-      );
-    }
-
-        if (isRetryableFetchError(err)) {
-      return json(
-        {
-          ok: false,
-          error: "STRAPI_TIMEOUT",
-          message: "Connessione a Strapi troppo lenta. Riprova tra qualche secondo.",
-          details: err?.message ?? String(err),
-        },
+      return jsonNoStore(
+        { ok: false, error: "STRAPI_TIMEOUT", message: "Connessione troppo lenta. Riprova tra pochi secondi." },
         504
       );
     }
 
     console.error("[checkout/start] UNHANDLED:", err);
-    return json({ ok: false, error: "Unhandled error", details: err?.message ?? String(err) }, 500);
+    return jsonNoStore(
+      {
+        ok: false,
+        error: "Unhandled error",
+        ...(process.env.NODE_ENV === "development" ? { details: err?.message ?? String(err) } : {}),
+      },
+      500
+    );
   }
 }
