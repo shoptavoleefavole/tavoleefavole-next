@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST() {
-  const res = NextResponse.json({ ok: true });
+  const res = NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
 
-  // cancella cookie
   res.cookies.set("tf_token", "", {
     httpOnly: true,
     sameSite: "lax",

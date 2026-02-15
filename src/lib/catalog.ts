@@ -18,12 +18,16 @@ const STRAPI_URL =
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN || process.env.NEXT_PUBLIC_STRAPI_API_TOKEN;
 
-const BASE_URL = STRAPI_URL.replace(/\/+$/, "");
+const BASE_URL = String(STRAPI_URL || "").replace(/\/+$/, "");
 
 const DEFAULT_REVALIDATE = 60;
 const MAX_PAGE_SIZE = 200;
+const FETCH_TIMEOUT_MS = Number(process.env.CATALOG_STRAPI_TIMEOUT_MS ?? 6500);
 
 // -------- utils
+function isNonNull<T>(v: T | null | undefined): v is T {
+  return v !== null && v !== undefined;
+}
 
 function headersWithToken(): HeadersInit {
   const h: Record<string, string> = { Accept: "application/json" };
@@ -116,16 +120,16 @@ function extractMediaUrls(base: string, media: any): string[] {
       const a = pickAttrs(node);
 
       const u =
-        a?.url ??
         a?.formats?.large?.url ??
         a?.formats?.medium?.url ??
         a?.formats?.small?.url ??
         a?.formats?.thumbnail?.url ??
-        node?.url ??
+        a?.url ??
         node?.formats?.large?.url ??
         node?.formats?.medium?.url ??
         node?.formats?.small?.url ??
         node?.formats?.thumbnail?.url ??
+        node?.url ??
         null;
 
       return absUrl(base, u) || "";
@@ -136,7 +140,7 @@ function extractMediaUrls(base: string, media: any): string[] {
 function normalizeCategoryRef(x: any): TaxonomyRef | null {
   if (!x) return null;
 
-  // v5 flat relation object
+  // v5 flat object
   if (typeof x?.slug === "string") {
     const slug = String(x.slug).trim();
     if (!slug) return null;
@@ -153,6 +157,9 @@ function normalizeCategoryRef(x: any): TaxonomyRef | null {
   return { slug, label };
 }
 
+/**
+ * ✅ Normalizza prodotto e ricava la macro anche da subcategory.category se category non esiste sul product
+ */
 function normalizeProduct(row: AnyObj): Product {
   const a = pickAttrs(row);
 
@@ -165,20 +172,32 @@ function normalizeProduct(row: AnyObj): Product {
     imagesFromImages.length
       ? imagesFromImages
       : imagesFromImage.length
-      ? imagesFromImage
-      : imagesFromCover.length
-      ? imagesFromCover
-      : imagesFromThumb;
+        ? imagesFromImage
+        : imagesFromCover.length
+          ? imagesFromCover
+          : imagesFromThumb;
 
   const variantsData = (a as any)?.variants?.data ?? (a as any)?.variants ?? [];
-  const variants: ProductVariant[] = Array.isArray(variantsData)
-    ? variantsData.map((v: any) => ({
-        sku: (pickAttrs(v) as any)?.sku ?? v?.sku ?? null,
-      }))
-    : [];
+const variants: ProductVariant[] = Array.isArray(variantsData)
+  ? variantsData
+      .map((v: any) => {
+        const va = pickAttrs(v);
+        const sku = (va as any)?.sku ?? (v as any)?.sku ?? null;
+        return sku ? ({ sku } as ProductVariant) : null;
+      })
+      .filter(isNonNull)
+  : [];
 
-  const category = normalizeCategoryRef((a as any)?.category);
+  // taxonomy diretto
+  let category = normalizeCategoryRef((a as any)?.category);
   const subcategory = normalizeCategoryRef((a as any)?.subcategory);
+
+  // ✅ fallback macro = subcategory.category
+  if (!category) {
+    const subRaw = (a as any)?.subcategory;
+    const subAttrs = pickAttrs(subRaw?.data ?? subRaw);
+    if (subAttrs?.category) category = normalizeCategoryRef(subAttrs.category);
+  }
 
   const idRaw =
     (row as any)?.documentId ??
@@ -190,16 +209,12 @@ function normalizeProduct(row: AnyObj): Product {
 
   const id = String(idRaw);
 
-  // legacy fields (se servono a componenti vecchi)
-  const legacyCat = String(
-    (a as any)?.categorySlug ?? (a as any)?.macroSlug ?? ""
-  ).trim();
+  // legacy scalari
+  const legacyCat = String((a as any)?.categorySlug ?? (a as any)?.macroSlug ?? "").trim();
   const categorySlug = category?.slug ?? (legacyCat ? legacyCat : undefined);
 
   const legacySub = String((a as any)?.subSlug ?? "").trim();
   const subSlug = subcategory?.slug ?? (legacySub ? legacySub : undefined);
-  const inStockRaw = (a as any)?.inStock;
-  const inStock = typeof inStockRaw === "boolean" ? inStockRaw : true;
 
   return {
     id,
@@ -214,42 +229,92 @@ function normalizeProduct(row: AnyObj): Product {
     inStock: typeof (a as any)?.inStock === "boolean" ? (a as any).inStock : undefined,
     isNew: Boolean((a as any)?.isNew ?? false),
 
-    // taxonomy
     category,
     subcategory,
     categorySlug,
     subSlug,
 
-    // media
     images: images.length ? images : undefined,
     image: images[0] || undefined,
 
-    // variants
     variants: variants.length ? variants : undefined,
 
-    // SEO (se presenti)
     seoTitle: (a as any)?.seoTitle ?? null,
     seoDescription: (a as any)?.seoDescription ?? null,
     seoImage: extractMediaUrls(BASE_URL, (a as any)?.seoImage)?.[0] ?? null,
   };
 }
 
-// -------- fetch helpers
+// -------- fetch helpers (robusti)
+
+async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), init.timeoutMs ?? FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function isValidationErrorPayload(json: any) {
+  return json?.error?.name === "ValidationError";
+}
+
+function buildProductsPopulate(qs: URLSearchParams) {
+  // media
+  qs.set("populate[images][fields][0]", "url");
+  qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[image][fields][0]", "url");
+  qs.set("populate[image][fields][1]", "formats");
+  qs.set("populate[cover][fields][0]", "url");
+  qs.set("populate[cover][fields][1]", "formats");
+  qs.set("populate[thumbnail][fields][0]", "url");
+  qs.set("populate[thumbnail][fields][1]", "formats");
+  qs.set("populate[seoImage][fields][0]", "url");
+  qs.set("populate[seoImage][fields][1]", "formats");
+
+  // variants
+  qs.set("populate[variants][fields][0]", "sku");
+
+  // taxonomy diretto + nested
+  qs.set("populate[category][fields][0]", "slug");
+  qs.set("populate[category][fields][1]", "label");
+
+  qs.set("populate[subcategory][fields][0]", "slug");
+  qs.set("populate[subcategory][fields][1]", "label");
+  qs.set("populate[subcategory][populate][category][fields][0]", "slug");
+  qs.set("populate[subcategory][populate][category][fields][1]", "label");
+
+  // many-to-many (se esistono)
+  qs.set("populate[categories][fields][0]", "slug");
+  qs.set("populate[categories][fields][1]", "label");
+
+  qs.set("populate[subcategories][fields][0]", "slug");
+  qs.set("populate[subcategories][fields][1]", "label");
+  qs.set("populate[subcategories][populate][category][fields][0]", "slug");
+  qs.set("populate[subcategories][populate][category][fields][1]", "label");
+}
 
 async function fetchStrapi(
   path: string,
   qs?: URLSearchParams,
   revalidate = DEFAULT_REVALIDATE
-): Promise<{ ok: boolean; status: number; json: any }> {
+): Promise<{ ok: boolean; status: number; json: any; text: string }> {
   const url = `${BASE_URL}${path}${qs ? `?${qs.toString()}` : ""}`;
 
   try {
-    const res = await fetch(url, { next: { revalidate }, headers: headersWithToken() });
+    const res = await fetchWithTimeout(url, {
+      next: { revalidate },
+      headers: headersWithToken(),
+    });
+
     const text = await res.text().catch(() => "");
     const json = safeJsonParse(text);
-    return { ok: res.ok, status: res.status, json };
-  } catch {
-    return { ok: false, status: 0, json: null };
+    return { ok: res.ok, status: res.status, json, text };
+  } catch (e: any) {
+    const isAbort = e?.name === "AbortError";
+    return { ok: false, status: isAbort ? 504 : 0, json: null, text: isAbort ? "Timeout" : "Fetch failed" };
   }
 }
 
@@ -267,20 +332,6 @@ async function fetchCategoriesAll(): Promise<MacroCategory[]> {
     .filter((x: MacroCategory | null): x is MacroCategory => Boolean(x?.slug));
 }
 
-async function fetchProductsAll(): Promise<Product[]> {
-  const qs = new URLSearchParams();
-  qs.set("populate", "*");
-  qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
-  qs.set("sort[0]", "createdAt:desc");
-
-  const { ok, json } = await fetchStrapi("/api/products", qs, 30);
-  if (!ok) return [];
-
-  return unwrapCollection(json)
-    .map((row: any) => normalizeProduct(row))
-    .filter((p: Product | null): p is Product => Boolean(p?.slug));
-}
-
 async function fetchSubcategoriesAll(): Promise<NavSub[]> {
   const qs = new URLSearchParams();
   qs.set("populate", "*");
@@ -295,28 +346,200 @@ async function fetchSubcategoriesAll(): Promise<NavSub[]> {
     .filter((x: NavSub | null): x is NavSub => Boolean(x?.slug));
 }
 
-// -------- exports (API)
+async function fetchProductsAll(): Promise<Product[]> {
+  const qs = new URLSearchParams();
+  buildProductsPopulate(qs);
+  qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+  qs.set("sort[0]", "createdAt:desc");
+
+  const { ok, json } = await fetchStrapi("/api/products", qs, 30);
+  if (!ok) return [];
+
+  return unwrapCollection(json)
+    .map((row: any) => normalizeProduct(row))
+    .filter((p: Product | null): p is Product => Boolean(p?.slug));
+}
+
+/**
+ * ✅ products by macro (tentativi corretti)
+ */
+async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
+  const slug = String(macroSlug ?? "").trim();
+  if (!slug) return [];
+
+  const attempts: Array<() => URLSearchParams> = [
+    // 1) product.subcategory.category.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[subcategory][category][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 2) product.subcategories.category.slug (many)
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[subcategories][category][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 3) product.category.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[category][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 4) product.categories.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[categories][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 5) scalari
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[categorySlug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[macroSlug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+  ];
+
+  for (const makeQs of attempts) {
+    const qs = makeQs();
+    const res = await fetchStrapi("/api/products", qs, 10);
+
+    if (res.ok) {
+      return unwrapCollection(res.json)
+        .map((row: any) => normalizeProduct(row))
+        .filter((p: Product | null): p is Product => Boolean(p?.slug));
+    }
+
+    if (res.status === 400 && isValidationErrorPayload(res.json)) {
+      continue; // prova tentativo successivo
+    }
+
+    // altri errori → stop (evita loop inutile)
+    return [];
+  }
+
+  return [];
+}
+
+/**
+ * ✅ products by macro + sub (tentativi corretti, senza filtri “doppi” nella stessa request)
+ */
+async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string): Promise<Product[]> {
+  const cat = String(macroSlug ?? "").trim();
+  const sub = String(subSlug ?? "").trim();
+  if (!cat || !sub) return [];
+
+  const attempts: Array<() => URLSearchParams> = [
+    // 1) product.subcategory.slug + subcategory.category.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[subcategory][slug][$eq]", sub);
+      qs.set("filters[subcategory][category][slug][$eq]", cat);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 2) product.subcategories.slug + subcategories.category.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[subcategories][slug][$eq]", sub);
+      qs.set("filters[subcategories][category][slug][$eq]", cat);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 3) direct product.category.slug + product.subcategory.slug
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[category][slug][$eq]", cat);
+      qs.set("filters[subcategory][slug][$eq]", sub);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 4) direct many
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[categories][slug][$eq]", cat);
+      qs.set("filters[subcategories][slug][$eq]", sub);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+    // 5) scalar fallback
+    () => {
+      const qs = new URLSearchParams();
+      buildProductsPopulate(qs);
+      qs.set("filters[categorySlug][$eq]", cat);
+      qs.set("filters[subSlug][$eq]", sub);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
+      qs.set("sort[0]", "createdAt:desc");
+      return qs;
+    },
+  ];
+
+  for (const makeQs of attempts) {
+    const qs = makeQs();
+    const res = await fetchStrapi("/api/products", qs, 10);
+
+    if (res.ok) {
+      return unwrapCollection(res.json)
+        .map((row: any) => normalizeProduct(row))
+        .filter((p: Product | null): p is Product => Boolean(p?.slug));
+    }
+
+    if (res.status === 400 && isValidationErrorPayload(res.json)) {
+      continue;
+    }
+
+    return [];
+  }
+
+  return [];
+}
+
+// -------- exports
 
 export async function getMacroBySlug(macroSlug: string): Promise<MacroCategory | null> {
   const slug = String(macroSlug ?? "").trim();
   if (!slug) return null;
 
-  // 1) categorie
   const cats = await fetchCategoriesAll();
   const found = cats.find((c) => c.slug === slug);
   if (found) return found;
 
-  // 2) fallback: deriva dai prodotti
+  // fallback da prodotti
   const products = await fetchProductsAll();
   const p = products.find((x) => x?.category?.slug === slug);
-
   if (p) {
-    return {
-      slug,
-      label: String(p.category?.label ?? titleFromSlug(slug)),
-      icon: null,
-      subcategories: [],
-    };
+    return { slug, label: String(p.category?.label ?? titleFromSlug(slug)), icon: null, subcategories: [] };
   }
 
   return null;
@@ -327,25 +550,16 @@ export async function getSubBySlug(macroSlug: string, subSlug: string): Promise<
   const sub = String(subSlug ?? "").trim();
   if (!cat || !sub) return null;
 
-  // 1) prova dalla macro (se ha subcategories popolato)
   const macro = await getMacroBySlug(cat);
   const fromMacro = macro?.subcategories?.find((s) => s.slug === sub);
   if (fromMacro) return fromMacro;
 
-  // 2) prova endpoint /api/subcategories (se esiste)
   const subs = await fetchSubcategoriesAll();
   const direct = subs.find((s) => s.slug === sub);
   if (direct) return direct;
 
-  // 3) fallback: deriva dai prodotti
-  const products = await fetchProductsAll();
-  const existsViaProducts = products.some(
-    (p) => p?.category?.slug === cat && p?.subcategory?.slug === sub
-  );
-
-  if (existsViaProducts) {
-    return { slug: sub, label: titleFromSlug(sub) };
-  }
+  const products = await fetchProductsByMacroAndSubSlug(cat, sub);
+  if (products.length) return { slug: sub, label: titleFromSlug(sub) };
 
   return null;
 }
@@ -357,7 +571,6 @@ export async function getAllProducts(): Promise<Product[]> {
 export async function getProductBySlug(slugInput: string): Promise<Product | null> {
   const slug = String(slugInput ?? "").trim();
   if (!slug) return null;
-
   const products = await fetchProductsAll();
   return products.find((p) => p?.slug === slug) ?? null;
 }
@@ -367,7 +580,6 @@ export async function getProductById(idInput: string): Promise<Product | null> {
   if (!id) return null;
 
   const products = await fetchProductsAll();
-
   return (
     products.find((p) => String(p?.documentId ?? p?.id) === id) ??
     products.find((p) => p?.slug === id) ??
@@ -376,23 +588,11 @@ export async function getProductById(idInput: string): Promise<Product | null> {
 }
 
 export async function getProductsByMacro(macroSlug: string): Promise<Product[]> {
-  const slug = String(macroSlug ?? "").trim();
-  if (!slug) return [];
-
-  const products = await fetchProductsAll();
-  return products.filter((p) => p?.category?.slug === slug);
+  return fetchProductsByMacroSlug(macroSlug);
 }
 
-export async function getProductsByMacroAndSub(
-  macroSlug: string,
-  subSlug: string
-): Promise<Product[]> {
-  const cat = String(macroSlug ?? "").trim();
-  const sub = String(subSlug ?? "").trim();
-  if (!cat || !sub) return [];
-
-  const products = await fetchProductsAll();
-  return products.filter((p) => p?.category?.slug === cat && p?.subcategory?.slug === sub);
+export async function getProductsByMacroAndSub(macroSlug: string, subSlug: string): Promise<Product[]> {
+  return fetchProductsByMacroAndSubSlug(macroSlug, subSlug);
 }
 
 export async function getRelatedProducts(product: Product, limit = 8): Promise<Product[]> {
@@ -401,9 +601,9 @@ export async function getRelatedProducts(product: Product, limit = 8): Promise<P
   if (!catSlug) return [];
 
   const take = Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 8);
+  const products = await fetchProductsByMacroSlug(catSlug);
 
-  const products = await fetchProductsAll();
   return products
-    .filter((p) => p?.category?.slug === catSlug && String(p?.slug ?? "") !== mySlug)
+    .filter((p) => String(p?.slug ?? "") !== mySlug)
     .slice(0, take);
 }

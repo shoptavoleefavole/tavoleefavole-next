@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -44,14 +44,12 @@ function CartIcon({ className = "" }: { className?: string }) {
 type NavSub = { slug: string; label: string };
 export type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
 
-// fallback (menu sempre usabile)
 const FALLBACK_CATEGORIES: NavCat[] = [
   { slug: "prodotti-per-pasticceria", label: "Prodotti per pasticceria", icon: null, subcategories: [] },
   { slug: "decorazioni-per-dolci", label: "Decorazioni per dolci", icon: null, subcategories: [] },
   { slug: "confetti", label: "Confetti", icon: null, subcategories: [] },
 ];
 
-// ⚠️ usato SOLO per trasformare /uploads/... in URL assoluto per <img>.
 const PUBLIC_STRAPI_URL = String(process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
 
 const FETCH_TIMEOUT_MS = 6500;
@@ -154,7 +152,7 @@ async function fetchWithTimeout(url: string, ms: number, signal?: AbortSignal) {
   if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal, credentials: "include" });
     return res;
   } finally {
     window.clearTimeout(t);
@@ -173,6 +171,74 @@ async function fetchHeaderCategories(signal?: AbortSignal): Promise<NavCat[]> {
     return normalized.length ? normalized : [];
   } catch {
     return [];
+  }
+}
+
+/* ---------------------------
+   Auth (header)
+---------------------------- */
+type HeaderUser = {
+  id?: number | string;
+  username?: string;
+  email?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+
+  // futuro: utile per business
+  accountType?: "PERSON" | "BUSINESS" | null;
+};
+
+function sanitizeInlineText(input: unknown, maxLen = 40): string {
+  const raw = String(input ?? "");
+  const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned;
+}
+
+function displayName(u: HeaderUser | null): string {
+  if (!u) return "";
+  const fn = sanitizeInlineText(u.firstName);
+  const ln = sanitizeInlineText(u.lastName);
+  const full = `${fn} ${ln}`.trim();
+  if (full) return full;
+  const un = sanitizeInlineText(u.username);
+  if (un) return un;
+  return "";
+}
+
+async function fetchMe(signal?: AbortSignal): Promise<{ loggedIn: boolean; user: HeaderUser | null }> {
+  try {
+    const res = await fetch("/api/auth/me", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+
+    const loggedIn = Boolean(json?.loggedIn);
+    const user = (json?.user ?? null) as HeaderUser | null;
+
+    return { loggedIn, user: loggedIn ? user : null };
+  } catch {
+    return { loggedIn: false, user: null };
+  }
+}
+
+async function doLogout(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/logout", {
+      method: "POST",
+      cache: "no-store",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -199,6 +265,15 @@ export default function Header() {
   const cartCount = mounted ? summary.count : 0;
   const cartTotal = mounted ? summary.total : 0;
 
+  // user state
+  const [meLoaded, setMeLoaded] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [user, setUser] = useState<HeaderUser | null>(null);
+
+  // dropdown account
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountRef = useRef<HTMLDivElement | null>(null);
+
   // sync state con URL
   useEffect(() => {
     const nextCat = searchParams.get("categoria") ?? "";
@@ -215,7 +290,7 @@ export default function Header() {
     if (cached?.length) setCategories(cached);
   }, [mounted]);
 
-  // fetch categorie (solo API interna)
+  // fetch categorie
   useEffect(() => {
     let alive = true;
     const controller = new AbortController();
@@ -243,6 +318,47 @@ export default function Header() {
     };
   }, []);
 
+  // fetch me
+  useEffect(() => {
+    let alive = true;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const r = await fetchMe(controller.signal);
+        if (!alive) return;
+        setLoggedIn(r.loggedIn);
+        setUser(r.user);
+      } finally {
+        if (!alive) return;
+        setMeLoaded(true);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      controller.abort();
+    };
+  }, []);
+
+  // close dropdown on outside click / esc
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!accountOpen) return;
+      const target = e.target as Node;
+      if (accountRef.current && !accountRef.current.contains(target)) setAccountOpen(false);
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setAccountOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [accountOpen]);
+
   const safeCategories = useMemo(() => (Array.isArray(categories) ? categories : []), [categories]);
 
   const displayedCategories = useMemo(() => {
@@ -256,8 +372,6 @@ export default function Header() {
 
     const nextQ = q.trim();
     const nextCat = cat.trim();
-
-    // ✅ se vuoto: non fare nulla (niente reload inutile)
     if (!nextCat && !nextQ) return;
 
     const sp = new URLSearchParams();
@@ -270,14 +384,13 @@ export default function Header() {
     const qs = sp.toString();
     const target = qs ? `/catalogo?${qs}` : `/catalogo`;
 
-    // ✅ evita push inutile se sei già sulla stessa URL
     const current = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
     if (current === target) return;
 
     router.push(target);
   }
 
-  // Open/close menu da eventi globali (bottom nav, ecc.)
+  // Open/close menu da eventi globali
   useEffect(() => {
     function onOpen() {
       setMobileMenuOpen(true);
@@ -297,10 +410,22 @@ export default function Header() {
 
   const searchPlaceholder = "Cerca vaniglia, confetti, stampi…";
 
+  const name = useMemo(() => displayName(user), [user]);
+  const isBusiness = user?.accountType === "BUSINESS";
+
+  async function handleLogout() {
+    setAccountOpen(false);
+    const ok = await doLogout();
+    if (ok) {
+      router.replace("/");
+      router.refresh();
+    }
+  }
+
   return (
     <header className="border-b border-border bg-background/90 backdrop-blur">
       <Container>
-        {/* MOBILE: MENU sx + LOGO centrato + CARRELLO dx */}
+        {/* MOBILE */}
         <div className="md:hidden grid grid-cols-3 items-center py-2">
           <button
             type="button"
@@ -319,14 +444,7 @@ export default function Header() {
             className="justify-self-center flex items-center rounded-xl px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             aria-label="Home"
           >
-            <Image
-              src="/brand/tavoleefavole-logo.svg"
-              alt="Tavole & Favole"
-              width={170}
-              height={48}
-              priority
-              className="h-10 w-auto"
-            />
+            <Image src="/brand/tavoleefavole-logo.svg" alt="Tavole & Favole" width={170} height={48} priority className="h-10 w-auto" />
           </Link>
 
           <Link
@@ -348,19 +466,8 @@ export default function Header() {
 
         {/* DESKTOP */}
         <div className="hidden md:flex items-center gap-3 py-3">
-          <Link
-            href="/"
-            className="flex items-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label="Home"
-          >
-            <Image
-              src="/brand/tavoleefavole-logo.svg"
-              alt="Tavole & Favole"
-              width={290}
-              height={92}
-              priority
-              className="h-16 w-auto"
-            />
+          <Link href="/" className="flex items-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="Home">
+            <Image src="/brand/tavoleefavole-logo.svg" alt="Tavole & Favole" width={290} height={92} priority className="h-16 w-auto" />
           </Link>
 
           <form onSubmit={onSubmit} className="flex flex-1 items-center overflow-hidden rounded-full border border-border bg-white h-11">
@@ -391,23 +498,120 @@ export default function Header() {
               aria-label="Cerca prodotti"
             />
 
-            <button
-              type="submit"
-              className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition"
-            >
+            <button type="submit" className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition">
               Cerca
             </button>
           </form>
 
           <div className="flex items-center gap-2">
-            <Link
-              href="/account"
-              className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              aria-label="Account"
-            >
-              <UserIcon />
-              <span className="hidden lg:inline text-sm text-text">Account</span>
-            </Link>
+            {/* ACCOUNT DROPDOWN */}
+            <div className="relative-50" ref={accountRef}>
+              {!meLoaded || !loggedIn ? (
+                <Link
+                  href="/account"
+                  className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label="Account"
+                >
+                  <UserIcon />
+                  <span className="hidden lg:inline text-sm text-text">Account</span>
+                </Link>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setAccountOpen((v) => !v)}
+                    className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    aria-haspopup="menu"
+                    aria-expanded={accountOpen}
+                  >
+                    <UserIcon />
+                    <span className="hidden lg:inline text-sm text-text">
+                      <span className="font-semibold">Benvenuto,</span> {name}
+                    </span>
+                  </button>
+
+                  {accountOpen ? (
+                    <div
+                      role="menu"
+                      className="absolute right-0 z-50 mt-2 w-64 overflow-hidden rounded-2xl border border-border bg-background shadow-lg"
+                    >
+                      <div className="p-3 border-b border-border">
+                        <div className="text-sm font-extrabold">{name}</div>
+                        {user?.email ? <div className="text-xs text-text/60">{sanitizeInlineText(user.email, 60)}</div> : null}
+                        {isBusiness ? (
+                          <div className="mt-2 inline-flex rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">
+                            Profilo aziendale
+                          </div>
+                        ) : (
+                          <div className="mt-2 inline-flex rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">
+                            Profilo privato
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="p-2">
+                        <Link
+                          href="/account/profilo"
+                          onClick={() => setAccountOpen(false)}
+                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
+                          role="menuitem"
+                        >
+                          Profilo
+                        </Link>
+                        <Link
+                          href="/account/ordini"
+                          onClick={() => setAccountOpen(false)}
+                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
+                          role="menuitem"
+                        >
+                          Ordini
+                        </Link>
+                        <Link
+                          href="/account/preferiti"
+                          onClick={() => setAccountOpen(false)}
+                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
+                          role="menuitem"
+                        >
+                          Preferiti
+                        </Link>
+
+                        {isBusiness ? (
+                          <>
+                            <div className="my-2 h-px bg-border" />
+                            <Link
+                              href="/account/azienda"
+                              onClick={() => setAccountOpen(false)}
+                              className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
+                              role="menuitem"
+                            >
+                              Area azienda
+                            </Link>
+                            <Link
+                              href="/account/fatturazione"
+                              onClick={() => setAccountOpen(false)}
+                              className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
+                              role="menuitem"
+                            >
+                              Fatturazione (PEC/SDI)
+                            </Link>
+                          </>
+                        ) : null}
+
+                        <div className="my-2 h-px bg-border" />
+                        <button
+                          type="button"
+                          onClick={handleLogout}
+                          className="block w-full rounded-xl px-3 py-2 text-left text-sm font-extrabold text-red-600 hover:bg-surface"
+                          role="menuitem"
+                        >
+                          Logout
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
 
             <Link
               href="/carrello"
@@ -460,23 +664,13 @@ export default function Header() {
             aria-label="Cerca prodotti"
           />
 
-          <button
-            type="submit"
-            className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition"
-          >
+          <button type="submit" className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition">
             Cerca
           </button>
         </form>
       </Container>
 
-      {/* ✅ UNICA implementazione menu mobile */}
-      <MobileMenu
-        open={mobileMenuOpen}
-        onClose={() => setMobileMenuOpen(false)}
-        categories={displayedCategories}
-        catsLoaded={catsLoaded}
-        cartCount={cartCount}
-      />
+      <MobileMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} categories={displayedCategories} catsLoaded={catsLoaded} cartCount={cartCount} />
     </header>
   );
 }

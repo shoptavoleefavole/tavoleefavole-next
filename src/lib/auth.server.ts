@@ -2,9 +2,11 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 function strapiBaseUrl() {
-  return (process.env.STRAPI_URL ||
+  return (
+    process.env.STRAPI_URL ||
     process.env.NEXT_PUBLIC_STRAPI_URL ||
-    "http://localhost:1337").replace(/\/+$/, "");
+    "http://localhost:1337"
+  ).replace(/\/+$/, "");
 }
 
 export async function getAuthToken() {
@@ -12,7 +14,7 @@ export async function getAuthToken() {
   return store.get("tf_token")?.value ?? null;
 }
 
-// ✅ QUESTA è la funzione che ti manca (quella che AccountPage sta chiamando)
+// ✅ Token obbligatorio, altrimenti redirect a /accedi con next
 export async function requireAuthToken(nextPath: string) {
   const token = await getAuthToken();
   if (!token) {
@@ -44,7 +46,14 @@ export async function requireUser(nextPath: string) {
 
 export async function requireAdmin(nextPath: string) {
   const me = await requireUser(nextPath);
-  const roleName = me?.role?.name ?? me?.role?.type ?? null;
+
+  // Hardening: supporta più forme tipiche di Strapi
+  const roleName =
+    me?.role?.name ??
+    me?.role?.type ??
+    me?.role?.data?.attributes?.name ??
+    me?.role?.data?.attributes?.type ??
+    null;
 
   if (roleName !== "Admin") {
     redirect(`/`);

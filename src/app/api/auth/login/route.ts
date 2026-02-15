@@ -2,32 +2,37 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
+function strapiBaseUrl() {
+  const raw =
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337";
+  return raw.replace(/\/+$/, "");
+}
+
 export async function POST(req: Request) {
   try {
-    // 1) Body
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      return NextResponse.json({ error: "Content-Type non valido" }, { status: 415, headers: { "Cache-Control": "no-store" } });
+    }
+
     let body: any;
     try {
       body = await req.json();
     } catch {
-      return NextResponse.json({ error: "Body JSON non valido" }, { status: 400 });
+      return NextResponse.json({ error: "Body JSON non valido" }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
 
     const identifier = typeof body?.identifier === "string" ? body.identifier.trim() : "";
     const password = typeof body?.password === "string" ? body.password : "";
 
     if (!identifier || !password) {
-      return NextResponse.json({ error: "Missing identifier or password" }, { status: 400 });
+      return NextResponse.json({ error: "Dati mancanti" }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
 
-    // 2) Strapi base url
-    const rawBaseUrl =
-      process.env.STRAPI_URL ||
-      process.env.NEXT_PUBLIC_STRAPI_URL ||
-      "http://localhost:1337";
+    const baseUrl = strapiBaseUrl();
 
-    const baseUrl = rawBaseUrl.replace(/\/+$/, "");
-
-    // 3) Login su Strapi
     const res = await fetch(`${baseUrl}/api/auth/local`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -35,29 +40,30 @@ export async function POST(req: Request) {
       cache: "no-store",
     });
 
-    const text = await res.text();
+    const text = await res.text().catch(() => "");
     let data: any = null;
     try {
       data = text ? JSON.parse(text) : null;
     } catch {
-      data = { raw: text };
+      data = null;
     }
 
     if (!res.ok) {
+      // Sicurezza: messaggio generico, non leakare dettagli Strapi
+      const status = res.status >= 400 && res.status <= 499 ? 401 : 500;
       return NextResponse.json(
-        { error: data?.error?.message || "Login failed", details: data?.error ?? data },
-        { status: res.status }
+        { error: "Credenziali non valide" },
+        { status, headers: { "Cache-Control": "no-store" } }
       );
     }
 
     const jwt = data?.jwt as string | undefined;
     if (!jwt) {
-      return NextResponse.json({ error: "Missing jwt in response" }, { status: 500 });
+      return NextResponse.json({ error: "Login non riuscito" }, { status: 500, headers: { "Cache-Control": "no-store" } });
     }
 
-    // 4) Risposta + cookie (✅ modo giusto)
     const response = NextResponse.json(
-      { ok: true, user: data.user },
+      { ok: true },
       { headers: { "Cache-Control": "no-store" } }
     );
 
@@ -70,10 +76,10 @@ export async function POST(req: Request) {
     });
 
     return response;
-  } catch (e: any) {
+  } catch {
     return NextResponse.json(
-      { error: "Server error", details: e?.message || String(e) },
-      { status: 500 }
+      { error: "Server error" },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }

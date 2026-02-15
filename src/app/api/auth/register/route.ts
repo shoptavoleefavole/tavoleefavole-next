@@ -1,85 +1,155 @@
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+
+function strapiBaseUrl() {
+  const raw =
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337";
+  return raw.replace(/\/+$/, "");
+}
+
+const COMPANIES_PATH = process.env.STRAPI_COMPANIES_PATH || "/api/aziendes";
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
 export async function POST(req: Request) {
   try {
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      return NextResponse.json(
+        { error: "Content-Type non valido" },
+        { status: 415, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
     const body = await req.json().catch(() => null);
-
-    const username = body?.username;
-    const email = body?.email;
-    const password = body?.password;
-
-    if (!username || !email || !password) {
+    if (!body) {
       return NextResponse.json(
-        { error: "Missing username, email or password" },
-        { status: 400 }
+        { error: "Body JSON non valido" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    const baseUrlRaw =
-      process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL;
+    const type = body?.type === "BUSINESS" ? "BUSINESS" : "PERSON";
+    const email = isNonEmptyString(body?.email) ? body.email.trim() : "";
+    const username = isNonEmptyString(body?.username) ? body.username.trim() : "";
+    const password = typeof body?.password === "string" ? body.password : "";
 
-    if (!baseUrlRaw) {
+    if (!email || !password) {
       return NextResponse.json(
-        { error: "Missing STRAPI_URL env var" },
-        { status: 500 }
+        { error: "Dati mancanti" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    // evita doppio slash
-    const baseUrl = baseUrlRaw.replace(/\/+$/, "");
-
-    let res: Response;
-    try {
-      res = await fetch(`${baseUrl}/api/auth/local/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, email, password }),
-        cache: "no-store",
-      });
-    } catch (fetchErr: any) {
-      // caso tipico: Strapi non raggiungibile / DNS / porta
+    if (password.length < 8) {
       return NextResponse.json(
-        {
-          error: "Cannot reach Strapi",
-          details: fetchErr?.message || String(fetchErr),
-          strapiUrl: baseUrl,
-        },
-        { status: 502 }
+        { error: "Password troppo corta" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    // Leggiamo prima come testo: se non è JSON non crasha
-    const rawText = await res.text();
+    const firstName = isNonEmptyString(body?.firstName) ? body.firstName.trim() : undefined;
+    const lastName = isNonEmptyString(body?.lastName) ? body.lastName.trim() : undefined;
+
+    const companyName = isNonEmptyString(body?.companyName) ? body.companyName.trim() : undefined;
+    const vatNumber = isNonEmptyString(body?.vatNumber) ? body.vatNumber.trim() : undefined;
+    const sdi = isNonEmptyString(body?.sdi) ? body.sdi.trim() : undefined;
+    const pec = isNonEmptyString(body?.pec) ? body.pec.trim() : undefined;
+    const billingEmail = isNonEmptyString(body?.billingEmail) ? body.billingEmail.trim() : undefined;
+    const billingAddress = isNonEmptyString(body?.billingAddress) ? body.billingAddress.trim() : undefined;
+
+    if (type === "BUSINESS" && !companyName) {
+      return NextResponse.json(
+        { error: "Ragione sociale mancante" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    const baseUrl = strapiBaseUrl();
+
+    // 1) Register user
+    const registerPayload: Record<string, any> = {
+      email,
+      username: username || email,
+      password,
+    };
+    if (firstName) registerPayload.firstName = firstName;
+    if (lastName) registerPayload.lastName = lastName;
+
+    const res = await fetch(`${baseUrl}/api/auth/local/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(registerPayload),
+    });
+
+    const text = await res.text().catch(() => "");
     let data: any = null;
     try {
-      data = rawText ? JSON.parse(rawText) : null;
+      data = text ? JSON.parse(text) : null;
     } catch {
       data = null;
     }
 
     if (!res.ok) {
       return NextResponse.json(
-        {
-          error: data?.error?.message || "Register failed",
-          status: res.status,
-          strapiResponse: data ?? rawText,
-        },
-        { status: res.status }
+        { error: "Registrazione non riuscita" },
+        { status: 400, headers: { "Cache-Control": "no-store" } }
       );
     }
 
     const jwt = data?.jwt as string | undefined;
-    if (!jwt) {
+    const userId = data?.user?.id as number | undefined;
+
+    if (!jwt || !userId) {
       return NextResponse.json(
-        {
-          error: "Missing jwt in response",
-          strapiResponse: data ?? rawText,
-        },
-        { status: 500 }
+        { error: "Registrazione non riuscita" },
+        { status: 500, headers: { "Cache-Control": "no-store" } }
       );
     }
 
-    const response = NextResponse.json({ ok: true, user: data.user });
+    // 2) Se BUSINESS -> crea Azienda collegata all'utente
+    if (type === "BUSINESS") {
+      try {
+        const companyPayload: any = {
+          data: {
+            companyName,
+            vatNumber,
+            sdi,
+            pec,
+            billingEmail,
+            billingAddress,
+            isApproved: false,
+            discountPercent: 0,
+            users_permissions_users: [userId], // ✅ collega utente
+          },
+        };
+
+        await fetch(`${baseUrl}${COMPANIES_PATH}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${jwt}`, // ✅ usa jwt appena creato
+          },
+          cache: "no-store",
+          body: JSON.stringify(companyPayload),
+        });
+        // Se fallisce non blocchiamo login: l’admin può sistemare. (evita “rompere” registrazione)
+      } catch {
+        // noop
+      }
+    }
+
+    // 3) Set cookie HttpOnly
+    const response = NextResponse.json(
+      { ok: true },
+      { headers: { "Cache-Control": "no-store" } }
+    );
 
     response.cookies.set("tf_token", jwt, {
       httpOnly: true,
@@ -90,10 +160,10 @@ export async function POST(req: Request) {
     });
 
     return response;
-  } catch (e: any) {
+  } catch {
     return NextResponse.json(
-      { error: "Server error", details: e?.message || String(e) },
-      { status: 500 }
+      { error: "Server error" },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
 }

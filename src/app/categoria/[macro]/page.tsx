@@ -41,10 +41,6 @@ function safeStr(v: unknown, fallback = "") {
   return s || fallback;
 }
 
-function baseStrapiUrl() {
-  return String(STRAPI_URL || "").trim().replace(/\/+$/, "");
-}
-
 function safeJsonParse(text: string): any {
   try {
     return JSON.parse(text);
@@ -53,11 +49,28 @@ function safeJsonParse(text: string): any {
   }
 }
 
+function normalizedStrapiBaseUrl() {
+  let base = String(STRAPI_URL || "").trim().replace(/\/+$/, "");
+  if (!base) return "";
+
+  const isLocal =
+    base.includes("localhost") ||
+    base.includes("127.0.0.1") ||
+    base.includes("0.0.0.0");
+
+  if (process.env.NODE_ENV === "production" && isLocal) return "";
+  if (process.env.NODE_ENV === "production" && !isLocal) {
+    base = base.replace(/^http:\/\//i, "https://");
+  }
+  return base;
+}
+
 function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!maybeUrl) return null;
   const u = String(maybeUrl).trim();
   if (!u) return null;
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  if (u.startsWith("//")) return `https:${u}`;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
   return u;
 }
@@ -72,14 +85,7 @@ function toIntOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
-function toBoolOrNull(v: unknown): boolean | null {
-  return typeof v === "boolean" ? v : null;
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit & { timeoutMs?: number } = {}
-) {
+async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), init.timeoutMs ?? FETCH_TIMEOUT_MS);
   try {
@@ -90,21 +96,36 @@ async function fetchWithTimeout(
 }
 
 type FetchStrapiResult =
-  | { ok: true; status: number; json: any; text: string }
-  | { ok: false; status: number; json: any | null; text: string; reason: "timeout" | "fetch_failed" | "http" };
+  | { ok: true; status: number; json: any; text: string; base: string }
+  | {
+      ok: false;
+      status: number;
+      json: any | null;
+      text: string;
+      base: string;
+      reason: "timeout" | "fetch_failed" | "http";
+    };
 
 async function fetchStrapi(pathOrUrl: string): Promise<FetchStrapiResult> {
-  const base = baseStrapiUrl();
-  if (!base) return { ok: false, status: 500, json: null, text: "STRAPI_URL missing", reason: "http" };
+  const base = normalizedStrapiBaseUrl();
+  if (!base) {
+    return {
+      ok: false,
+      status: 500,
+      json: null,
+      text: "STRAPI_URL missing",
+      base: "",
+      reason: "http",
+    };
+  }
 
   const fullUrl =
     /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
       : `${base}${String(pathOrUrl).startsWith("/") ? "" : "/"}${pathOrUrl}`;
 
-  const headersAuth: Record<string, string> = { Accept: "application/json" };
-  if (STRAPI_TOKEN) headersAuth.Authorization = `Bearer ${STRAPI_TOKEN}`;
-  const headersNoAuth: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
 
   const read = async (res: Response) => {
     const text = await res.text().catch(() => "");
@@ -113,17 +134,11 @@ async function fetchStrapi(pathOrUrl: string): Promise<FetchStrapiResult> {
   };
 
   try {
-    if (STRAPI_TOKEN) {
-      const res = await fetchWithTimeout(fullUrl, { headers: headersAuth });
-      const { text, json } = await read(res);
-      if (res.ok) return { ok: true, status: res.status, json, text };
-      if (res.status !== 401 && res.status !== 403) return { ok: false, status: res.status, json, text, reason: "http" };
-    }
+    const res = await fetchWithTimeout(fullUrl, { headers });
+    const { text, json } = await read(res);
 
-    const res2 = await fetchWithTimeout(fullUrl, { headers: headersNoAuth });
-    const { text, json } = await read(res2);
-    if (res2.ok) return { ok: true, status: res2.status, json, text };
-    return { ok: false, status: res2.status, json, text, reason: "http" };
+    if (res.ok) return { ok: true, status: res.status, json, text, base };
+    return { ok: false, status: res.status, json, text, base, reason: "http" };
   } catch (e: any) {
     const isAbort = e?.name === "AbortError";
     return {
@@ -131,16 +146,15 @@ async function fetchStrapi(pathOrUrl: string): Promise<FetchStrapiResult> {
       status: isAbort ? 504 : 500,
       json: null,
       text: isAbort ? "Timeout Strapi" : String(e?.message || "fetch failed"),
+      base,
       reason: isAbort ? "timeout" : "fetch_failed",
     };
   }
 }
 
-async function fetchMacroBySlug(slug: string): Promise<
-  | { kind: "found"; macro: MacroObj }
-  | { kind: "not_found" }
-  | { kind: "unavailable" }
-> {
+async function fetchMacroBySlug(
+  slug: string
+): Promise<{ kind: "found"; macro: MacroObj } | { kind: "not_found" } | { kind: "unavailable" }> {
   const qs = new URLSearchParams();
   qs.set("filters[slug][$eq]", slug);
   qs.set("pagination[pageSize]", "1");
@@ -158,15 +172,15 @@ async function fetchMacroBySlug(slug: string): Promise<
   const row = data[0];
   const a = row?.attributes ?? row ?? {};
   const subsData = a?.subcategories?.data ?? a?.subcategories ?? [];
+
   const subcategories: Subcat[] = Array.isArray(subsData)
     ? subsData
-        .map((s: any) => {
+        .flatMap((s: any) => {
           const sa = s?.attributes ?? s ?? {};
           const sSlug = safeStr(sa?.slug);
-          if (!sSlug) return null;
-          return { slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) };
+          if (!sSlug) return [];
+          return [{ slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) }];
         })
-        .filter(Boolean) as any
     : [];
 
   return {
@@ -183,7 +197,21 @@ function getDefaultSku(item: any): string | null {
   return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
 }
 
-function normalizeProduct(row: any) {
+function pickBestMediaUrl(node: any): string | null {
+  const a = node?.attributes ?? node ?? {};
+  const f = a?.formats ?? null;
+  const u =
+    f?.large?.url ??
+    f?.medium?.url ??
+    f?.small?.url ??
+    f?.thumbnail?.url ??
+    a?.url ??
+    node?.url ??
+    null;
+  return typeof u === "string" ? u : null;
+}
+
+function normalizeProduct(row: any, base: string) {
   const a = row?.attributes ?? row ?? {};
 
   const variantsData = a?.variants?.data ?? a?.variants ?? [];
@@ -209,103 +237,101 @@ function normalizeProduct(row: any) {
     null;
 
   const firstImage = Array.isArray(imagesData) ? imagesData[0] : imagesData;
-  const imageUrlRaw =
-    firstImage?.attributes?.url ??
-    firstImage?.url ??
-    a?.imageUrl ??
-    a?.image ??
-    null;
+  const bestRaw = pickBestMediaUrl(firstImage) ?? (typeof a?.imageUrl === "string" ? a.imageUrl : null);
+  const imageUrl = absUrl(base, bestRaw);
 
-  const imageUrl = absUrl(baseStrapiUrl(), imageUrlRaw);
-
-  // ✅ inventario Strapi
   const stockQty = toIntOrNull(a?.stockQty);
-  const trackInventory = toBoolOrNull(a?.trackInventory);
+  const trackInventory = typeof a?.trackInventory === "boolean" ? a.trackInventory : null;
+
+  const slug = safeStr(a?.slug);
+  const id = safeStr(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id, slug || "0");
 
   return {
-    id: row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? null,
+    id: String(id),
     documentId: row?.documentId ?? a?.documentId ?? null,
     name: safeStr(a?.name ?? a?.title, "Prodotto"),
-    slug: safeStr(a?.slug),
+    slug,
     price: toNumberOrNull(a?.price),
     compareAtPrice: toNumberOrNull(a?.compareAtPrice),
     shortDescription: a?.shortDescription ?? "",
-    // legacy
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
-
-    // ✅ nuovi campi
     stockQty,
     trackInventory,
-
     variants,
-    image: imageUrl,
-    imageUrl,
+    image: imageUrl ?? undefined,
+    images: imageUrl ? [imageUrl] : undefined,
     createdAt: a?.createdAt ?? row?.createdAt ?? null,
   };
 }
 
 async function fetchProductsByMacro(macroSlug: string) {
-  const attempts: Array<{ key: string; mode: "rel" | "scalar" }> = [
-    { key: "category", mode: "rel" },
-    { key: "categories", mode: "rel" },
-    { key: "categoria", mode: "rel" },
-    { key: "macro", mode: "rel" },
-    { key: "categorySlug", mode: "scalar" },
-    { key: "macroSlug", mode: "scalar" },
+  const base = normalizedStrapiBaseUrl();
+
+  // ✅ ordine IMPORTANTISSIMO:
+  // 1) filtro corretto per il tuo modello dati: subcategory.category.slug == macroSlug
+  // 2) fallback vari (se in futuro colleghi prodotti direttamente alla category)
+
+  const attempts: Array<{ label: string; build: () => URLSearchParams }> = [
+    {
+      label: "subcategory.category.slug",
+      build: () => {
+        const qs = new URLSearchParams();
+        qs.set("populate", "*");
+        qs.set("pagination[pageSize]", String(PAGE_SIZE));
+        qs.set("sort[0]", "createdAt:desc");
+        qs.set("filters[subcategory][category][slug][$eq]", macroSlug);
+        return qs;
+      },
+    },
+    {
+      label: "category.slug",
+      build: () => {
+        const qs = new URLSearchParams();
+        qs.set("populate", "*");
+        qs.set("pagination[pageSize]", String(PAGE_SIZE));
+        qs.set("sort[0]", "createdAt:desc");
+        qs.set("filters[category][slug][$eq]", macroSlug);
+        return qs;
+      },
+    },
+    {
+      label: "categories.slug",
+      build: () => {
+        const qs = new URLSearchParams();
+        qs.set("populate", "*");
+        qs.set("pagination[pageSize]", String(PAGE_SIZE));
+        qs.set("sort[0]", "createdAt:desc");
+        qs.set("filters[categories][slug][$eq]", macroSlug);
+        return qs;
+      },
+    },
   ];
 
-  for (const a of attempts) {
-    const qs = new URLSearchParams();
-
-    qs.set("fields[0]", "name");
-    qs.set("fields[1]", "slug");
-    qs.set("fields[2]", "price");
-    qs.set("fields[3]", "compareAtPrice");
-    qs.set("fields[4]", "shortDescription");
-
-    // ✅ inventario
-    qs.set("fields[5]", "stockQty");
-    qs.set("fields[6]", "trackInventory");
-
-    qs.set("fields[7]", "createdAt");
-
-    qs.set("populate[images][fields][0]", "url");
-    qs.set("populate[images][fields][1]", "formats");
-    qs.set("populate[image][fields][0]", "url");
-    qs.set("populate[image][fields][1]", "formats");
-    qs.set("populate[variants][fields][0]", "sku");
-
-    qs.set("sort[0]", "createdAt:desc");
-    qs.set("pagination[pageSize]", String(PAGE_SIZE));
-
-    if (a.mode === "scalar") qs.set(`filters[${a.key}][$eq]`, macroSlug);
-    else qs.set(`filters[${a.key}][slug][$eq]`, macroSlug);
-
+  for (const attempt of attempts) {
+    const qs = attempt.build();
     const r = await fetchStrapi(`/api/products?${qs.toString()}`);
 
+    // ✅ se è ValidationError (filtro/field non esiste), prova il prossimo tentativo
+    const isValidation = r.status === 400 && r.json?.error?.name === "ValidationError";
+    if (!r.ok && isValidation) continue;
+
+    // ✅ se è proprio errore (timeout/500/403 ecc) segnala unavailable
     if (!r.ok) return { kind: "unavailable" as const, items: [] as any[] };
 
-    const isValidation = r.status === 400 && r.json?.error?.name === "ValidationError";
-    if (isValidation) continue;
-
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-    return { kind: "ok" as const, items: data.map(normalizeProduct) };
+    return { kind: "ok" as const, items: data.map((row) => normalizeProduct(row, base)) };
   }
 
+  // nessun tentativo valido → nessun prodotto
   return { kind: "ok" as const, items: [] as any[] };
 }
 
-export default async function MacroPage({
-  params,
-}: {
-  params: Promise<{ macro: string }>;
-}) {
+export default async function MacroPage({ params }: { params: Promise<{ macro: string }> }) {
   const { macro } = await params;
   const macroSlug = safeDecode(macro);
   if (!macroSlug) return notFound();
 
   const macroRes = await fetchMacroBySlug(macroSlug);
-
   if (macroRes.kind === "not_found") return notFound();
 
   const macroObj: MacroObj =
@@ -316,9 +342,8 @@ export default async function MacroPage({
   const prodRes = await fetchProductsByMacro(macroSlug);
   const items = prodRes.items ?? [];
 
-  // ✅ Chi ha stockQty/trackInventory non ha bisogno della availability esterna
   const needsExternalAvailability = items.some((it: any) => {
-    const track = it?.trackInventory !== false;
+    const track = it?.trackInventory !== false; // default true
     const hasQty = typeof it?.stockQty === "number";
     return track && !hasQty;
   });
@@ -349,23 +374,18 @@ export default async function MacroPage({
     const row = sku ? bySku?.[sku] ?? null : null;
     const available = Number(row?.available ?? 0);
 
-    // ✅ priorità:
-    // 1) trackInventory=false => sempre true
-    // 2) stockQty presente => stockQty>0
-    // 3) altrimenti availability (se presente)
-    // 4) fallback legacy inStock
     const computedInStock =
-      track === false ? true :
-      hasQty ? it.stockQty > 0 :
-      sku ? available > 0 :
-      Boolean(it?.inStock);
+      track === false
+        ? true
+        : hasQty
+          ? Number(it.stockQty) > 0
+          : sku
+            ? available > 0
+            : typeof it?.inStock === "boolean"
+              ? it.inStock
+              : true;
 
-    return {
-      ...it,
-      inStock: computedInStock,
-      inventory: row,
-      sku,
-    };
+    return { ...it, inStock: computedInStock, inventory: row, sku };
   });
 
   const hasProducts = itemsWithStock.length > 0;
@@ -443,9 +463,7 @@ export default async function MacroPage({
         {!hasProducts ? (
           <div className="mt-4 rounded-2xl border border-border bg-surface p-5">
             <p className="text-sm font-semibold">Nessun prodotto disponibile in questa macroarea.</p>
-            <p className="mt-2 text-sm text-text/70">
-              Prova un’altra categoria oppure torna al catalogo completo.
-            </p>
+            <p className="mt-2 text-sm text-text/70">Prova un’altra categoria oppure torna al catalogo completo.</p>
 
             <Link
               href="/catalogo"
