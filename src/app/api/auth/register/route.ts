@@ -26,7 +26,6 @@ function strapiBaseUrl() {
     base.includes("127.0.0.1") ||
     base.includes("0.0.0.0");
 
-  // In prod forza https se non è locale
   if (process.env.NODE_ENV === "production" && !isLocal) {
     base = base.replace(/^http:\/\//i, "https://");
   }
@@ -79,7 +78,6 @@ function isValidEmail(email: string) {
 }
 
 function isStrongEnough(pw: string) {
-  // Base: minimo 8, max 200 (anti abuse)
   return typeof pw === "string" && pw.length >= 8 && pw.length <= 200;
 }
 
@@ -95,11 +93,9 @@ function sanitizeEmailMaybe(v: any) {
   return isValidEmail(e) ? e : "";
 }
 
-/** Messaggio anti-enumeration */
 const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l’accesso.";
 
-/** Timeout+retry fetch */
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
   return (
@@ -159,32 +155,9 @@ async function strapiPost(path: string, body: any, timeoutMs: number, token?: st
 }
 
 async function strapiPostWithUserJwt(path: string, body: any, timeoutMs: number, userJwt: string) {
-  const base = strapiBaseUrl();
-  const url = `${base}${path}`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    Authorization: `Bearer ${userJwt}`,
-  };
-
-  const res = await fetchWithRetry(
-    url,
-    { method: "POST", headers, body: JSON.stringify(body) },
-    timeoutMs,
-    2
-  );
-
-  const text = await res.text().catch(() => "");
-  const data = safeJsonParse(text);
-  return { res, data, text, url };
+  return strapiPost(path, body, timeoutMs, userJwt);
 }
 
-/**
- * Detect "already registered" in modo più conservativo:
- * - guardiamo status 400/409
- * - e messaggi classici su unique/duplicate
- */
 function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
   if (!(status === 400 || status === 409)) return false;
 
@@ -204,7 +177,6 @@ function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText:
   );
 }
 
-/** body limit: 32KB */
 async function readBodyWithLimit(req: Request, limitBytes = 32 * 1024) {
   const raw = await req.text().catch(() => "");
   if (raw && raw.length > limitBytes) return { raw: "", tooLarge: true };
@@ -217,55 +189,106 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 giorni
+    maxAge: 60 * 60 * 24 * 7,
   });
 }
 
 /**
- * Best-effort create entity con fallback sui nomi campo relazione (SERVICE TOKEN)
+ * Crea CustomerProfile in modo affidabile:
+ * 1) prima con SERVICE TOKEN (non dipende dai permessi Authenticated)
+ * 2) se manca service token, prova con JWT utente
+ *
+ * Nota: NON inviamo accountType (Strapi lo rifiuta nel tuo schema).
  */
-async function createCustomerProfileBestEffort(
+async function ensureCustomerProfile(
   userId: number,
-  payload: { firstName: string; lastName: string }
+  firstName: string,
+  lastName: string,
+  userJwt?: string
 ) {
-  if (!STRAPI_SERVICE_TOKEN) {
-    return { ok: false, status: 0, reason: "NO_SERVICE_TOKEN" as const };
+  const TIMEOUT = 12_000;
+  const baseData = {
+    firstName: firstName || undefined,
+    lastName: lastName || undefined,
+  };
+
+  // 1) service token
+  if (STRAPI_SERVICE_TOKEN) {
+    const r1 = await strapiPost(
+      "/api/customer-profiles",
+      { data: { ...baseData, user: userId } },
+      TIMEOUT,
+      STRAPI_SERVICE_TOKEN
+    );
+
+    console.warn("[register] ensureCustomerProfile (service) attempt #1", {
+      ok: r1.res.ok,
+      status: r1.res.status,
+      url: r1.url,
+      text: (r1.text || "").slice(0, 600),
+    });
+
+    if (r1.res.ok) return true;
+
+    const r2 = await strapiPost(
+      "/api/customer-profiles",
+      { data: { ...baseData, users_permissions_user: userId } },
+      TIMEOUT,
+      STRAPI_SERVICE_TOKEN
+    );
+
+    console.warn("[register] ensureCustomerProfile (service) attempt #2", {
+      ok: r2.res.ok,
+      status: r2.res.status,
+      url: r2.url,
+      text: (r2.text || "").slice(0, 600),
+    });
+
+    if (r2.res.ok) return true;
   }
 
-  const TIMEOUT = 10_000;
-  const baseData = {
-    firstName: payload.firstName || undefined,
-    lastName: payload.lastName || undefined,
-  };
+  // 2) user jwt fallback
+  if (userJwt) {
+    const r1 = await strapiPostWithUserJwt(
+      "/api/customer-profiles",
+      { data: { ...baseData, user: userId } },
+      TIMEOUT,
+      userJwt
+    );
 
-  // tentativo 1: field "user"
-  const r1 = await strapiPost(
-    "/api/customer-profiles",
-    { data: { ...baseData, user: userId } },
-    TIMEOUT,
-    STRAPI_SERVICE_TOKEN
-  );
-  if (r1.res.ok) return { ok: true, status: r1.res.status, which: "user" as const };
+    console.warn("[register] ensureCustomerProfile (jwt) attempt #1", {
+      ok: r1.res.ok,
+      status: r1.res.status,
+      url: r1.url,
+      text: (r1.text || "").slice(0, 600),
+    });
 
-  // tentativo 2: field "users_permissions_user"
-  const r2 = await strapiPost(
-    "/api/customer-profiles",
-    { data: { ...baseData, users_permissions_user: userId } },
-    TIMEOUT,
-    STRAPI_SERVICE_TOKEN
-  );
-  if (r2.res.ok) return { ok: true, status: r2.res.status, which: "users_permissions_user" as const };
+    if (r1.res.ok) return true;
 
-  return {
-    ok: false,
-    status: r2.res.status,
-    which: "users_permissions_user" as const,
-    lastErrorText: (r2.text || "").slice(0, 800),
-    lastErrorData: r2.data,
-  };
+    const r2 = await strapiPostWithUserJwt(
+      "/api/customer-profiles",
+      { data: { ...baseData, users_permissions_user: userId } },
+      TIMEOUT,
+      userJwt
+    );
+
+    console.warn("[register] ensureCustomerProfile (jwt) attempt #2", {
+      ok: r2.res.ok,
+      status: r2.res.status,
+      url: r2.url,
+      text: (r2.text || "").slice(0, 600),
+    });
+
+    if (r2.res.ok) return true;
+  }
+
+  return false;
 }
 
-async function createCompanyBestEffort(userId: number, payload: { companyName: string; vatNumber: string; sdi: string; pec: string }) {
+async function createCompanyBestEffort(
+  userId: number,
+  payload: { companyName: string; vatNumber: string; sdi: string; pec: string }
+) {
   if (!STRAPI_SERVICE_TOKEN) return;
 
   const TIMEOUT = 10_000;
@@ -276,7 +299,6 @@ async function createCompanyBestEffort(userId: number, payload: { companyName: s
     pec: payload.pec || undefined,
   };
 
-  // tentativo 1: relation array "users_permissions_users"
   let r = await strapiPost(
     "/api/aziendes",
     { data: { ...baseData, users_permissions_users: [userId] } },
@@ -285,7 +307,6 @@ async function createCompanyBestEffort(userId: number, payload: { companyName: s
   );
   if (r.res.ok) return;
 
-  // tentativo 2: (alcuni setup usano "user" o "users")
   r = await strapiPost(
     "/api/aziendes",
     { data: { ...baseData, user: userId } },
@@ -304,7 +325,6 @@ async function createCompanyBestEffort(userId: number, payload: { companyName: s
 
 export async function POST(req: Request) {
   try {
-    // Content-Type check (evita form-data / spam)
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
       return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
@@ -321,11 +341,9 @@ export async function POST(req: Request) {
     const email = normalizeEmail(body?.email);
     const password = String(body?.password ?? "");
 
-    // dati persona (vanno su CustomerProfile)
     const firstName = clampString(body?.firstName, 60);
     const lastName = clampString(body?.lastName, 60);
 
-    // dati azienda (vanno su Aziende)
     const companyName = clampString(body?.companyName, 140);
     const vatNumber = clampString(body?.vat ?? body?.vatNumber, 40);
     const sdi = clampString(body?.sdi, 20);
@@ -338,7 +356,6 @@ export async function POST(req: Request) {
     const REG_TIMEOUT = 15_000;
     const FORGOT_TIMEOUT = 6_000;
 
-    // 1) registra su Strapi
     const reg = await strapiPost(
       "/api/auth/local/register",
       { email, password, username: email },
@@ -351,57 +368,16 @@ export async function POST(req: Request) {
 
       const response = jsonNoStore({ ok: true, loggedIn: Boolean(jwt), type }, 200);
 
-      // ✅ auto-login (cookie HttpOnly)
       if (jwt) setAuthCookie(response, jwt);
 
-      // ✅ 2A) Crea CustomerProfile con JWT utente (log completo)
-      if (jwt && userId > 0) {
-        const TIMEOUT = 10_000;
-        const baseData = {
-          firstName: firstName || undefined,
-          lastName: lastName || undefined,
-        };
-
-        const r1 = await strapiPostWithUserJwt(
-          "/api/customer-profiles",
-          { data: { ...baseData, user: userId } },
-          TIMEOUT,
-          jwt
-        );
-
-        console.warn("[register] customer-profile create attempt #1 (jwt)", {
-          ok: r1.res.ok,
-          status: r1.res.status,
-          url: r1.url,
-          data: r1.data,
-          text: (r1.text || "").slice(0, 800),
-        });
-
-        if (!r1.res.ok) {
-          const r2 = await strapiPostWithUserJwt(
-            "/api/customer-profiles",
-            { data: { ...baseData, users_permissions_user: userId } },
-            TIMEOUT,
-            jwt
-          );
-
-          console.warn("[register] customer-profile create attempt #2 (jwt)", {
-            ok: r2.res.ok,
-            status: r2.res.status,
-            url: r2.url,
-            data: r2.data,
-            text: (r2.text || "").slice(0, 800),
-          });
-        }
-      }
-
-      // ✅ 2B) Fallback: crea CustomerProfile/Aziende con service token (best-effort + log)
+      // ✅ QUI: forziamo sempre la creazione customer-profile (service token -> jwt fallback)
       if (userId > 0) {
         try {
-          const r = await createCustomerProfileBestEffort(userId, { firstName, lastName });
-          console.warn("[register] customer-profile create (service token) result", r);
+          const created = await ensureCustomerProfile(userId, firstName, lastName, jwt);
+          console.warn("[register] ensureCustomerProfile result", { userId, created });
         } catch (e: any) {
-          console.warn("[register] customer-profile create (service token) exception", {
+          console.warn("[register] ensureCustomerProfile exception", {
+            userId,
             message: e?.message,
             name: e?.name,
           });
@@ -416,14 +392,9 @@ export async function POST(req: Request) {
         }
       }
 
-      if (process.env.NODE_ENV === "development" && !STRAPI_SERVICE_TOKEN) {
-        response.headers.set("X-Debug-Info", "STRAPI_SERVICE_TOKEN missing");
-      }
-
       return response;
     }
 
-    // 2) già registrato => risposta generica + forgot-password best-effort
     if (looksLikeAlreadyRegistered(reg.res.status, reg.data, reg.text)) {
       try {
         await strapiPost("/api/auth/forgot-password", { email }, FORGOT_TIMEOUT);
@@ -437,7 +408,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3) altri errori
     const isDev = process.env.NODE_ENV === "development";
     return jsonNoStore(
       { ok: false, error: "REGISTER_FAILED", ...(isDev ? { debug: { status: reg.res.status } } : {}) },
