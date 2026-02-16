@@ -45,7 +45,7 @@ function jsonNoStore(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "Vary": "Cookie",
+      Vary: "Cookie",
     },
   });
 }
@@ -158,6 +158,28 @@ async function strapiPost(path: string, body: any, timeoutMs: number, token?: st
   return { res, data, text, url };
 }
 
+async function strapiPostWithUserJwt(path: string, body: any, timeoutMs: number, userJwt: string) {
+  const base = strapiBaseUrl();
+  const url = `${base}${path}`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Authorization: `Bearer ${userJwt}`,
+  };
+
+  const res = await fetchWithRetry(
+    url,
+    { method: "POST", headers, body: JSON.stringify(body) },
+    timeoutMs,
+    2
+  );
+
+  const text = await res.text().catch(() => "");
+  const data = safeJsonParse(text);
+  return { res, data, text, url };
+}
+
 /**
  * Detect "already registered" in modo più conservativo:
  * - guardiamo status 400/409
@@ -200,7 +222,7 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
 }
 
 /**
- * Best-effort create entity con fallback sui nomi campo relazione
+ * Best-effort create entity con fallback sui nomi campo relazione (SERVICE TOKEN)
  */
 async function createCustomerProfileBestEffort(userId: number, payload: { firstName: string; lastName: string; accountType: string }) {
   if (!STRAPI_SERVICE_TOKEN) return;
@@ -325,7 +347,58 @@ export async function POST(req: Request) {
       // ✅ auto-login (cookie HttpOnly)
       if (jwt) setAuthCookie(response, jwt);
 
-      // 2) crea CustomerProfile/Aziende (best-effort)
+      // ✅ 2A) Crea CustomerProfile con JWT utente (più affidabile)
+      if (jwt && userId > 0) {
+        const TIMEOUT = 10_000;
+        try {
+          const baseData = {
+            firstName: firstName || undefined,
+            lastName: lastName || undefined,
+            accountType: type || undefined,
+          };
+
+          const r1 = await strapiPostWithUserJwt(
+            "/api/customer-profiles",
+            { data: { ...baseData, user: userId } },
+            TIMEOUT,
+            jwt
+          );
+
+          if (!r1.res.ok) {
+            console.warn("[register] customer-profile create (user field) failed", {
+              status: r1.res.status,
+              url: r1.url,
+              data: r1.data,
+              text: r1.text?.slice?.(0, 500),
+            });
+
+            const r2 = await strapiPostWithUserJwt(
+              "/api/customer-profiles",
+              { data: { ...baseData, users_permissions_user: userId } },
+              TIMEOUT,
+              jwt
+            );
+
+            if (!r2.res.ok) {
+              console.warn("[register] customer-profile create (users_permissions_user field) failed", {
+                status: r2.res.status,
+                url: r2.url,
+                data: r2.data,
+                text: r2.text?.slice?.(0, 500),
+              });
+            }
+          }
+        } catch (e: any) {
+          console.warn("[register] customer-profile create exception", {
+            message: e?.message,
+            name: e?.name,
+            code: e?.code,
+          });
+        }
+      }
+
+
+      // ✅ 2B) Fallback: crea CustomerProfile/Aziende con service token (best-effort)
       if (userId > 0) {
         try {
           await createCustomerProfileBestEffort(userId, { firstName, lastName, accountType: type });
@@ -344,7 +417,7 @@ export async function POST(req: Request) {
 
       // debug soft in dev se manca token service (non rompe)
       if (process.env.NODE_ENV === "development" && !STRAPI_SERVICE_TOKEN) {
-        response.headers.set("X-Debug-Info", "STRAPI_SERVICE_TOKEN missing: profiles not created");
+        response.headers.set("X-Debug-Info", "STRAPI_SERVICE_TOKEN missing: service-profile create skipped");
       }
 
       return response;
