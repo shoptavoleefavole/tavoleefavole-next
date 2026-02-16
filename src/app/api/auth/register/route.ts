@@ -213,7 +213,7 @@ async function createCustomerProfileBestEffort(userId: number, payload: { firstN
   };
 
   // tentativo 1: field "user"
-  let r = await strapiPost(
+  const r = await strapiPost(
     "/api/customer-profiles",
     { data: { ...baseData, user: userId } },
     TIMEOUT,
