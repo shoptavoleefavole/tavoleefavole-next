@@ -3,7 +3,6 @@ import { notFound } from "next/navigation";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { getAvailability } from "@/lib/inventory.server";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -20,7 +19,12 @@ const STRAPI_TOKEN =
   process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
-const FETCH_TIMEOUT_MS = Number(process.env.CATEGORY_STRAPI_TIMEOUT_MS ?? 6500);
+// Render/Free tier può avere cold start -> timeout più alto + retry
+const FETCH_TIMEOUT_MS = (() => {
+  const n = Number(process.env.CATEGORY_STRAPI_TIMEOUT_MS ?? 25000);
+  return Number.isFinite(n) ? Math.max(8000, n) : 25000;
+})();
+
 const PAGE_SIZE = 200;
 
 function safeDecode(v: unknown) {
@@ -50,15 +54,16 @@ function normalizedStrapiBaseUrl() {
   let base = String(STRAPI_URL || "").trim().replace(/\/+$/, "");
   if (!base) return "";
 
-  const isLocal =
-    base.includes("localhost") ||
-    base.includes("127.0.0.1") ||
-    base.includes("0.0.0.0");
+  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
 
+  // sicurezza: in prod non permettiamo base locale
   if (process.env.NODE_ENV === "production" && isLocal) return "";
+
+  // in prod forziamo https se non è locale
   if (process.env.NODE_ENV === "production" && !isLocal) {
     base = base.replace(/^http:\/\//i, "https://");
   }
+
   return base;
 }
 
@@ -72,28 +77,88 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   return u;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
+function isAbortError(e: any) {
+  return e?.name === "AbortError" || String(e?.message || "").toLowerCase().includes("aborted");
+}
+
+function isRetryableFetchError(e: any) {
+  const code = e?.cause?.code || e?.code;
+  return (
+    isAbortError(e) ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EAI_AGAIN" ||
+    String(e?.message || "").toLowerCase().includes("fetch failed")
+  );
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), init.timeoutMs ?? FETCH_TIMEOUT_MS);
+  const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+    });
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchStrapi(path: string) {
+async function fetchWithRetry(url: string, init: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  let lastErr: any;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await fetchWithTimeout(url, init, timeoutMs);
+    } catch (e: any) {
+      lastErr = e;
+      if (!isRetryableFetchError(e) || i === 2) break;
+      // backoff: 500ms, 1000ms
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Fetch Strapi "safe":
+ * - no throw verso la pagina (ritorna ok:false)
+ * - niente leak di token
+ * - log solo in dev
+ */
+type StrapiFetchResult = {
+  ok: boolean;
+  status: number;
+  json: any;
+  base: string;
+};
+
+async function fetchStrapi(path: string): Promise<StrapiFetchResult> {
   const base = normalizedStrapiBaseUrl();
-  if (!base) return { ok: false, status: 500, json: null as any, base };
+  if (!base) return { ok: false, status: 500, json: null, base };
 
   const url = `${base}${path.startsWith("/") ? "" : "/"}${path}`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
 
-  const res = await fetchWithTimeout(url, { headers });
-  const text = await res.text().catch(() => "");
-  const json = text ? safeJsonParse(text) : null;
-  return { ok: res.ok, status: res.status, json, base };
+  try {
+    const res = await fetchWithRetry(url, { headers });
+    const text = await res.text().catch(() => "");
+    const json = text ? safeJsonParse(text) : null;
+
+    if (!res.ok && process.env.NODE_ENV === "development") {
+      console.warn("[categoria/sub] Strapi not ok:", res.status, String(text || "").slice(0, 200));
+    }
+
+    return { ok: res.ok, status: res.status, json, base };
+  } catch (e: any) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[categoria/sub] Strapi fetch failed:", e?.message || e);
+    }
+    return { ok: false, status: 0, json: null, base };
+  }
 }
 
 function getDefaultSku(item: any): string | null {
@@ -134,14 +199,13 @@ function normalizeProduct(row: any, base: string) {
   const imagesFromCover = extractMediaUrls(base, a?.cover);
   const imagesFromThumb = extractMediaUrls(base, a?.thumbnail);
 
-  const images =
-    imagesFromImages.length
-      ? imagesFromImages
-      : imagesFromImage.length
-        ? imagesFromImage
-        : imagesFromCover.length
-          ? imagesFromCover
-          : imagesFromThumb;
+  const images = imagesFromImages.length
+    ? imagesFromImages
+    : imagesFromImage.length
+      ? imagesFromImage
+      : imagesFromCover.length
+        ? imagesFromCover
+        : imagesFromThumb;
 
   const variantsData = a?.variants?.data ?? a?.variants ?? [];
   const variants = Array.isArray(variantsData)
@@ -234,6 +298,24 @@ async function fetchProductsBySub(macroSlug: string, subSlug: string) {
   return data2.map((row) => normalizeProduct(row, base2));
 }
 
+async function safeGetAvailabilityOrNull(skus: string[]) {
+  if (!skus.length) return null;
+
+  // ✅ fail-soft:
+  // - se manca la secret (o inventory.server fa throw), non blocchiamo la pagina
+  // - in prod: fallback comunque senza stock (meglio mostrare prodotti che errore)
+  try {
+    const mod = await import("@/lib/inventory.server");
+    if (!mod?.getAvailability) return null;
+    return await mod.getAvailability({ skus, warehouse: "MAIN" });
+  } catch (e: any) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[categoria/sub] availability skipped:", e?.message || e);
+    }
+    return null;
+  }
+}
+
 export default async function MacroSubPage({ params }: { params: Promise<{ macro: string; sub: string }> }) {
   const { macro, sub } = await params;
 
@@ -242,10 +324,14 @@ export default async function MacroSubPage({ params }: { params: Promise<{ macro
 
   if (!macroSlug || !subSlug) return notFound();
 
-  const macroObj = await fetchMacroLabel(macroSlug);
-  const subObj = await fetchSubLabel(subSlug);
+  // ✅ non facciamo crashare la pagina se Strapi è lento:
+  // label ok se non arrivano -> fallback sui slug
+  const [macroObj, subObj] = await Promise.all([
+    fetchMacroLabel(macroSlug).catch(() => ({ slug: macroSlug, label: macroSlug })),
+    fetchSubLabel(subSlug).catch(() => ({ slug: subSlug, label: subSlug })),
+  ]);
 
-  const items = await fetchProductsBySub(macroSlug, subSlug);
+  const items = await fetchProductsBySub(macroSlug, subSlug).catch(() => []);
 
   const skus = Array.from(
     new Set(
@@ -255,23 +341,28 @@ export default async function MacroSubPage({ params }: { params: Promise<{ macro
     )
   );
 
-  const availability = skus.length ? await getAvailability({ skus, warehouse: "MAIN" }) : null;
+  const availability = await safeGetAvailabilityOrNull(skus);
   const bySku = (availability as any)?.data?.MAIN ?? {};
 
   const itemsWithStock = items.map((it: any) => {
-    const sku = getDefaultSku(it);
-    const row = sku ? bySku?.[sku] ?? null : null;
-    const available = Number(row?.available ?? 0);
+  const sku = getDefaultSku(it);
+  const row = sku ? (bySku?.[sku] ?? null) : null;
 
-    return {
-      ...it,
-      inStock: sku ? available > 0 : Boolean(it?.inStock ?? true),
-      inventory: row,
-      sku,
-    };
-  });
+  // Se row non c’è, available diventa NaN (così "known" sarà false)
+  const available = row ? Number(row.available) : Number.NaN;
+  const known = !!row && Number.isFinite(available);
 
-  const hasProducts = itemsWithStock.length > 0;
+  return {
+    ...it,
+    // fail-soft: se non sappiamo la disponibilità, NON blocchiamo
+    inStock: sku ? (known ? available > 0 : true) : Boolean(it?.inStock ?? true),
+    inventory: row,
+    sku,
+  };
+});
+
+const hasProducts = itemsWithStock.length > 0;
+
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8">
@@ -310,7 +401,10 @@ export default async function MacroSubPage({ params }: { params: Promise<{ macro
           </Link>
         </div>
       ) : (
-        <ProductsGridWithFilters items={itemsWithStock as any} emptyText="Nessun prodotto trovato in questa sottocategoria." />
+        <ProductsGridWithFilters
+          items={itemsWithStock as any}
+          emptyText="Nessun prodotto trovato in questa sottocategoria."
+        />
       )}
     </div>
   );

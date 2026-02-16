@@ -1,3 +1,4 @@
+// src/app/api/checkout/start/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 
@@ -10,12 +11,14 @@ export const dynamic = "force-dynamic";
  * - Prezzi sempre da Strapi
  * - Prezzi aziende solo se approved
  * - Cialde: prezzo server-side
- * - Inventory check (SKU, warehouse MAIN)
+ * - Inventory check (SKU, warehouse MAIN) con FAIL-SOFT in dev/preview
  *
  * ✅ Hardening:
  * - no secrets in response
  * - no throw/import-time env checks (build-safe)
  * - retry+timeout per Strapi
+ * - input sanitization
+ * - no PII leakage in errors (prod)
  */
 
 type CartItemMeta = Record<string, any>;
@@ -151,7 +154,8 @@ function normalizeItems(input: any): CartItem[] {
       name: typeof it?.name === "string" ? it.name : undefined,
       qty,
       imageUrl: typeof it?.imageUrl === "string" ? it.imageUrl : undefined,
-      variantId: typeof it?.variantId === "number" || it?.variantId === null ? it.variantId : undefined,
+      variantId:
+        typeof it?.variantId === "number" || it?.variantId === null ? it.variantId : undefined,
       meta,
     });
   }
@@ -357,7 +361,9 @@ async function findNumericOrderIdByDocumentId(args: {
   qs.set("pagination[pageSize]", "1");
   qs.set("fields[0]", "id");
 
-  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/orders?${qs.toString()}`, { method: "GET" });
+  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/orders?${qs.toString()}`, {
+    method: "GET",
+  });
   if (!r.res.ok) return null;
 
   const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
@@ -497,7 +503,11 @@ function extractProduct(row: any): StrapiProduct {
   const id = typeof row?.id === "number" ? row.id : typeof a?.id === "number" ? a.id : null;
 
   const documentId =
-    typeof row?.documentId === "string" ? row.documentId : typeof a?.documentId === "string" ? a.documentId : null;
+    typeof row?.documentId === "string"
+      ? row.documentId
+      : typeof a?.documentId === "string"
+      ? a.documentId
+      : null;
 
   const slug = typeof a?.slug === "string" ? a.slug : typeof row?.slug === "string" ? row.slug : null;
   const name = typeof a?.name === "string" ? a.name : typeof row?.name === "string" ? row.name : null;
@@ -654,9 +664,20 @@ function pickCompanyUnitPriceMajor(p: StrapiProduct): number | null {
   return candidates.length ? candidates[0] : null;
 }
 
-/* ---------------- ✅ INVENTORY CHECK ---------------- */
+/* ---------------- ✅ INVENTORY CHECK (FAIL-SOFT) ---------------- */
 
-async function checkInventoryOrThrow(args: {
+function isHardModeProduction(): boolean {
+  const nodeEnv = (process.env.NODE_ENV || "").toLowerCase();
+  const vercelEnv = (process.env.VERCEL_ENV || "").toLowerCase(); // production | preview | development | ""
+  if (vercelEnv) return vercelEnv === "production";
+  return nodeEnv === "production";
+}
+
+/**
+ * - Prod: se inventory fallisce -> blocca (out of stock / errore)
+ * - Dev/Preview: se inventory non disponibile (missing secret, errori rete, ecc) -> non blocca
+ */
+async function checkInventoryFailSoft(args: {
   items: Array<{ sku: string; qty: number; name: string }>;
   warehouse: string;
 }) {
@@ -667,6 +688,10 @@ async function checkInventoryOrThrow(args: {
   for (const it of items) {
     const sku = String(it.sku || "").trim();
     if (!sku) continue;
+
+    // SKU safe (coerente con inventory.server.ts)
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(sku)) continue;
+
     const qty = Math.max(1, Math.floor(Number(it.qty) || 1));
     const prev = need.get(sku);
     need.set(sku, { qty: (prev?.qty ?? 0) + qty, name: prev?.name ?? it.name });
@@ -675,29 +700,45 @@ async function checkInventoryOrThrow(args: {
   const skus = Array.from(need.keys());
   if (!skus.length) return;
 
-  // ✅ lazy import (build-safe se mancano ENV in inventory.server)
-  const { getAvailability } = await import("@/lib/inventory.server");
+  const hard = isHardModeProduction();
 
-  const availability = await getAvailability({ skus, warehouse });
-  const insufficient: Array<{ sku: string; requested: number; available: number; name: string }> = [];
+  try {
+    // ✅ lazy import (build-safe)
+    const { getAvailability } = await import("@/lib/inventory.server");
+    const availability = await getAvailability({ skus, warehouse });
 
-  for (const sku of skus) {
-    const requested = need.get(sku)!.qty;
-    const name = need.get(sku)!.name;
-    const row = (availability as any)?.data?.[warehouse]?.[sku] ?? null;
-    const available = row ? Number(row.available ?? 0) : 0;
+    const insufficient: Array<{ sku: string; requested: number; available: number; name: string }> = [];
 
-    if (!Number.isFinite(available) || available < requested) {
-      insufficient.push({ sku, requested, available: Number.isFinite(available) ? available : 0, name });
+    for (const sku of skus) {
+      const requested = need.get(sku)!.qty;
+      const name = need.get(sku)!.name;
+      const row = (availability as any)?.data?.[warehouse]?.[sku] ?? null;
+      const available = row ? Number(row.available ?? 0) : 0;
+
+      if (!Number.isFinite(available) || available < requested) {
+        insufficient.push({ sku, requested, available: Number.isFinite(available) ? available : 0, name });
+      }
     }
-  }
 
-  if (insufficient.length) {
-    const msg = insufficient.length === 1 ? "Prodotto non disponibile" : "Alcuni prodotti non sono disponibili";
-    const e: any = new Error(msg);
-    e.code = "OUT_OF_STOCK";
-    e.details = insufficient;
-    throw e;
+    if (insufficient.length) {
+      const msg = insufficient.length === 1 ? "Prodotto non disponibile" : "Alcuni prodotti non sono disponibili";
+      const e: any = new Error(msg);
+      e.code = "OUT_OF_STOCK";
+      e.details = insufficient;
+      throw e;
+    }
+  } catch (e: any) {
+    // se è davvero out-of-stock, propaghiamo sempre
+    if (e?.code === "OUT_OF_STOCK") throw e;
+
+    // fail-soft in dev/preview
+    if (!hard) return;
+
+    // prod: se inventory non funziona, meglio bloccare (o adegua se preferisci comportamento diverso)
+    const err: any = new Error("Inventory check failed");
+    err.code = "INV_CHECK_FAILED";
+    err.cause = e;
+    throw err;
   }
 }
 
@@ -713,7 +754,8 @@ export async function POST(request: Request) {
     if (!STRIPE_SECRET_KEY) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
     if (!STRIPE_SECRET_KEY.startsWith("sk_")) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
     if (!STRAPI_URL) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
-    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
+    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20)
+      return jsonNoStore({ ok: false, error: "Server misconfigured" }, 500);
 
     let SITE_URL: string;
     try {
@@ -749,11 +791,9 @@ export async function POST(request: Request) {
 
     if (userJwt) {
       try {
-        const meRes = await fetchWithRetry(
-          `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
-          { headers: { Authorization: `Bearer ${userJwt}`, Accept: "application/json" } },
-          15_000
-        );
+        const meRes = await fetchWithRetry(`${strapiBaseUrl(STRAPI_URL)}/api/users/me`, {
+          headers: { Authorization: `Bearer ${userJwt}`, Accept: "application/json" },
+        }, 15_000);
 
         if (meRes.ok) {
           const me = safeJsonParse(await meRes.text().catch(() => ""));
@@ -790,7 +830,7 @@ export async function POST(request: Request) {
       return jsonNoStore({ ok: false, error: "Failed fetching products from Strapi" }, 502);
     }
 
-    // ✅ inventory pre-check
+    // ✅ inventory pre-check (fail soft dev/preview)
     {
       const invItems: Array<{ sku: string; qty: number; name: string }> = [];
 
@@ -806,13 +846,17 @@ export async function POST(request: Request) {
       }
 
       try {
-        await checkInventoryOrThrow({ items: invItems, warehouse: "MAIN" });
+        await checkInventoryFailSoft({ items: invItems, warehouse: "MAIN" });
       } catch (e: any) {
         if (e?.code === "OUT_OF_STOCK") {
           return jsonNoStore(
             { ok: false, error: "OUT_OF_STOCK", message: "Quantità non disponibile.", items: e?.details ?? [] },
             409
           );
+        }
+        if (e?.code === "INV_CHECK_FAILED") {
+          // prod: inventory down -> 503
+          return jsonNoStore({ ok: false, error: "INVENTORY_UNAVAILABLE" }, 503);
         }
         throw e;
       }
@@ -847,7 +891,9 @@ export async function POST(request: Request) {
         null;
 
       if (!p || !p.price || p.price <= 0) {
-        throw new Error(`Product not found or invalid price (id=${String(it.productId ?? it.id)} slug=${String(it.slug)})`);
+        throw new Error(
+          `Product not found or invalid price (id=${String(it.productId ?? it.id)} slug=${String(it.slug)})`
+        );
       }
 
       const publicPriceMajor = p.price;
@@ -883,7 +929,8 @@ export async function POST(request: Request) {
       const baseUnitMinor = toStripeUnitAmount(baseUnitMajor, currency);
       const finalUnitMinor = toStripeUnitAmount(finalUnitMajor, currency);
       if (!baseUnitMinor || baseUnitMinor < 1) throw new Error(`Invalid base unit for "${p.name ?? it.name ?? "item"}"`);
-      if (!finalUnitMinor || finalUnitMinor < 1) throw new Error(`Invalid final unit for "${p.name ?? it.name ?? "item"}"`);
+      if (!finalUnitMinor || finalUnitMinor < 1)
+        throw new Error(`Invalid final unit for "${p.name ?? it.name ?? "item"}"`);
 
       baseSubtotalMinor += baseUnitMinor * it.qty;
       finalSubtotalMinor += finalUnitMinor * it.qty;
@@ -942,7 +989,8 @@ export async function POST(request: Request) {
     const shippingMinor = shippingMajorIn > 0 ? toStripeUnitAmount(shippingMajorIn, currency) ?? 0 : 0;
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
-    if (!Number.isFinite(totalMinor) || totalMinor <= 0) return jsonNoStore({ ok: false, error: "Total must be > 0" }, 400);
+    if (!Number.isFinite(totalMinor) || totalMinor <= 0)
+      return jsonNoStore({ ok: false, error: "Total must be > 0" }, 400);
 
     const subtotal = toMajor(baseSubtotalMinor, currency);
     const discountTotal = toMajor(discountMinor, currency);
@@ -1087,7 +1135,10 @@ export async function POST(request: Request) {
     );
   } catch (err: any) {
     if (err?.code === "OUT_OF_STOCK") {
-      return jsonNoStore({ ok: false, error: "OUT_OF_STOCK", message: err?.message, items: err?.details ?? [] }, 409);
+      return jsonNoStore(
+        { ok: false, error: "OUT_OF_STOCK", message: err?.message, items: err?.details ?? [] },
+        409
+      );
     }
 
     if (isRetryableFetchError(err)) {
@@ -1097,7 +1148,9 @@ export async function POST(request: Request) {
       );
     }
 
-    console.error("[checkout/start] UNHANDLED:", err);
+    // non loggare dati sensibili; ok log generico
+    console.error("[checkout/start] UNHANDLED:", err?.message ?? err);
+
     return jsonNoStore(
       {
         ok: false,

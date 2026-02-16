@@ -11,6 +11,16 @@ import MobileMenu from "@/components/MobileMenu";
 import { useCart } from "@/components/cart/CartProvider";
 import { formatEUR } from "@/lib/format";
 
+const AUTH_EVENT = "tf:auth-changed";
+const STORAGE_KEY = "tf_nav_categories_v1";
+const STORAGE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+const FETCH_TIMEOUT_MS = 6500;
+
+const PUBLIC_STRAPI_URL = String(process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
+
+/* ---------------------------
+   Icons
+---------------------------- */
 function MenuIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -39,10 +49,18 @@ function CartIcon({ className = "" }: { className?: string }) {
 }
 
 /* ---------------------------
-   Categorie (fail-safe)
+   Types
 ---------------------------- */
 type NavSub = { slug: string; label: string };
 export type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
+
+type AccountType = "PERSON" | "BUSINESS";
+
+type ProfileSummary = {
+  loggedIn: boolean;
+  type: AccountType | null;
+  displayName: string;
+};
 
 const FALLBACK_CATEGORIES: NavCat[] = [
   { slug: "prodotti-per-pasticceria", label: "Prodotti per pasticceria", icon: null, subcategories: [] },
@@ -50,12 +68,9 @@ const FALLBACK_CATEGORIES: NavCat[] = [
   { slug: "confetti", label: "Confetti", icon: null, subcategories: [] },
 ];
 
-const PUBLIC_STRAPI_URL = String(process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
-
-const FETCH_TIMEOUT_MS = 6500;
-const STORAGE_KEY = "tf_nav_categories_v1";
-const STORAGE_TTL_MS = 6 * 60 * 60 * 1000; // 6h
-
+/* ---------------------------
+   Small utils (safe)
+---------------------------- */
 function safeString(v: unknown, fallback = "") {
   const s = String(v ?? "").trim();
   return s || fallback;
@@ -63,7 +78,7 @@ function safeString(v: unknown, fallback = "") {
 
 function safeJsonParse(text: string): any {
   try {
-    return JSON.parse(text);
+    return text ? JSON.parse(text) : null;
   } catch {
     return null;
   }
@@ -152,8 +167,7 @@ async function fetchWithTimeout(url: string, ms: number, signal?: AbortSignal) {
   if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
   try {
-    const res = await fetch(url, { cache: "no-store", signal: controller.signal, credentials: "include" });
-    return res;
+    return await fetch(url, { cache: "no-store", signal: controller.signal, credentials: "include" });
   } finally {
     window.clearTimeout(t);
     if (signal) signal.removeEventListener("abort", onAbort);
@@ -175,40 +189,18 @@ async function fetchHeaderCategories(signal?: AbortSignal): Promise<NavCat[]> {
 }
 
 /* ---------------------------
-   Auth (header)
+   Auth/profile summary (FROM /api/auth/me ONLY)
 ---------------------------- */
-type HeaderUser = {
-  id?: number | string;
-  username?: string;
-  email?: string;
-  firstName?: string | null;
-  lastName?: string | null;
-
-  // futuro: utile per business
-  accountType?: "PERSON" | "BUSINESS" | null;
-};
-
-function sanitizeInlineText(input: unknown, maxLen = 40): string {
+function sanitizeInlineText(input: unknown, maxLen = 60): string {
   const raw = String(input ?? "");
   const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
   if (!cleaned) return "";
   return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned;
 }
 
-function displayName(u: HeaderUser | null): string {
-  if (!u) return "";
-  const fn = sanitizeInlineText(u.firstName);
-  const ln = sanitizeInlineText(u.lastName);
-  const full = `${fn} ${ln}`.trim();
-  if (full) return full;
-  const un = sanitizeInlineText(u.username);
-  if (un) return un;
-  return "";
-}
-
-async function fetchMe(signal?: AbortSignal): Promise<{ loggedIn: boolean; user: HeaderUser | null }> {
+async function fetchProfileSummary(signal?: AbortSignal): Promise<ProfileSummary> {
   try {
-    const res = await fetch("/api/auth/me", {
+    const meRes = await fetch("/api/auth/me", {
       method: "GET",
       cache: "no-store",
       credentials: "include",
@@ -216,30 +208,30 @@ async function fetchMe(signal?: AbortSignal): Promise<{ loggedIn: boolean; user:
       signal,
     });
 
-    const text = await res.text().catch(() => "");
-    const json = safeJsonParse(text);
+    const meText = await meRes.text().catch(() => "");
+    const meJson = safeJsonParse(meText);
 
-    const loggedIn = Boolean(json?.loggedIn);
-    const user = (json?.user ?? null) as HeaderUser | null;
+    const loggedIn = Boolean(meJson?.loggedIn);
+    if (!loggedIn) return { loggedIn: false, type: null, displayName: "" };
 
-    return { loggedIn, user: loggedIn ? user : null };
+    const accountTypeRaw = String(meJson?.user?.accountType ?? "").toUpperCase();
+    const type = (accountTypeRaw === "BUSINESS" ? "BUSINESS" : "PERSON") as AccountType;
+
+    const displayName = sanitizeInlineText(meJson?.user?.displayName, 60);
+
+    return {
+      loggedIn: true,
+      type,
+      displayName: displayName || "Account",
+    };
   } catch {
-    return { loggedIn: false, user: null };
+    return { loggedIn: false, type: null, displayName: "" };
   }
 }
 
-async function doLogout(): Promise<boolean> {
-  try {
-    const res = await fetch("/api/auth/logout", {
-      method: "POST",
-      cache: "no-store",
-      credentials: "include",
-      headers: { Accept: "application/json" },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
+function accountLinkForGuest() {
+  const next = "/account";
+  return `/accedi?next=${encodeURIComponent(next)}`;
 }
 
 /* ---------------------------
@@ -265,16 +257,18 @@ export default function Header() {
   const cartCount = mounted ? summary.count : 0;
   const cartTotal = mounted ? summary.total : 0;
 
-  // user state
+  // auth summary
   const [meLoaded, setMeLoaded] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
-  const [user, setUser] = useState<HeaderUser | null>(null);
+  const [displayName, setDisplayName] = useState<string>("");
 
-  // dropdown account
-  const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement | null>(null);
 
-  // sync state con URL
+  const currentPathWithQuery = useMemo(() => {
+    const qs = searchParams.toString();
+    return `${pathname}${qs ? `?${qs}` : ""}`;
+  }, [pathname, searchParams]);
+
   useEffect(() => {
     const nextCat = searchParams.get("categoria") ?? "";
     const nextQ = searchParams.get("q") ?? "";
@@ -283,14 +277,12 @@ export default function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // prefill immediato da storage
   useEffect(() => {
     if (!mounted) return;
     const cached = loadFromStorage();
     if (cached?.length) setCategories(cached);
   }, [mounted]);
 
-  // fetch categorie
   useEffect(() => {
     let alive = true;
     const controller = new AbortController();
@@ -318,79 +310,36 @@ export default function Header() {
     };
   }, []);
 
-  // fetch me
+  const refreshAuth = async (signal?: AbortSignal) => {
+    const r = await fetchProfileSummary(signal);
+    setLoggedIn(r.loggedIn);
+    setDisplayName(r.displayName);
+    setMeLoaded(true);
+  };
+
   useEffect(() => {
-    let alive = true;
     const controller = new AbortController();
-
-    (async () => {
-      try {
-        const r = await fetchMe(controller.signal);
-        if (!alive) return;
-        setLoggedIn(r.loggedIn);
-        setUser(r.user);
-      } finally {
-        if (!alive) return;
-        setMeLoaded(true);
-      }
-    })();
-
-    return () => {
-      alive = false;
-      controller.abort();
-    };
+    refreshAuth(controller.signal).catch(() => {
+      setLoggedIn(false);
+      setDisplayName("");
+      setMeLoaded(true);
+    });
+    return () => controller.abort();
   }, []);
 
-  // close dropdown on outside click / esc
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (!accountOpen) return;
-      const target = e.target as Node;
-      if (accountRef.current && !accountRef.current.contains(target)) setAccountOpen(false);
+    function onAuthChanged() {
+      const controller = new AbortController();
+      refreshAuth(controller.signal).catch(() => {
+        setLoggedIn(false);
+        setDisplayName("");
+        setMeLoaded(true);
+      });
     }
-    function onEsc(e: KeyboardEvent) {
-      if (e.key === "Escape") setAccountOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [accountOpen]);
+    window.addEventListener(AUTH_EVENT, onAuthChanged as EventListener);
+    return () => window.removeEventListener(AUTH_EVENT, onAuthChanged as EventListener);
+  }, []);
 
-  const safeCategories = useMemo(() => (Array.isArray(categories) ? categories : []), [categories]);
-
-  const displayedCategories = useMemo(() => {
-    if (safeCategories.length > 0) return safeCategories;
-    if (catsLoaded) return FALLBACK_CATEGORIES;
-    return [];
-  }, [safeCategories, catsLoaded]);
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-
-    const nextQ = q.trim();
-    const nextCat = cat.trim();
-    if (!nextCat && !nextQ) return;
-
-    const sp = new URLSearchParams();
-    const sort = searchParams.get("sort");
-    if (sort) sp.set("sort", sort);
-
-    if (nextCat) sp.set("categoria", nextCat);
-    if (nextQ) sp.set("q", nextQ);
-
-    const qs = sp.toString();
-    const target = qs ? `/catalogo?${qs}` : `/catalogo`;
-
-    const current = `${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
-    if (current === target) return;
-
-    router.push(target);
-  }
-
-  // Open/close menu da eventi globali
   useEffect(() => {
     function onOpen() {
       setMobileMenuOpen(true);
@@ -408,19 +357,35 @@ export default function Header() {
     };
   }, []);
 
-  const searchPlaceholder = "Cerca vaniglia, confetti, stampi…";
+  const displayedCategories = useMemo(() => {
+    if (Array.isArray(categories) && categories.length > 0) return categories;
+    if (catsLoaded) return FALLBACK_CATEGORIES;
+    return [];
+  }, [categories, catsLoaded]);
 
-  const name = useMemo(() => displayName(user), [user]);
-  const isBusiness = user?.accountType === "BUSINESS";
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
 
-  async function handleLogout() {
-    setAccountOpen(false);
-    const ok = await doLogout();
-    if (ok) {
-      router.replace("/");
-      router.refresh();
-    }
+    const nextQ = q.trim();
+    const nextCat = cat.trim();
+    if (!nextCat && !nextQ) return;
+
+    const sp = new URLSearchParams();
+    const sort = searchParams.get("sort");
+    if (sort) sp.set("sort", sort);
+
+    if (nextCat) sp.set("categoria", nextCat);
+    if (nextQ) sp.set("q", nextQ);
+
+    const qs = sp.toString();
+    const target = qs ? `/catalogo?${qs}` : `/catalogo`;
+    if (currentPathWithQuery === target) return;
+
+    router.push(target);
   }
+
+  const searchPlaceholder = "Cerca vaniglia, confetti, stampi…";
+  const accountHref = loggedIn ? "/account" : accountLinkForGuest();
 
   return (
     <header className="border-b border-border bg-background/90 backdrop-blur">
@@ -504,113 +469,26 @@ export default function Header() {
           </form>
 
           <div className="flex items-center gap-2">
-            {/* ACCOUNT DROPDOWN */}
-            <div className="relative-50" ref={accountRef}>
-              {!meLoaded || !loggedIn ? (
-                <Link
-                  href="/account"
-                  className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  aria-label="Account"
-                >
-                  <UserIcon />
-                  <span className="hidden lg:inline text-sm text-text">Account</span>
-                </Link>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setAccountOpen((v) => !v)}
-                    className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                    aria-haspopup="menu"
-                    aria-expanded={accountOpen}
-                  >
-                    <UserIcon />
-                    <span className="hidden lg:inline text-sm text-text">
-                      <span className="font-semibold">Benvenuto,</span> {name}
-                    </span>
-                  </button>
-
-                  {accountOpen ? (
-                    <div
-                      role="menu"
-                      className="absolute right-0 z-50 mt-2 w-64 overflow-hidden rounded-2xl border border-border bg-background shadow-lg"
-                    >
-                      <div className="p-3 border-b border-border">
-                        <div className="text-sm font-extrabold">{name}</div>
-                        {user?.email ? <div className="text-xs text-text/60">{sanitizeInlineText(user.email, 60)}</div> : null}
-                        {isBusiness ? (
-                          <div className="mt-2 inline-flex rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">
-                            Profilo aziendale
-                          </div>
-                        ) : (
-                          <div className="mt-2 inline-flex rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">
-                            Profilo privato
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="p-2">
-                        <Link
-                          href="/account/profilo"
-                          onClick={() => setAccountOpen(false)}
-                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
-                          role="menuitem"
-                        >
-                          Profilo
-                        </Link>
-                        <Link
-                          href="/account/ordini"
-                          onClick={() => setAccountOpen(false)}
-                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
-                          role="menuitem"
-                        >
-                          Ordini
-                        </Link>
-                        <Link
-                          href="/account/preferiti"
-                          onClick={() => setAccountOpen(false)}
-                          className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
-                          role="menuitem"
-                        >
-                          Preferiti
-                        </Link>
-
-                        {isBusiness ? (
-                          <>
-                            <div className="my-2 h-px bg-border" />
-                            <Link
-                              href="/account/azienda"
-                              onClick={() => setAccountOpen(false)}
-                              className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
-                              role="menuitem"
-                            >
-                              Area azienda
-                            </Link>
-                            <Link
-                              href="/account/fatturazione"
-                              onClick={() => setAccountOpen(false)}
-                              className="block rounded-xl px-3 py-2 text-sm hover:bg-surface"
-                              role="menuitem"
-                            >
-                              Fatturazione (PEC/SDI)
-                            </Link>
-                          </>
-                        ) : null}
-
-                        <div className="my-2 h-px bg-border" />
-                        <button
-                          type="button"
-                          onClick={handleLogout}
-                          className="block w-full rounded-xl px-3 py-2 text-left text-sm font-extrabold text-red-600 hover:bg-surface"
-                          role="menuitem"
-                        >
-                          Logout
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              )}
+            {/* ACCOUNT */}
+            <div className="relative" ref={accountRef}>
+              <Link
+                href={accountHref}
+                className="inline-flex h-10 items-center gap-2 rounded-xl px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                aria-label="Account"
+              >
+                <UserIcon />
+                <span className="hidden lg:inline text-sm text-text">
+                  {!meLoaded ? (
+                    "Account"
+                  ) : loggedIn ? (
+                    <>
+                      <span className="font-semibold">Benvenuto,</span> {displayName || "Account"}
+                    </>
+                  ) : (
+                    "Accedi"
+                  )}
+                </span>
+              </Link>
             </div>
 
             <Link
@@ -670,7 +548,13 @@ export default function Header() {
         </form>
       </Container>
 
-      <MobileMenu open={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} categories={displayedCategories} catsLoaded={catsLoaded} cartCount={cartCount} />
+      <MobileMenu
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        categories={displayedCategories}
+        catsLoaded={catsLoaded}
+        cartCount={cartCount}
+      />
     </header>
   );
 }

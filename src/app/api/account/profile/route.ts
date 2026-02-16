@@ -4,188 +4,223 @@ import { cookies } from "next/headers";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function json(data: any, status = 200) {
+function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, {
     status,
-    headers: { "Cache-Control": "no-store", Vary: "Cookie", "x-profile-route": "v1" },
+    headers: { "Cache-Control": "no-store", Vary: "Cookie" },
   });
 }
 
+function strapiBaseUrl() {
+  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
+  let base = raw.replace(/\/+$/, "");
+  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
+  if (process.env.NODE_ENV === "production" && !isLocal) base = base.replace(/^http:\/\//i, "https://");
+  return base;
+}
+
+const STRAPI_SERVICE_TOKEN =
+  process.env.STRAPI_API_TOKEN ||
+  process.env.STRAPI_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
+  "";
+
 function safeJsonParse(text: string) {
   try {
-    return JSON.parse(text);
+    return text ? JSON.parse(text) : null;
   } catch {
     return null;
   }
 }
 
-function strapiBaseUrl() {
-  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(
-    /\/+$/,
-    ""
-  );
-}
-
-async function getUserJwtFromCookies() {
-  const store = await cookies();
-  return store.get("tf_token")?.value || store.get("jwtToken")?.value || null;
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, ms = 10_000) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-function pickStr(v: any, max = 140) {
-  const s = String(v ?? "").trim();
+function clamp(v: any, max = 120) {
+  const s = String(v ?? "").replace(/\s+/g, " ").trim();
   if (!s) return "";
   return s.length > max ? s.slice(0, max) : s;
 }
 
-function sanitizeProfile(input: any) {
-  const src = input && typeof input === "object" ? input : {};
+async function fetchJson(url: string, init: RequestInit) {
+  const res = await fetch(url, { ...init, cache: "no-store" });
+  const text = await res.text().catch(() => "");
+  return { res, json: safeJsonParse(text) };
+}
 
-  // campi “spedizione / billing”
-  const billingType = pickStr(src.billingType, 20).toUpperCase() === "AZIENDE" ? "AZIENDE" : "PRIVATE";
+async function getMe(base: string, jwt: string) {
+  const r = await fetchJson(`${base}/api/users/me`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${jwt}` },
+  });
+  return r.res.ok ? r.json : null;
+}
 
-  const profile = {
-    billingType,
-    firstName: pickStr(src.firstName),
-    lastName: pickStr(src.lastName),
-    fiscalCode: pickStr(src.fiscalCode, 32),
-    phone: pickStr(src.phone, 32),
+async function getCustomerProfileId(base: string, userId: number) {
+  // tentativo 1: field "user"
+  const qs1 = new URLSearchParams();
+  qs1.set("pagination[pageSize]", "1");
+  qs1.set("filters[user][id][$eq]", String(userId));
+  let r = await fetchJson(`${base}/api/customer-profiles?${qs1.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+  });
+  let row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  if (row?.id) return Number(row.id);
 
-    address: pickStr(src.address, 180),
-    city: pickStr(src.city, 80),
-    postalCode: pickStr(src.postalCode, 24),
-    province: pickStr(src.province, 40),
-    country: pickStr(src.country, 2) || "IT",
+  // tentativo 2: field "users_permissions_user"
+  const qs2 = new URLSearchParams();
+  qs2.set("pagination[pageSize]", "1");
+  qs2.set("filters[users_permissions_user][id][$eq]", String(userId));
+  r = await fetchJson(`${base}/api/customer-profiles?${qs2.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+  });
+  row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  return row?.id ? Number(row.id) : null;
+}
 
-    companyName: pickStr(src.companyName, 140),
-    vatNumber: pickStr(src.vatNumber, 40),
-    sdi: pickStr(src.sdi, 32),
-    pec: pickStr(src.pec, 140),
+async function getAziendaId(base: string, userId: number) {
+  const qs1 = new URLSearchParams();
+  qs1.set("pagination[pageSize]", "1");
+  qs1.set("filters[users_permissions_users][id][$eq]", String(userId));
+  let r = await fetchJson(`${base}/api/aziendes?${qs1.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+  });
+  let row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  if (row?.id) return Number(row.id);
 
-    email: pickStr(src.email, 140),
-  };
-
-  return profile;
+  const qs2 = new URLSearchParams();
+  qs2.set("pagination[pageSize]", "1");
+  qs2.set("filters[user][id][$eq]", String(userId));
+  r = await fetchJson(`${base}/api/aziendes?${qs2.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+  });
+  row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  return row?.id ? Number(row.id) : null;
 }
 
 export async function GET() {
-  const STRAPI_URL = strapiBaseUrl();
-
-  const userJwt = await getUserJwtFromCookies();
-  if (!userJwt) return json({ ok: false, error: "Not authenticated" }, 401);
-
   try {
-    const meRes = await fetchWithTimeout(`${STRAPI_URL}/api/users/me`, {
-      headers: { Authorization: `Bearer ${userJwt}` },
-    });
+    if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "MISSING_SERVICE_TOKEN" }, 500);
 
-    const text = await meRes.text().catch(() => "");
-    const me = safeJsonParse(text);
+    const jwt = (await cookies()).get("tf_token")?.value || "";
+    if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    if (!meRes.ok) {
-      return json({ ok: false, error: "Unauthorized (users/me)", status: meRes.status, details: me ?? text }, 401);
+    const base = strapiBaseUrl();
+    const me = await getMe(base, jwt);
+    const userId = Number(me?.id ?? 0);
+    if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
+
+    const profileId = await getCustomerProfileId(base, userId);
+    const aziendaId = await getAziendaId(base, userId);
+
+    let profileData: any = null;
+    if (profileId) {
+      const r = await fetchJson(`${base}/api/customer-profiles/${profileId}`, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+      });
+      profileData = r.json?.data?.attributes ?? null;
     }
 
-    // ritorniamo tutto ciò che c’è (anche campi custom se li aggiungi a User)
-    return json({ ok: true, me }, 200);
-  } catch (e: any) {
-    const isAbort = e?.name === "AbortError";
-    return json({ ok: false, error: isAbort ? "Timeout contacting Strapi" : "Strapi unreachable", details: e?.message }, 502);
+    let aziendaData: any = null;
+    if (aziendaId) {
+      const r = await fetchJson(`${base}/api/aziendes/${aziendaId}`, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+      });
+      aziendaData = r.json?.data?.attributes ?? null;
+    }
+
+    const type = String(profileData?.accountType ?? "").toUpperCase() === "BUSINESS" ? "BUSINESS" : "PERSON";
+
+    return jsonNoStore({
+      ok: true,
+      type,
+      email: String(me?.email ?? ""),
+      firstName: String(profileData?.firstName ?? ""),
+      lastName: String(profileData?.lastName ?? ""),
+      companyName: String(aziendaData?.companyName ?? ""),
+      vatNumber: String(aziendaData?.vatNumber ?? ""),
+      sdi: String(aziendaData?.sdi ?? ""),
+      pec: String(aziendaData?.pec ?? ""),
+    });
+  } catch {
+    return jsonNoStore({ ok: false, error: "UNHANDLED" }, 500);
   }
 }
 
 export async function PUT(req: Request) {
-  const STRAPI_URL = strapiBaseUrl();
-  const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN;
-
-  const userJwt = await getUserJwtFromCookies();
-  if (!userJwt) return json({ ok: false, error: "Not authenticated" }, 401);
-
-  const raw = await req.text().catch(() => "");
-  const body = safeJsonParse(raw);
-  const profile = sanitizeProfile(body);
-
-  // 1) scopri userId
-  let userId: number | null = null;
   try {
-    const meRes = await fetchWithTimeout(`${STRAPI_URL}/api/users/me`, {
-      headers: { Authorization: `Bearer ${userJwt}` },
-    });
+    if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "MISSING_SERVICE_TOKEN" }, 500);
 
-    const text = await meRes.text().catch(() => "");
-    const me = safeJsonParse(text);
+    const jwt = (await cookies()).get("tf_token")?.value || "";
+    if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    if (!meRes.ok) {
-      return json({ ok: false, error: "Unauthorized (users/me)", status: meRes.status, details: me ?? text }, 401);
+    const raw = await req.text().catch(() => "");
+    if (raw.length > 32 * 1024) return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
+    const body = safeJsonParse(raw) ?? {};
+
+    const base = strapiBaseUrl();
+    const me = await getMe(base, jwt);
+    const userId = Number(me?.id ?? 0);
+    if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
+
+    const type = String(body?.type ?? "").toUpperCase() === "BUSINESS" ? "BUSINESS" : "PERSON";
+
+    const firstName = clamp(body?.firstName, 60);
+    const lastName = clamp(body?.lastName, 60);
+
+    const companyName = clamp(body?.companyName, 140);
+    const vatNumber = clamp(body?.vatNumber ?? body?.vat, 40);
+    const sdi = clamp(body?.sdi, 20);
+    const pec = clamp(body?.pec, 120);
+
+    if (type === "BUSINESS" && !companyName) return jsonNoStore({ ok: false, error: "MISSING_COMPANY" }, 400);
+
+    // customer profile upsert
+    const profileId = await getCustomerProfileId(base, userId);
+    if (profileId) {
+      await fetch(`${base}/api/customer-profiles/${profileId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+        body: JSON.stringify({ data: { firstName: firstName || undefined, lastName: lastName || undefined, accountType: type } }),
+        cache: "no-store",
+      });
+    } else {
+      await fetch(`${base}/api/customer-profiles`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+        body: JSON.stringify({ data: { firstName: firstName || undefined, lastName: lastName || undefined, accountType: type, user: userId } }),
+        cache: "no-store",
+      });
     }
 
-    if (typeof me?.id === "number") userId = me.id;
-    if (typeof me?.id === "string" && /^\d+$/.test(me.id)) userId = Number(me.id);
-  } catch (e: any) {
-    return json({ ok: false, error: "Could not determine user id", details: e?.message }, 500);
-  }
+    // azienda upsert (solo business)
+    if (type === "BUSINESS") {
+      const aziendaId = await getAziendaId(base, userId);
+      const data = { companyName: companyName || undefined, vatNumber: vatNumber || undefined, sdi: sdi || undefined, pec: pec || undefined };
 
-  if (!userId) return json({ ok: false, error: "Could not determine user id" }, 500);
-
-  // 2) prova update con JWT utente (preferito)
-  const updatePayload = { ...profile };
-
-  async function tryUpdate(bearer: string) {
-    const res = await fetchWithTimeout(`${STRAPI_URL}/api/users/${userId}`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
-      body: JSON.stringify(updatePayload),
-    });
-
-    const text = await res.text().catch(() => "");
-    const data = safeJsonParse(text);
-    return { res, data, text };
-  }
-
-  try {
-    const first = await tryUpdate(userJwt);
-    if (first.res.ok) return json({ ok: true, saved: true }, 200);
-
-    // 3) fallback con API token (se disponibile)
-    if (STRAPI_API_TOKEN) {
-      const second = await tryUpdate(STRAPI_API_TOKEN);
-      if (second.res.ok) return json({ ok: true, saved: true, via: "api_token" }, 200);
-
-      return json(
-        {
-          ok: false,
-          error: "Profile update failed on Strapi",
-          status: second.res.status,
-          hint:
-            "Se fallisce con 401/403: abilita in Strapi → Settings → Users & Permissions → Roles → Authenticated → User: update (oppure usa un content-type Profile dedicato).",
-          details: second.data ?? second.text?.slice(0, 1500),
-        },
-        second.res.status
-      );
+      if (aziendaId) {
+        await fetch(`${base}/api/aziendes/${aziendaId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+          body: JSON.stringify({ data }),
+          cache: "no-store",
+        });
+      } else {
+        await fetch(`${base}/api/aziendes`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` },
+          body: JSON.stringify({ data: { ...data, users_permissions_users: [userId] } }),
+          cache: "no-store",
+        });
+      }
     }
 
-    return json(
-      {
-        ok: false,
-        error: "Profile update failed on Strapi",
-        status: first.res.status,
-        hint:
-          "Se fallisce con 401/403: abilita in Strapi → Settings → Users & Permissions → Roles → Authenticated → User: update.",
-        details: first.data ?? first.text?.slice(0, 1500),
-      },
-      first.res.status
-    );
-  } catch (e: any) {
-    const isAbort = e?.name === "AbortError";
-    return json({ ok: false, error: isAbort ? "Timeout contacting Strapi" : "Strapi unreachable", details: e?.message }, 502);
+    return jsonNoStore({ ok: true }, 200);
+  } catch {
+    return jsonNoStore({ ok: false, error: "UNHANDLED" }, 500);
   }
 }

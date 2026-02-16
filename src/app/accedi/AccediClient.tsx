@@ -4,16 +4,34 @@ import { useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+const AUTH_EVENT = "tf:auth-changed";
+const LOGIN_TIMEOUT_MS = 15_000;
+
 function safeNextPath(raw: string | null): string {
-  // Sicurezza: accettiamo SOLO path interni (evita open-redirect tipo https://evil.com)
+  // ✅ Consenti SOLO path interni (anti open-redirect)
   if (!raw) return "/account";
   try {
-    const decoded = decodeURIComponent(raw);
+    const decoded = decodeURIComponent(raw).trim();
+
+    // blocca schemi/host, backslash, doppio slash, stringhe vuote
     if (!decoded.startsWith("/")) return "/account";
     if (decoded.startsWith("//")) return "/account";
+    if (decoded.startsWith("/\\")) return "/account";
+    if (decoded.includes("\n") || decoded.includes("\r")) return "/account";
+
     return decoded;
   } catch {
     return "/account";
+  }
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, ms = LOGIN_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -21,7 +39,6 @@ export default function AccediClient() {
   const sp = useSearchParams();
   const router = useRouter();
 
-  // supportiamo sia ?next= che ?redirect= per compatibilità
   const nextParam = sp.get("next") ?? sp.get("redirect");
   const nextPath = useMemo(() => safeNextPath(nextParam), [nextParam]);
 
@@ -31,39 +48,59 @@ export default function AccediClient() {
   const [password, setPassword] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(errorParam ? "Sessione non valida, accedi di nuovo." : null);
+  const [error, setError] = useState<string | null>(
+    errorParam ? "Sessione non valida, accedi di nuovo." : null
+  );
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (submitting) return;
+
     setError(null);
 
     const id = identifier.trim();
-    if (!id || !password) {
+    const pw = String(password ?? "");
+
+    if (!id || !pw) {
       setError("Inserisci email/username e password.");
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ identifier: id, password }),
-        cache: "no-store",
-      });
+      const res = await fetchWithTimeout(
+        "/api/auth/login",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ identifier: id, password: pw }),
+          cache: "no-store",
+        },
+        LOGIN_TIMEOUT_MS
+      );
 
       if (!res.ok) {
-        // Sicurezza: messaggio generico (non rivelare se email esiste)
+        // ✅ messaggio generico (anti-enumeration)
         setError("Credenziali non valide. Riprova.");
         return;
       }
 
-      // ✅ cookie HttpOnly settato dal server: ora possiamo navigare
+      // ✅ Notifica Header (e altri componenti) che l'auth è cambiata
+      try {
+        window.dispatchEvent(new Event(AUTH_EVENT));
+      } catch {
+        // noop
+      }
+
       router.replace(nextPath);
       router.refresh();
-    } catch {
-      setError("Errore di rete. Riprova tra poco.");
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setError("Connessione troppo lenta. Riprova tra pochi secondi.");
+      } else {
+        setError("Errore di rete. Riprova tra poco.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -78,33 +115,48 @@ export default function AccediClient() {
         </p>
 
         {error ? (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          <div
+            className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+            role="alert"
+          >
             {error}
           </div>
         ) : null}
 
-        <form onSubmit={onSubmit} className="mt-6 space-y-3">
+        <form onSubmit={onSubmit} className="mt-6 space-y-3" noValidate>
           <div>
-            <label className="text-sm font-semibold text-text">Email o username</label>
+            <label className="text-sm font-semibold text-text" htmlFor="identifier">
+              Email o username
+            </label>
             <input
+              id="identifier"
+              name="identifier"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
               autoComplete="username"
               inputMode="email"
               className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
               placeholder="es. mario@email.it"
+              disabled={submitting}
+              aria-invalid={!!error}
             />
           </div>
 
           <div>
-            <label className="text-sm font-semibold text-text">Password</label>
+            <label className="text-sm font-semibold text-text" htmlFor="password">
+              Password
+            </label>
             <input
+              id="password"
+              name="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"
               type="password"
               className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
               placeholder="••••••••"
+              disabled={submitting}
+              aria-invalid={!!error}
             />
           </div>
 
@@ -118,13 +170,17 @@ export default function AccediClient() {
         </form>
 
         <div className="mt-4 flex items-center justify-between text-sm">
-          <Link href={`/accedi?next=${encodeURIComponent(nextPath)}`} className="text-text/70 hover:underline">
-            Hai problemi di accesso?
+          <Link
+            href={`/recupera-password?next=${encodeURIComponent(nextPath)}`}
+            className="text-text/70 hover:underline"
+          >
+            Password dimenticata?
           </Link>
 
-          {/* Se /registrati non esiste ancora, non rompe il login: è solo un link.
-              Se vuoi, dopo ti preparo anche la pagina registrazione con route sicura. */}
-          <Link href={`/registrati?next=${encodeURIComponent(nextPath)}`} className="font-extrabold hover:underline">
+          <Link
+            href={`/registrati?next=${encodeURIComponent(nextPath)}`}
+            className="font-extrabold hover:underline"
+          >
             Registrati
           </Link>
         </div>

@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 type AccountType = "PERSON" | "BUSINESS";
 
+const AUTH_EVENT = "tf:auth-changed";
+
 function safeNextPath(raw: string | null): string {
   if (!raw) return "/account";
   try {
@@ -18,6 +20,21 @@ function safeNextPath(raw: string | null): string {
   }
 }
 
+function isValidEmailBasic(email: string) {
+  if (!email || email.length > 254) return false;
+  if (/\s/.test(email)) return false;
+  const at = email.indexOf("@");
+  if (at <= 0 || at !== email.lastIndexOf("@")) return false;
+  const domain = email.slice(at + 1);
+  if (!domain || !domain.includes(".")) return false;
+  return true;
+}
+
+function isStrongEnough(pw: string) {
+  // allineato al server: min 8, max ragionevole
+  return typeof pw === "string" && pw.length >= 8 && pw.length <= 200;
+}
+
 export default function RegistratiClient() {
   const sp = useSearchParams();
   const router = useRouter();
@@ -28,18 +45,18 @@ export default function RegistratiClient() {
   const [type, setType] = useState<AccountType>("PERSON");
 
   const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
 
-  // campi profilo
+  // profilo
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  // campi azienda (facoltativi se PERSON)
+  // azienda
   const [companyName, setCompanyName] = useState("");
-  const [vat, setVat] = useState(""); // P.IVA
-  const [sdi, setSdi] = useState(""); // SDI
-  const [pec, setPec] = useState(""); // PEC
+  const [vat, setVat] = useState("");
+  const [sdi, setSdi] = useState("");
+  const [pec, setPec] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,14 +65,35 @@ export default function RegistratiClient() {
     e.preventDefault();
     setError(null);
 
-    const e1 = email.trim();
-    const u1 = username.trim();
-    if (!e1 || !password) {
-      setError("Inserisci email e password.");
+    const e1 = email.trim().toLowerCase();
+    if (!isValidEmailBasic(e1)) {
+      setError("Inserisci una email valida.");
       return;
     }
 
-    if (type === "BUSINESS" && !companyName.trim()) {
+    if (!password || !password2) {
+      setError("Inserisci la password due volte.");
+      return;
+    }
+    if (password !== password2) {
+      setError("Le password non coincidono.");
+      return;
+    }
+    if (!isStrongEnough(password)) {
+      setError("Password troppo debole: minimo 8 caratteri.");
+      return;
+    }
+
+    const fn = firstName.trim();
+    const ln = lastName.trim();
+
+    if (type === "PERSON") {
+      // marketing/UX: consigliamo nome e cognome (non obbligatori, ma utili per “Benvenuto Mario”)
+      // non blocchiamo, ma se vuoi renderli obbligatori dimmelo e li rendiamo required.
+    }
+
+    const cName = companyName.trim();
+    if (type === "BUSINESS" && !cName) {
       setError("Inserisci la ragione sociale.");
       return;
     }
@@ -69,11 +107,14 @@ export default function RegistratiClient() {
         body: JSON.stringify({
           type,
           email: e1,
-          username: u1 || e1,
           password,
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
-          companyName: companyName.trim(),
+
+          // profilo
+          firstName: fn,
+          lastName: ln,
+
+          // azienda
+          companyName: cName,
           vat: vat.trim(),
           sdi: sdi.trim(),
           pec: pec.trim(),
@@ -81,12 +122,22 @@ export default function RegistratiClient() {
         cache: "no-store",
       });
 
+      const json = await res.json().catch(() => null);
+
+      // anti-enumeration: può tornare 200 anche se account già esistente (CHECK_EMAIL)
       if (!res.ok) {
         setError("Registrazione non riuscita. Controlla i dati e riprova.");
         return;
       }
 
-      // ✅ dopo registrazione facciamo login automatico (cookie HttpOnly) e redirect
+      if (json?.error === "CHECK_EMAIL" && json?.message) {
+        setError(String(json.message));
+        return;
+      }
+
+      // ✅ Notifica header/altre UI che l'auth è cambiata (cookie HttpOnly già settato server-side)
+      window.dispatchEvent(new Event(AUTH_EVENT));
+
       router.replace(nextPath);
       router.refresh();
     } catch {
@@ -104,7 +155,6 @@ export default function RegistratiClient() {
           Crea un account. Se sei un’azienda puoi richiedere un profilo business per sconti dedicati.
         </p>
 
-        {/* Tipo account */}
         <div className="mt-5 grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -143,23 +193,13 @@ export default function RegistratiClient() {
             />
           </div>
 
-          <div>
-            <label className="text-sm font-semibold text-text">Username (opzionale)</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
-              placeholder="es. mario.rossi"
-            />
-          </div>
-
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-sm font-semibold text-text">Nome</label>
               <input
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
+                autoComplete="given-name"
                 className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
@@ -168,6 +208,7 @@ export default function RegistratiClient() {
               <input
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
+                autoComplete="family-name"
                 className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
               />
             </div>
@@ -214,10 +255,6 @@ export default function RegistratiClient() {
                   placeholder="es. pec@azienda.it"
                 />
               </div>
-
-              <div className="text-xs text-text/60">
-                Nota: per attivare sconti business potremmo richiedere una verifica.
-              </div>
             </div>
           ) : null}
 
@@ -226,6 +263,18 @@ export default function RegistratiClient() {
             <input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+              type="password"
+              className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-semibold text-text">Ripeti password</label>
+            <input
+              value={password2}
+              onChange={(e) => setPassword2(e.target.value)}
               autoComplete="new-password"
               type="password"
               className="mt-1 h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
@@ -247,10 +296,6 @@ export default function RegistratiClient() {
           <Link href={`/accedi?next=${encodeURIComponent(nextPath)}`} className="font-extrabold hover:underline">
             Accedi
           </Link>
-        </div>
-
-        <div className="mt-6 text-xs text-text/60">
-          Redirect dopo registrazione: <span className="font-semibold">{nextPath}</span>
         </div>
       </div>
     </main>
