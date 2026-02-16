@@ -320,7 +320,7 @@ export async function POST(req: Request) {
       const jwt = reg.data?.jwt as string | undefined;
       const userId = Number(reg.data?.user?.id ?? 0);
 
-      const response = jsonNoStore({ ok: true }, 200);
+      const response = jsonNoStore({ ok: true, loggedIn: Boolean(jwt), type }, 200);
 
       // ✅ auto-login (cookie HttpOnly)
       if (jwt) setAuthCookie(response, jwt);
