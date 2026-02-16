@@ -224,14 +224,17 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
 /**
  * Best-effort create entity con fallback sui nomi campo relazione (SERVICE TOKEN)
  */
-async function createCustomerProfileBestEffort(userId: number, payload: { firstName: string; lastName: string; accountType: string }) {
+
+async function createCustomerProfileBestEffort(
+  userId: number,
+  payload: { firstName: string; lastName: string }
+) {
   if (!STRAPI_SERVICE_TOKEN) return;
 
   const TIMEOUT = 10_000;
   const baseData = {
     firstName: payload.firstName || undefined,
     lastName: payload.lastName || undefined,
-    accountType: payload.accountType || undefined,
   };
 
   // tentativo 1: field "user"
@@ -354,7 +357,6 @@ export async function POST(req: Request) {
           const baseData = {
             firstName: firstName || undefined,
             lastName: lastName || undefined,
-            accountType: type || undefined,
           };
 
           const r1 = await strapiPostWithUserJwt(
@@ -401,7 +403,7 @@ export async function POST(req: Request) {
       // ✅ 2B) Fallback: crea CustomerProfile/Aziende con service token (best-effort)
       if (userId > 0) {
         try {
-          await createCustomerProfileBestEffort(userId, { firstName, lastName, accountType: type });
+          await createCustomerProfileBestEffort(userId, { firstName, lastName });
         } catch {
           // noop
         }
