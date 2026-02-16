@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const REGISTER_VERSION = "2026-02-16-v3";
+
 /**
  * HARDENING:
  * - Anti-enumeration: se email già presente => risposta generica 200
@@ -45,6 +47,7 @@ function jsonNoStore(data: any, status = 200) {
     headers: {
       "Cache-Control": "no-store",
       Vary: "Cookie",
+      "X-TF-Register-Version": REGISTER_VERSION,
     },
   });
 }
@@ -154,10 +157,6 @@ async function strapiPost(path: string, body: any, timeoutMs: number, token?: st
   return { res, data, text, url };
 }
 
-async function strapiPostWithUserJwt(path: string, body: any, timeoutMs: number, userJwt: string) {
-  return strapiPost(path, body, timeoutMs, userJwt);
-}
-
 function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
   if (!(status === 400 || status === 409)) return false;
 
@@ -194,101 +193,84 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
 }
 
 /**
- * Crea CustomerProfile in modo affidabile:
- * 1) prima con SERVICE TOKEN (non dipende dai permessi Authenticated)
- * 2) se manca service token, prova con JWT utente
- *
- * Nota: NON inviamo accountType (Strapi lo rifiuta nel tuo schema).
+ * Forza sempre la creazione del CustomerProfile:
+ * - prima con SERVICE TOKEN (non dipende da permessi Authenticated)
+ * - poi fallback con JWT utente
+ * Nota: NON inviamo accountType (non esiste nel tuo schema).
  */
-async function ensureCustomerProfile(
-  userId: number,
-  firstName: string,
-  lastName: string,
-  userJwt?: string
-) {
+async function ensureCustomerProfile(userId: number, firstName: string, lastName: string, userJwt?: string) {
   const TIMEOUT = 12_000;
   const baseData = {
     firstName: firstName || undefined,
     lastName: lastName || undefined,
   };
 
-  // 1) service token
+  // 1) SERVICE TOKEN
   if (STRAPI_SERVICE_TOKEN) {
-    const r1 = await strapiPost(
+    const s1 = await strapiPost(
       "/api/customer-profiles",
       { data: { ...baseData, user: userId } },
       TIMEOUT,
       STRAPI_SERVICE_TOKEN
     );
-
-    console.warn("[register] ensureCustomerProfile (service) attempt #1", {
-      ok: r1.res.ok,
-      status: r1.res.status,
-      url: r1.url,
-      text: (r1.text || "").slice(0, 600),
+    console.warn("[register] ensureCustomerProfile service #1", {
+      ok: s1.res.ok,
+      status: s1.res.status,
+      url: s1.url,
+      text: (s1.text || "").slice(0, 600),
     });
+    if (s1.res.ok) return true;
 
-    if (r1.res.ok) return true;
-
-    const r2 = await strapiPost(
+    const s2 = await strapiPost(
       "/api/customer-profiles",
       { data: { ...baseData, users_permissions_user: userId } },
       TIMEOUT,
       STRAPI_SERVICE_TOKEN
     );
-
-    console.warn("[register] ensureCustomerProfile (service) attempt #2", {
-      ok: r2.res.ok,
-      status: r2.res.status,
-      url: r2.url,
-      text: (r2.text || "").slice(0, 600),
+    console.warn("[register] ensureCustomerProfile service #2", {
+      ok: s2.res.ok,
+      status: s2.res.status,
+      url: s2.url,
+      text: (s2.text || "").slice(0, 600),
     });
-
-    if (r2.res.ok) return true;
+    if (s2.res.ok) return true;
   }
 
-  // 2) user jwt fallback
+  // 2) JWT fallback
   if (userJwt) {
-    const r1 = await strapiPostWithUserJwt(
+    const j1 = await strapiPost(
       "/api/customer-profiles",
       { data: { ...baseData, user: userId } },
       TIMEOUT,
       userJwt
     );
-
-    console.warn("[register] ensureCustomerProfile (jwt) attempt #1", {
-      ok: r1.res.ok,
-      status: r1.res.status,
-      url: r1.url,
-      text: (r1.text || "").slice(0, 600),
+    console.warn("[register] ensureCustomerProfile jwt #1", {
+      ok: j1.res.ok,
+      status: j1.res.status,
+      url: j1.url,
+      text: (j1.text || "").slice(0, 600),
     });
+    if (j1.res.ok) return true;
 
-    if (r1.res.ok) return true;
-
-    const r2 = await strapiPostWithUserJwt(
+    const j2 = await strapiPost(
       "/api/customer-profiles",
       { data: { ...baseData, users_permissions_user: userId } },
       TIMEOUT,
       userJwt
     );
-
-    console.warn("[register] ensureCustomerProfile (jwt) attempt #2", {
-      ok: r2.res.ok,
-      status: r2.res.status,
-      url: r2.url,
-      text: (r2.text || "").slice(0, 600),
+    console.warn("[register] ensureCustomerProfile jwt #2", {
+      ok: j2.res.ok,
+      status: j2.res.status,
+      url: j2.url,
+      text: (j2.text || "").slice(0, 600),
     });
-
-    if (r2.res.ok) return true;
+    if (j2.res.ok) return true;
   }
 
   return false;
 }
 
-async function createCompanyBestEffort(
-  userId: number,
-  payload: { companyName: string; vatNumber: string; sdi: string; pec: string }
-) {
+async function createCompanyBestEffort(userId: number, payload: { companyName: string; vatNumber: string; sdi: string; pec: string }) {
   if (!STRAPI_SERVICE_TOKEN) return;
 
   const TIMEOUT = 10_000;
@@ -323,7 +305,22 @@ async function createCompanyBestEffort(
   );
 }
 
+/** ✅ Endpoint veloce per verificare che Vercel stia usando questo file */
+export async function GET() {
+  return jsonNoStore(
+    {
+      ok: true,
+      version: REGISTER_VERSION,
+      hasServiceToken: Boolean(STRAPI_SERVICE_TOKEN),
+      strapiUrl: strapiBaseUrl(),
+    },
+    200
+  );
+}
+
 export async function POST(req: Request) {
+  console.warn("[register] handler start", { version: REGISTER_VERSION });
+
   try {
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
@@ -370,18 +367,9 @@ export async function POST(req: Request) {
 
       if (jwt) setAuthCookie(response, jwt);
 
-      // ✅ QUI: forziamo sempre la creazione customer-profile (service token -> jwt fallback)
       if (userId > 0) {
-        try {
-          const created = await ensureCustomerProfile(userId, firstName, lastName, jwt);
-          console.warn("[register] ensureCustomerProfile result", { userId, created });
-        } catch (e: any) {
-          console.warn("[register] ensureCustomerProfile exception", {
-            userId,
-            message: e?.message,
-            name: e?.name,
-          });
-        }
+        const created = await ensureCustomerProfile(userId, firstName, lastName, jwt);
+        console.warn("[register] ensureCustomerProfile result", { userId, created });
 
         if (type === "BUSINESS") {
           try {
