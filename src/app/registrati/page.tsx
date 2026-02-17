@@ -4,6 +4,26 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+const AUTH_EVENT = "tf:auth-changed";
+
+// validazione email semplice ma più corretta di includes("@")
+function isValidEmail(email: string) {
+  const e = email.trim().toLowerCase();
+  if (!e || e.length > 254) return false;
+  if (/\s/.test(e)) return false;
+  const at = e.indexOf("@");
+  if (at <= 0 || at !== e.lastIndexOf("@")) return false;
+  const domain = e.slice(at + 1);
+  if (!domain || !domain.includes(".")) return false;
+  if (domain.startsWith(".") || domain.endsWith(".")) return false;
+  return true;
+}
+
+function clamp(v: string, max: number) {
+  const s = (v ?? "").trim();
+  return s.length > max ? s.slice(0, max) : s;
+}
+
 export default function RegisterPage() {
   const router = useRouter();
 
@@ -17,57 +37,81 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const pwMatch = useMemo(() => password.length > 0 && password === confirmPassword, [password, confirmPassword]);
-  const pwOk = useMemo(() => password.length >= 8, [password]);
-  const nameOk = useMemo(() => firstName.trim().length >= 2 && lastName.trim().length >= 2, [firstName, lastName]);
+  const emailOk = useMemo(() => isValidEmail(email), [email]);
 
-  const canSubmit = pwMatch && pwOk && email.trim().includes("@") && nameOk && !loading;
+  const pwOk = useMemo(() => password.length >= 8 && password.length <= 200, [password]);
+  const pwMatch = useMemo(
+    () => password.length > 0 && password === confirmPassword,
+    [password, confirmPassword]
+  );
+
+  const nameOk = useMemo(() => {
+    const fn = firstName.trim();
+    const ln = lastName.trim();
+    return fn.length >= 2 && ln.length >= 2 && fn.length <= 60 && ln.length <= 60;
+  }, [firstName, lastName]);
+
+  const canSubmit = emailOk && nameOk && pwOk && pwMatch && !loading;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return; // anti double-submit
     setErrorMsg(null);
-    if (!canSubmit) return;
+
+    if (!canSubmit) {
+      setErrorMsg("Controlla i campi e riprova.");
+      return;
+    }
+
+    // normalizza lato client (no sorprese)
+    const payload = {
+      type: "PERSON" as const,
+      email: clamp(email.toLowerCase(), 254),
+      firstName: clamp(firstName, 60),
+      lastName: clamp(lastName, 60),
+      password: password, // non trimmiamo le password
+    };
 
     setLoading(true);
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         cache: "no-store",
         credentials: "include",
-        body: JSON.stringify({
-          type: "PERSON",
-          email,
-          firstName,
-          lastName,
-          password,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json().catch(() => null);
 
+      // success
       if (res.ok && data?.ok) {
-        window.dispatchEvent(new Event("tf:auth-changed"));
+        // aggiorna header e stato auth
+        window.dispatchEvent(new Event(AUTH_EVENT));
+
+        // redirect a dashboard account
         router.replace("/account");
         return;
       }
 
+      // messaggi controllati
       if (data?.error === "CHECK_EMAIL") {
         setErrorMsg(data?.message || "Controlla la tua email per recuperare l’accesso.");
         return;
       }
-
       if (data?.error === "WEAK_PASSWORD") {
         setErrorMsg("Password troppo debole (minimo 8 caratteri).");
         return;
       }
-
       if (data?.error === "INVALID_INPUT") {
         setErrorMsg("Dati non validi. Controlla email e riprova.");
         return;
       }
 
-      setErrorMsg("Registrazione non riuscita. Riprova.");
+      // fallback generico
+      setErrorMsg("Registrazione non riuscita. Riprova tra qualche secondo.");
+    } catch {
+      setErrorMsg("Errore di rete. Controlla la connessione e riprova.");
     } finally {
       setLoading(false);
     }
@@ -77,7 +121,7 @@ export default function RegisterPage() {
     <div className="mx-auto max-w-md p-6">
       <h1 className="text-3xl font-extrabold">Registrati</h1>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4">
+      <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
         <div>
           <label className="block text-sm font-medium">Email</label>
           <input
@@ -87,7 +131,12 @@ export default function RegisterPage() {
             type="email"
             autoComplete="email"
             required
+            disabled={loading}
+            inputMode="email"
           />
+          {email.length > 0 && !emailOk ? (
+            <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -99,6 +148,8 @@ export default function RegisterPage() {
               onChange={(e) => setFirstName(e.target.value)}
               autoComplete="given-name"
               required
+              disabled={loading}
+              maxLength={60}
             />
           </div>
           <div>
@@ -109,9 +160,17 @@ export default function RegisterPage() {
               onChange={(e) => setLastName(e.target.value)}
               autoComplete="family-name"
               required
+              disabled={loading}
+              maxLength={60}
             />
           </div>
         </div>
+
+        {!nameOk && (firstName.length > 0 || lastName.length > 0) ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Inserisci nome e cognome (almeno 2 caratteri).
+          </div>
+        ) : null}
 
         <div>
           <label className="block text-sm font-medium">Password</label>
@@ -122,9 +181,12 @@ export default function RegisterPage() {
             type="password"
             autoComplete="new-password"
             required
+            disabled={loading}
+            minLength={8}
+            maxLength={200}
           />
           {!pwOk && password.length > 0 ? (
-            <p className="mt-1 text-sm text-red-600">Minimo 8 caratteri.</p>
+            <p className="mt-1 text-sm text-red-600">Minimo 8 caratteri (massimo 200).</p>
           ) : null}
         </div>
 
@@ -137,23 +199,26 @@ export default function RegisterPage() {
             type="password"
             autoComplete="new-password"
             required
+            disabled={loading}
+            minLength={8}
+            maxLength={200}
           />
           {confirmPassword.length > 0 && !pwMatch ? (
             <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p>
           ) : null}
         </div>
 
-        {!nameOk && (firstName.length > 0 || lastName.length > 0) ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Inserisci nome e cognome (almeno 2 caratteri).
+        {errorMsg ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            {errorMsg}
           </div>
         ) : null}
 
-        {errorMsg ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
-        ) : null}
-
-        <button type="submit" disabled={!canSubmit} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
+        >
           {loading ? "Creazione..." : "Crea account"}
         </button>
 

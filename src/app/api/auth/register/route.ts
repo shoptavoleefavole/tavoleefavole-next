@@ -3,18 +3,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REGISTER_VERSION = "2026-02-16-v3";
-
-/**
- * HARDENING:
- * - Anti-enumeration: se email già presente => risposta generica 200
- * - Content-Type check + JSON parse robusto
- * - Body size limit (DoS basic)
- * - Timeout + retry per Strapi (Render può essere lento)
- * - Cookie HttpOnly su registrazione (auto-login)
- * - Crea CustomerProfile/Aziende (best-effort) senza rompere la registrazione
- * - Vary: Cookie + no-store
- */
+const REGISTER_VERSION = "2026-02-17-v5";
 
 function strapiBaseUrl() {
   const raw =
@@ -192,85 +181,45 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
   });
 }
 
-/**
- * Forza sempre la creazione del CustomerProfile:
- * - prima con SERVICE TOKEN (non dipende da permessi Authenticated)
- * - poi fallback con JWT utente
- * Nota: NON inviamo accountType (non esiste nel tuo schema).
- */
-async function ensureCustomerProfile(userId: number, firstName: string, lastName: string, userJwt?: string) {
+// mapping verso enum Strapi
+function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
+  return type === "BUSINESS" ? "BUSINESS" : "PRIVATE";
+}
+
+async function ensureCustomerProfile(
+  userId: number,
+  firstName: string,
+  lastName: string,
+  type: "PERSON" | "BUSINESS",
+  userJwt?: string
+) {
   const TIMEOUT = 12_000;
-  const baseData = {
+  const payload = {
     firstName: firstName || undefined,
     lastName: lastName || undefined,
+    customerType: toStrapiCustomerType(type),
+    user: userId,
   };
 
-  // 1) SERVICE TOKEN
   if (STRAPI_SERVICE_TOKEN) {
-    const s1 = await strapiPost(
-      "/api/customer-profiles",
-      { data: { ...baseData, user: userId } },
-      TIMEOUT,
-      STRAPI_SERVICE_TOKEN
-    );
-    console.warn("[register] ensureCustomerProfile service #1", {
-      ok: s1.res.ok,
-      status: s1.res.status,
-      url: s1.url,
-      text: (s1.text || "").slice(0, 600),
-    });
-    if (s1.res.ok) return true;
-
-    const s2 = await strapiPost(
-      "/api/customer-profiles",
-      { data: { ...baseData, users_permissions_user: userId } },
-      TIMEOUT,
-      STRAPI_SERVICE_TOKEN
-    );
-    console.warn("[register] ensureCustomerProfile service #2", {
-      ok: s2.res.ok,
-      status: s2.res.status,
-      url: s2.url,
-      text: (s2.text || "").slice(0, 600),
-    });
-    if (s2.res.ok) return true;
+    const r = await strapiPost("/api/customer-profiles", { data: payload }, TIMEOUT, STRAPI_SERVICE_TOKEN);
+    console.warn("[register] ensureCustomerProfile service", { ok: r.res.ok, status: r.res.status });
+    if (r.res.ok) return true;
   }
 
-  // 2) JWT fallback
   if (userJwt) {
-    const j1 = await strapiPost(
-      "/api/customer-profiles",
-      { data: { ...baseData, user: userId } },
-      TIMEOUT,
-      userJwt
-    );
-    console.warn("[register] ensureCustomerProfile jwt #1", {
-      ok: j1.res.ok,
-      status: j1.res.status,
-      url: j1.url,
-      text: (j1.text || "").slice(0, 600),
-    });
-    if (j1.res.ok) return true;
-
-    const j2 = await strapiPost(
-      "/api/customer-profiles",
-      { data: { ...baseData, users_permissions_user: userId } },
-      TIMEOUT,
-      userJwt
-    );
-    console.warn("[register] ensureCustomerProfile jwt #2", {
-      ok: j2.res.ok,
-      status: j2.res.status,
-      url: j2.url,
-      text: (j2.text || "").slice(0, 600),
-    });
-    if (j2.res.ok) return true;
+    const r = await strapiPost("/api/customer-profiles", { data: payload }, TIMEOUT, userJwt);
+    console.warn("[register] ensureCustomerProfile jwt", { ok: r.res.ok, status: r.res.status });
+    if (r.res.ok) return true;
   }
 
   return false;
 }
 
-async function createCompanyBestEffort(userId: number, payload: { companyName: string; vatNumber: string; sdi: string; pec: string }) {
+async function createCompanyBestEffort(
+  userId: number,
+  payload: { companyName: string; vatNumber: string; sdi: string; pec: string }
+) {
   if (!STRAPI_SERVICE_TOKEN) return;
 
   const TIMEOUT = 10_000;
@@ -305,7 +254,6 @@ async function createCompanyBestEffort(userId: number, payload: { companyName: s
   );
 }
 
-/** ✅ Endpoint veloce per verificare che Vercel stia usando questo file */
 export async function GET() {
   return jsonNoStore(
     {
@@ -319,8 +267,6 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  console.warn("[register] handler start", { version: REGISTER_VERSION });
-
   try {
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
@@ -332,7 +278,7 @@ export async function POST(req: Request) {
 
     const body = safeJsonParse(raw) ?? {};
 
-    const type =
+    const type: "PERSON" | "BUSINESS" =
       String(body?.type ?? "PERSON").toUpperCase() === "BUSINESS" ? "BUSINESS" : "PERSON";
 
     const email = normalizeEmail(body?.email);
@@ -364,12 +310,15 @@ export async function POST(req: Request) {
       const userId = Number(reg.data?.user?.id ?? 0);
 
       const response = jsonNoStore({ ok: true, loggedIn: Boolean(jwt), type }, 200);
-
       if (jwt) setAuthCookie(response, jwt);
 
       if (userId > 0) {
-        const created = await ensureCustomerProfile(userId, firstName, lastName, jwt);
-        console.warn("[register] ensureCustomerProfile result", { userId, created });
+        try {
+          const created = await ensureCustomerProfile(userId, firstName, lastName, type, jwt);
+          console.warn("[register] ensureCustomerProfile result", { userId, created });
+        } catch {
+          // noop
+        }
 
         if (type === "BUSINESS") {
           try {
@@ -389,11 +338,7 @@ export async function POST(req: Request) {
       } catch {
         // noop
       }
-
-      return jsonNoStore(
-        { ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG },
-        200
-      );
+      return jsonNoStore({ ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG }, 200);
     }
 
     const isDev = process.env.NODE_ENV === "development";
