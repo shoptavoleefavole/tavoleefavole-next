@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type Address = {
@@ -21,7 +21,11 @@ type ProfilePayload = {
   shippingAddress?: Address | null;
   billingAddress?: Address | null;
   error?: string;
+  message?: string;
+  debug?: any; // utile se la route lo ritorna in dev
 };
+
+const AUTH_EVENT = "tf:auth-changed";
 
 function normalizeAddress(a: any): Address {
   return {
@@ -34,21 +38,38 @@ function normalizeAddress(a: any): Address {
 }
 
 function clamp(v: string, max: number) {
-  const s = (v ?? "").replace(/\s+/g, " ").trim();
+  const s = String(v ?? "")
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function toCountry2(v: string) {
+  const s = clamp(v, 2).toUpperCase();
+  return s.length === 2 ? s : "IT";
+}
+
+function isEmptyAddress(a: Address) {
+  return ![a.address, a.city, a.postalCode, a.province, a.country].some((x) => String(x ?? "").trim().length > 0);
+}
+
 function validateAddress(a: Address) {
-  // Non obblighiamo tutto subito: ma se l’utente compila, deve essere sensato
-  const hasAny = [a.address, a.city, a.postalCode, a.province, a.country].some((x) => x.trim().length > 0);
+  const hasAny = !isEmptyAddress(a);
   if (!hasAny) return { ok: true, msg: "" };
 
   if (a.address.trim().length < 2) return { ok: false, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false, msg: "Città non valida." };
   if (a.postalCode.trim().length < 3) return { ok: false, msg: "CAP non valido." };
-  if (a.country.trim().length !== 2) return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
+  if (toCountry2(a.country).trim().length !== 2) return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
 
   return { ok: true, msg: "" };
+}
+
+function firstToken(full: string) {
+  const s = String(full ?? "").trim();
+  if (!s) return "";
+  return s.split(/\s+/)[0] || s;
 }
 
 export default function ProfilePageClient() {
@@ -77,8 +98,13 @@ export default function ProfilePageClient() {
     country: "IT",
   });
 
+  const [sameAsShipping, setSameAsShipping] = useState(false);
+
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [debugMsg, setDebugMsg] = useState<string | null>(null);
+
+  const didLoadRef = useRef(false);
 
   // Validazioni minime
   const nameOk = useMemo(() => firstName.trim().length >= 2 && lastName.trim().length >= 2, [firstName, lastName]);
@@ -87,12 +113,20 @@ export default function ProfilePageClient() {
 
   const canSave = nameOk && shipVal.ok && billVal.ok && !saving;
 
+  // sync billing se flag attivo
+  useEffect(() => {
+    if (!didLoadRef.current) return;
+    if (sameAsShipping) setBillingAddress(shippingAddress);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shippingAddress, sameAsShipping]);
+
   useEffect(() => {
     let alive = true;
 
     (async () => {
       setLoading(true);
       setErrorMsg(null);
+      setDebugMsg(null);
       setSuccessMsg(null);
 
       try {
@@ -109,7 +143,6 @@ export default function ProfilePageClient() {
 
         if (!res.ok) {
           if (res.status === 401) {
-            // non loggato
             window.location.href = "/accedi?next=/account/profile";
             return;
           }
@@ -118,22 +151,41 @@ export default function ProfilePageClient() {
         }
 
         if (!data?.ok) {
-          setErrorMsg("Impossibile caricare il profilo. Riprova.");
+          setErrorMsg(data?.message || "Impossibile caricare il profilo. Riprova.");
+          if (data?.debug) setDebugMsg(JSON.stringify(data.debug, null, 2));
           return;
         }
 
         setEmail(String(data.email ?? ""));
         setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+
         setFirstName(String(data.firstName ?? ""));
         setLastName(String(data.lastName ?? ""));
 
-        setShippingAddress(normalizeAddress(data.shippingAddress));
-        setBillingAddress(normalizeAddress(data.billingAddress));
+        const ship = normalizeAddress(data.shippingAddress);
+        const bill = normalizeAddress(data.billingAddress);
+
+        setShippingAddress({
+          ...ship,
+          country: toCountry2(ship.country || "IT"),
+        });
+
+        setBillingAddress({
+          ...bill,
+          country: toCountry2(bill.country || "IT"),
+        });
+
+        // auto-flag se già uguali
+        const same =
+          JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
+          JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") });
+        setSameAsShipping(Boolean(same));
       } catch {
         if (!alive) return;
         setErrorMsg("Errore di rete. Riprova.");
       } finally {
         if (!alive) return;
+        didLoadRef.current = true;
         setLoading(false);
       }
     })();
@@ -147,6 +199,7 @@ export default function ProfilePageClient() {
     e.preventDefault();
     setSuccessMsg(null);
     setErrorMsg(null);
+    setDebugMsg(null);
 
     if (!canSave) {
       if (!nameOk) setErrorMsg("Inserisci nome e cognome (minimo 2 caratteri).");
@@ -155,25 +208,34 @@ export default function ProfilePageClient() {
       return;
     }
 
+    if (saving) return; // hard stop double-submit
     setSaving(true);
+
     try {
+      const ship = {
+        address: clamp(shippingAddress.address, 160),
+        city: clamp(shippingAddress.city, 80),
+        postalCode: clamp(shippingAddress.postalCode, 12),
+        province: clamp(shippingAddress.province, 40),
+        country: toCountry2(shippingAddress.country || "IT"),
+      };
+
+      const billBase = sameAsShipping ? ship : billingAddress;
+
+      const bill = {
+        address: clamp(billBase.address, 160),
+        city: clamp(billBase.city, 80),
+        postalCode: clamp(billBase.postalCode, 12),
+        province: clamp(billBase.province, 40),
+        country: toCountry2(billBase.country || "IT"),
+      };
+
+      // IMPORTANT: se un address è completamente vuoto, mandiamo null (evita validation su componenti)
       const payload = {
         firstName: clamp(firstName, 60),
         lastName: clamp(lastName, 60),
-        shippingAddress: {
-          address: clamp(shippingAddress.address, 160),
-          city: clamp(shippingAddress.city, 80),
-          postalCode: clamp(shippingAddress.postalCode, 12),
-          province: clamp(shippingAddress.province, 40),
-          country: clamp((shippingAddress.country || "IT").toUpperCase(), 2),
-        },
-        billingAddress: {
-          address: clamp(billingAddress.address, 160),
-          city: clamp(billingAddress.city, 80),
-          postalCode: clamp(billingAddress.postalCode, 12),
-          province: clamp(billingAddress.province, 40),
-          country: clamp((billingAddress.country || "IT").toUpperCase(), 2),
-        },
+        shippingAddress: isEmptyAddress(ship) ? null : ship,
+        billingAddress: isEmptyAddress(bill) ? null : bill,
       };
 
       const res = await fetch("/api/account/profile", {
@@ -184,21 +246,26 @@ export default function ProfilePageClient() {
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json().catch(() => null);
+      const data = (await res.json().catch(() => null)) as ProfilePayload | null;
 
       if (!res.ok || !data?.ok) {
         if (res.status === 401) {
           window.location.href = "/accedi?next=/account/profile";
           return;
         }
-        setErrorMsg("Salvataggio non riuscito. Riprova.");
+
+        setErrorMsg(data?.message || "Salvataggio non riuscito. Riprova.");
+
+        // se la route in dev manda debug, mostralo
+        if (data?.debug) setDebugMsg(JSON.stringify(data.debug, null, 2));
         return;
       }
 
-      // aggiorna header
-      window.dispatchEvent(new Event("tf:auth-changed"));
-
+      window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
+
+      // Aggiorna anche lo stato locale: se sameAsShipping, riallinea billing
+      if (sameAsShipping) setBillingAddress(ship);
     } catch {
       setErrorMsg("Errore di rete. Riprova.");
     } finally {
@@ -273,6 +340,11 @@ export default function ProfilePageClient() {
           {!nameOk ? (
             <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p>
           ) : null}
+
+          {/* mini-preview UI: Benvenuto, Nome */}
+          <p className="mt-3 text-sm text-muted-text">
+            Anteprima header: <span className="font-semibold">Benvenuto,</span> {firstToken(firstName) || "Account"}
+          </p>
         </section>
 
         {/* Spedizione */}
@@ -337,16 +409,32 @@ export default function ProfilePageClient() {
 
         {/* Fatturazione */}
         <section className="rounded-2xl border border-border bg-white p-5">
-          <h2 className="text-lg font-bold">Dati di fatturazione</h2>
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="text-lg font-bold">Dati di fatturazione</h2>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={sameAsShipping}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setSameAsShipping(checked);
+                  if (checked) setBillingAddress(shippingAddress);
+                }}
+              />
+              Coincide con spedizione
+            </label>
+          </div>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <label className="block text-sm font-medium">Indirizzo</label>
               <input
                 className="mt-1 w-full rounded-md border p-3"
-                value={billingAddress.address}
+                value={sameAsShipping ? shippingAddress.address : billingAddress.address}
                 onChange={(e) => setBillingAddress((p) => ({ ...p, address: e.target.value }))}
                 autoComplete="billing street-address"
+                disabled={sameAsShipping}
               />
             </div>
 
@@ -354,9 +442,10 @@ export default function ProfilePageClient() {
               <label className="block text-sm font-medium">Città</label>
               <input
                 className="mt-1 w-full rounded-md border p-3"
-                value={billingAddress.city}
+                value={sameAsShipping ? shippingAddress.city : billingAddress.city}
                 onChange={(e) => setBillingAddress((p) => ({ ...p, city: e.target.value }))}
                 autoComplete="billing address-level2"
+                disabled={sameAsShipping}
               />
             </div>
 
@@ -364,10 +453,11 @@ export default function ProfilePageClient() {
               <label className="block text-sm font-medium">CAP</label>
               <input
                 className="mt-1 w-full rounded-md border p-3"
-                value={billingAddress.postalCode}
+                value={sameAsShipping ? shippingAddress.postalCode : billingAddress.postalCode}
                 onChange={(e) => setBillingAddress((p) => ({ ...p, postalCode: e.target.value }))}
                 autoComplete="billing postal-code"
                 inputMode="numeric"
+                disabled={sameAsShipping}
               />
             </div>
 
@@ -375,9 +465,10 @@ export default function ProfilePageClient() {
               <label className="block text-sm font-medium">Provincia</label>
               <input
                 className="mt-1 w-full rounded-md border p-3"
-                value={billingAddress.province}
+                value={sameAsShipping ? shippingAddress.province : billingAddress.province}
                 onChange={(e) => setBillingAddress((p) => ({ ...p, province: e.target.value }))}
                 autoComplete="billing address-level1"
+                disabled={sameAsShipping}
               />
             </div>
 
@@ -385,9 +476,10 @@ export default function ProfilePageClient() {
               <label className="block text-sm font-medium">Paese (2 lettere)</label>
               <input
                 className="mt-1 w-full rounded-md border p-3 uppercase"
-                value={billingAddress.country}
+                value={sameAsShipping ? shippingAddress.country : billingAddress.country}
                 onChange={(e) => setBillingAddress((p) => ({ ...p, country: e.target.value }))}
                 autoComplete="billing country"
+                disabled={sameAsShipping}
               />
             </div>
           </div>
@@ -396,7 +488,14 @@ export default function ProfilePageClient() {
         </section>
 
         {errorMsg ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            {errorMsg}
+            {debugMsg ? (
+              <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">
+                {debugMsg}
+              </pre>
+            ) : null}
+          </div>
         ) : null}
 
         {successMsg ? (

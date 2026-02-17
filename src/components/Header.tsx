@@ -482,7 +482,9 @@ export default function Header() {
                     "Account"
                   ) : loggedIn ? (
                     <>
-                      <span className="font-semibold">Benvenuto,</span> {displayName || "Account"}
+                      <span className="font-semibold">Benvenuto,</span>{" "}
+                      {(displayName || "Account").split(" ")[0]}
+
                     </>
                   ) : (
                     "Accedi"
