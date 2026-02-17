@@ -14,24 +14,28 @@ export const categories: Category[] = [];
 export const products: Product[] = [];
 export const occasions: Occasion[] = [];
 
-export function getCategoryBySlug(_slug: string): Category | undefined {
+export function getCategoryBySlug(slug: string): Category | undefined {
+  // keep signature stable, avoid unused param warnings
+  void slug;
   return undefined;
 }
 
-export function getProductBySlug(_slug: string): Product | undefined {
+export function getProductBySlug(slug: string): Product | undefined {
+  void slug;
   return undefined;
 }
 
-export function getProductsByCategory(_slug: string): Product[] {
+export function getProductsByCategory(slug: string): Product[] {
+  void slug;
   return [];
 }
 
-export function getOccasionBySlug(_slug: string): Occasion | undefined {
+export function getOccasionBySlug(slug: string): Occasion | undefined {
+  void slug;
   return undefined;
 }
 
 export function getCurrentOccasion(): Occasion {
-  // fallback safe
   return {
     slug: "befana",
     name: "Befana",
@@ -41,6 +45,7 @@ export function getCurrentOccasion(): Occasion {
   };
 }
 
-export function getProductsForOccasion(_slug: string): Product[] {
+export function getProductsForOccasion(slug: string): Product[] {
+  void slug;
   return [];
 }

@@ -276,7 +276,7 @@ export async function PUT(req: Request) {
   const billVal = validateAddressIfAny(billingAddress);
   if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
-  let profile = await findCustomerProfile(base, me.id);
+  const profile = await findCustomerProfile(base, me.id);
 
   // patch dati
   const patch: any = {
