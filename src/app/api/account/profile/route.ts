@@ -127,7 +127,7 @@ async function getUserFromJwt(base: string, jwt: string) {
 }
 
 /**
- * Trova il CustomerProfile e ritorna anche documentId (Strapi v5).
+ * Trova CustomerProfile e ritorna anche documentId (Strapi v5).
  * Prova prima senza publicationState, poi con publicationState=preview.
  */
 async function findCustomerProfile(base: string, userId: number) {
@@ -144,7 +144,6 @@ async function findCustomerProfile(base: string, userId: number) {
     };
   }
 
-  // 1) relation: user
   const qs1 = new URLSearchParams();
   qs1.set("populate", "*");
   qs1.set("pagination[pageSize]", "1");
@@ -152,13 +151,11 @@ async function findCustomerProfile(base: string, userId: number) {
   let found = await tryQuery(qs1);
   if (found) return found;
 
-  // 1b) v4 draft preview
   const qs1b = new URLSearchParams(qs1);
   qs1b.set("publicationState", "preview");
   found = await tryQuery(qs1b);
   if (found) return found;
 
-  // 2) fallback: users_permissions_user (vecchie prove)
   const qs2 = new URLSearchParams();
   qs2.set("populate", "*");
   qs2.set("pagination[pageSize]", "1");
@@ -185,7 +182,6 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
     data: {
       ...data,
       user: userId,
-      // se D&P attivo, pubblica subito
       publishedAt: new Date().toISOString(),
     },
   };
@@ -208,10 +204,10 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
 }
 
 /**
- * ✅ Update robusto:
- * - prova PUT con documentId (Strapi v5)
- * - poi con id numerico (Strapi v4)
- * - per ciascuno prova URL “liscia” e “?publicationState=preview”
+ * Update robusto:
+ * - prova PUT con documentId (v5)
+ * - poi con id (v4)
+ * - per ciascuno prova URL liscia e ?publicationState=preview
  */
 async function updateCustomerProfile(base: string, key: string, patch: any) {
   const headers = {
@@ -320,8 +316,8 @@ export async function PUT(req: Request) {
   const billVal = validateAddressIfAny(billingAddress);
   if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
-  // trova profilo
-  let profile = await findCustomerProfile(base, me.id);
+  // ✅ const (fix ESLint)
+  const profile = await findCustomerProfile(base, me.id);
 
   const patch: any = {
     firstName,
@@ -332,10 +328,8 @@ export async function PUT(req: Request) {
   if (addressHasAny(shippingAddress)) patch.shippingAddress = shippingAddress;
   if (addressHasAny(billingAddress)) patch.billingAddress = billingAddress;
 
-  // se draft/publish è attivo e la entry è draft, pubblica
   if (!profile?.attrs?.publishedAt) patch.publishedAt = new Date().toISOString();
 
-  // se non esiste, crealo
   if (!profile) {
     const created = await createCustomerProfile(base, me.id, patch);
     if (!created) return jsonNoStore({ ok: false, error: "CREATE_FAILED" }, 502);
@@ -355,11 +349,9 @@ export async function PUT(req: Request) {
     );
   }
 
-  // ✅ UPDATE: prova documentId (v5) poi id (v4)
-  const keysToTry = [
-    profile.documentId ? profile.documentId : null,
-    profile.id ? String(profile.id) : null,
-  ].filter(Boolean) as string[];
+  const keysToTry = [profile.documentId ? profile.documentId : null, profile.id ? String(profile.id) : null].filter(
+    Boolean
+  ) as string[];
 
   let lastFail: any = null;
 
