@@ -28,8 +28,6 @@ type ProfilePayload = {
 
 const AUTH_EVENT = "tf:auth-changed";
 const LOGIN_REDIRECT = "/accedi?next=/account/profilo";
-
-// Stato "vuoto" canonico per input controllati (no undefined)
 const EMPTY_ADDRESS: Address = { address: "", city: "", postalCode: "", province: "", country: "IT" };
 
 function normalizeAddress(a: any): Address {
@@ -55,10 +53,6 @@ function toCountry2(v: unknown) {
   return s.length === 2 ? s : "IT";
 }
 
-/**
- * ✅ “vuoto” = tutti i campi *core* sono vuoti.
- * country di default "IT" NON deve far risultare l’indirizzo “compilato”.
- */
 function isEmptyAddress(a: Address) {
   const coreEmpty = ![a.address, a.city, a.postalCode, a.province].some((x) => String(x ?? "").trim().length > 0);
   const country = String(a.country ?? "").trim().toUpperCase();
@@ -83,41 +77,24 @@ function firstToken(full: string) {
   return s.split(/\s+/)[0] || s;
 }
 
-/** Non sovrascrivere con vuoto/undefined */
 function preferNonEmpty(current: string, incoming: unknown): string {
   const next = String(incoming ?? "").trim();
   return next ? next : current;
 }
 
-/**
- * Merge address:
- * - se incoming è null/undefined => NON sovrascrivere
- * - se incoming è presente ma è “vuoto” => reset a EMPTY_ADDRESS (serve per cancellazioni)
- * - altrimenti aggiorna campi (anche stringhe vuote hanno senso nei controlled input, ma qui proteggiamo dai payload parziali)
- */
-function mergeAddress(current: Address, incoming: any): Address {
-  if (incoming == null) return current;
+function applyAddressFromServer(current: Address, incoming: Address | null | undefined): Address {
+  // undefined => non tocchiamo
+  if (incoming === undefined) return current;
+  // null => reset (server dice “non c’è”)
+  if (incoming === null) return { ...EMPTY_ADDRESS };
 
   const inc = normalizeAddress(incoming);
-  const incN: Address = {
-    address: String(inc.address ?? ""),
-    city: String(inc.city ?? ""),
-    postalCode: String(inc.postalCode ?? ""),
-    province: String(inc.province ?? ""),
-    country: toCountry2(inc.country ?? "IT"),
-  };
+  const incN: Address = { ...inc, country: toCountry2(inc.country || "IT") };
 
+  // se server manda oggetto vuoto, consideriamolo vuoto
   if (isEmptyAddress(incN)) return { ...EMPTY_ADDRESS };
 
-  // Qui aggiorniamo con i valori incoming (anche vuoti) MA in modo difensivo:
-  // se server manda campi null/undefined -> manteniamo current
-  return {
-    address: inc.address != null ? String(inc.address) : current.address,
-    city: inc.city != null ? String(inc.city) : current.city,
-    postalCode: inc.postalCode != null ? String(inc.postalCode) : current.postalCode,
-    province: inc.province != null ? String(inc.province) : current.province,
-    country: toCountry2(inc.country ?? current.country ?? "IT"),
-  };
+  return incN;
 }
 
 export default function ProfilePageClient() {
@@ -149,64 +126,44 @@ export default function ProfilePageClient() {
     };
   }, []);
 
-  // Validazioni minime
   const nameOk = useMemo(() => firstName.trim().length >= 2 && lastName.trim().length >= 2, [firstName, lastName]);
   const shipVal = useMemo(() => validateAddress(shippingAddress), [shippingAddress]);
   const billVal = useMemo(() => validateAddress(billingAddress), [billingAddress]);
 
   const canSave = nameOk && shipVal.ok && billVal.ok && !saving;
 
-  // sync billing se flag attivo (solo dopo primo load)
   useEffect(() => {
     if (!didLoadRef.current) return;
     if (sameAsShipping) setBillingAddress(shippingAddress);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shippingAddress, sameAsShipping]);
 
-  const applyProfilePayload = useCallback((data: ProfilePayload, opts?: { strict?: boolean }) => {
-    const strict = Boolean(opts?.strict);
+  const applyProfileNonDestructive = useCallback((data: ProfilePayload) => {
+    setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
+    setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
 
-    // email / type
-    if (strict) {
-      setEmail(String(data.email ?? ""));
-      setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
-      setFirstName(String(data.firstName ?? ""));
-      setLastName(String(data.lastName ?? ""));
-    } else {
-      // NON sovrascrivere con vuoti
-      setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
-      setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
-      setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
-      setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
+    // 🔒 NON sovrascrivere nome/cognome con vuoto
+    setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
+    setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
+
+    // indirizzi: reset solo se null, altrimenti applica
+    setShippingAddress((cur) => applyAddressFromServer(cur, data.shippingAddress));
+    setBillingAddress((cur) => applyAddressFromServer(cur, data.billingAddress));
+
+    // sameAsShipping (ricalcola solo se server ci dà entrambi)
+    if (data.shippingAddress !== undefined && data.billingAddress !== undefined) {
+      const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
+      const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
+
+      const same =
+        (ship === null && bill === null) ||
+        (ship !== null &&
+          bill !== null &&
+          JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
+            JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
+
+      setSameAsShipping(Boolean(same));
     }
-
-    // indirizzi (se server manda null => reset, se undefined => lascia com'è)
-    setShippingAddress((cur) => mergeAddress(cur, data.shippingAddress));
-    setBillingAddress((cur) => mergeAddress(cur, data.billingAddress));
-
-    // sameAsShipping: se abbiamo dati “affidabili”, ricalcoliamo davvero
-    // - caso 1: entrambi null => true (coerenti)
-    // - caso 2: uno null e l’altro no => false
-    // - caso 3: entrambi obj => confronta normalizzati
-    const shipRaw = data.shippingAddress;
-    const billRaw = data.billingAddress;
-
-    const sameComputed = (() => {
-      if (shipRaw == null && billRaw == null) return true;
-      if (shipRaw == null || billRaw == null) return false;
-
-      const ship = normalizeAddress(shipRaw);
-      const bill = normalizeAddress(billRaw);
-
-      const shipN = { ...ship, country: toCountry2(ship.country || "IT") };
-      const billN = { ...bill, country: toCountry2(bill.country || "IT") };
-
-      return JSON.stringify(shipN) === JSON.stringify(billN);
-    })();
-
-    // In strict (primo load / refresh post-save) aggiorniamo sempre.
-    // In non-strict, non “spegniamo” automaticamente se l'utente ha flaggato manualmente.
-    setSameAsShipping((cur) => (strict ? sameComputed : sameComputed ? true : cur));
   }, []);
 
   const reloadProfile = useCallback(async () => {
@@ -222,29 +179,18 @@ export default function ProfilePageClient() {
       if (!aliveRef.current) return;
 
       if (!res.ok) {
-        if (res.status === 401) {
-          window.location.href = LOGIN_REDIRECT;
-          return;
-        }
-        setErrorMsg("Impossibile ricaricare il profilo. Riprova.");
+        if (res.status === 401) window.location.href = LOGIN_REDIRECT;
         return;
       }
+      if (!data?.ok) return;
 
-      if (!data?.ok) {
-        setErrorMsg(data?.message || "Impossibile ricaricare il profilo. Riprova.");
-        if ((data as any)?.debug) setDebugMsg(JSON.stringify((data as any).debug, null, 2));
-        return;
-      }
-
-      // ✅ refresh “affidabile”: applichiamo in strict così allinei UI ai dati salvati
-      applyProfilePayload(data, { strict: true });
+      // ✅ refresh “non distruttivo”: non può svuotare campi
+      applyProfileNonDestructive(data);
     } catch {
-      if (!aliveRef.current) return;
-      setErrorMsg("Errore di rete durante il refresh profilo.");
+      // best-effort
     }
-  }, [applyProfilePayload]);
+  }, [applyProfileNonDestructive]);
 
-  // primo load
   useEffect(() => {
     let canceled = false;
 
@@ -266,11 +212,8 @@ export default function ProfilePageClient() {
         if (canceled || !aliveRef.current) return;
 
         if (!res.ok) {
-          if (res.status === 401) {
-            window.location.href = LOGIN_REDIRECT;
-            return;
-          }
-          setErrorMsg("Impossibile caricare il profilo. Riprova.");
+          if (res.status === 401) window.location.href = LOGIN_REDIRECT;
+          else setErrorMsg("Impossibile caricare il profilo. Riprova.");
           return;
         }
 
@@ -280,11 +223,28 @@ export default function ProfilePageClient() {
           return;
         }
 
-        // ✅ primo load: strict (la UI riflette esattamente lo stato server)
-        applyProfilePayload(data, { strict: true });
+        // primo load: qui possiamo applicare “completo”
+        setEmail(String(data.email ?? ""));
+        setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+        setFirstName(String(data.firstName ?? ""));
+        setLastName(String(data.lastName ?? ""));
+
+        setShippingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.shippingAddress));
+        setBillingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.billingAddress));
+
+        const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
+        const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
+
+        const same =
+          (ship === null && bill === null) ||
+          (ship !== null &&
+            bill !== null &&
+            JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
+              JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
+
+        setSameAsShipping(Boolean(same));
       } catch {
-        if (canceled || !aliveRef.current) return;
-        setErrorMsg("Errore di rete. Riprova.");
+        if (!canceled || aliveRef.current) setErrorMsg("Errore di rete. Riprova.");
       } finally {
         if (canceled || !aliveRef.current) return;
         didLoadRef.current = true;
@@ -295,7 +255,7 @@ export default function ProfilePageClient() {
     return () => {
       canceled = true;
     };
-  }, [applyProfilePayload]);
+  }, []);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -329,13 +289,12 @@ export default function ProfilePageClient() {
         city: clamp(billBase.city, 80),
         postalCode: clamp(billBase.postalCode, 12),
         province: clamp(billBase.province, 40),
-        country: toCountry2((billBase as any).country || "IT"),
+        country: toCountry2(billBase.country || "IT"),
       };
 
       const payload = {
         firstName: clamp(firstName, 60),
         lastName: clamp(lastName, 60),
-        // ✅ se vuoto, mandiamo null (server dovrebbe gestire null come “cancella”)
         shippingAddress: isEmptyAddress(ship) ? null : ship,
         billingAddress: isEmptyAddress(bill) ? null : bill,
       };
@@ -360,32 +319,19 @@ export default function ProfilePageClient() {
         return;
       }
 
-      // ✅ 1) Update locale immediato (campi NON si svuotano mai)
+      // ✅ optimistic: i campi restano pieni SEMPRE
       setFirstName(payload.firstName);
       setLastName(payload.lastName);
-
       setShippingAddress(payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS });
+      setBillingAddress(payload.billingAddress ? { ...payload.billingAddress } : sameAsShipping && payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS });
 
-      if (payload.billingAddress) {
-        setBillingAddress({ ...payload.billingAddress });
-      } else if (sameAsShipping && payload.shippingAddress) {
-        setBillingAddress({ ...payload.shippingAddress });
-      } else {
-        setBillingAddress({ ...EMPTY_ADDRESS });
-      }
-
-      // se coincide, fissiamo true
-      if (sameAsShipping) setSameAsShipping(true);
-
-      // eventi UI
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
 
-      // ✅ 2) allinea dai dati server (se server ritorna null/obj)
-      // così risolviamo al 100% i casi “celle vuote dopo save”
-      applyProfilePayload(data, { strict: true });
+      // ✅ applica risposta server in modo NON distruttivo (non svuota)
+      applyProfileNonDestructive(data);
 
-      // ✅ 3) refresh best-effort per sicurezza (non rompe i campi)
+      // ✅ refresh non distruttivo (best-effort)
       void reloadProfile();
     } catch {
       setErrorMsg("Errore di rete. Riprova.");
@@ -457,9 +403,7 @@ export default function ProfilePageClient() {
             </div>
           </div>
 
-          {firstName.trim().length < 2 || lastName.trim().length < 2 ? (
-            <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p>
-          ) : null}
+          {!nameOk ? <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p> : null}
 
           <p className="mt-3 text-sm text-muted-text">
             Anteprima header: <span className="font-semibold">Benvenuto,</span> {firstToken(firstName) || "Account"}
@@ -617,11 +561,7 @@ export default function ProfilePageClient() {
           <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">{successMsg}</div>
         ) : null}
 
-        <button
-          type="submit"
-          disabled={!canSave}
-          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
-        >
+        <button type="submit" disabled={!canSave} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
           {saving ? "Salvataggio..." : "Salva modifiche"}
         </button>
       </form>

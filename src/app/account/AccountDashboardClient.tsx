@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type SafeUser = {
@@ -13,6 +13,13 @@ type SafeUser = {
   accountType: "PERSON" | "BUSINESS" | null;
 };
 
+type ProfilePayload = {
+  ok: boolean;
+  firstName?: string | null;
+  lastName?: string | null;
+  customerType?: "PRIVATE" | "BUSINESS";
+};
+
 const AUTH_EVENT = "tf:auth-changed";
 
 function sanitizeInlineText(input: unknown, maxLen = 40): string {
@@ -22,27 +29,14 @@ function sanitizeInlineText(input: unknown, maxLen = 40): string {
   return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned;
 }
 
-function niceName(u: SafeUser) {
+function niceFallbackName(u: SafeUser) {
   const fn = sanitizeInlineText(u.firstName);
   const ln = sanitizeInlineText(u.lastName);
   const full = `${fn} ${ln}`.trim();
-  if (full) return full;
-
-  const un = sanitizeInlineText(u.username);
-  if (un) {
-    // se username sembra una mail → mostra solo la parte prima della @
-    if (un.includes("@")) return un.split("@")[0] || "Account";
-    return un;
-  }
-
-  // ultima spiaggia: email (ma abbreviata)
-  const em = sanitizeInlineText(u.email);
-  if (em.includes("@")) return em.split("@")[0] || "Account";
-  return em || "Account";
+  return full || sanitizeInlineText(u.username) || "Account";
 }
 
 function CardIcon({ name }: { name: "user" | "box" | "heart" | "file" | "help" }) {
-  // icone minimal inline (no dipendenze)
   switch (name) {
     case "user":
       return (
@@ -94,11 +88,7 @@ function CardIcon({ name }: { name: "user" | "box" | "heart" | "file" | "help" }
             strokeWidth="2"
             strokeLinecap="round"
           />
-          <path
-            d="M12 22a10 10 0 100-20 10 10 0 000 20z"
-            stroke="currentColor"
-            strokeWidth="2"
-          />
+          <path d="M12 22a10 10 0 100-20 10 10 0 000 20z" stroke="currentColor" strokeWidth="2" />
         </svg>
       );
     default:
@@ -118,9 +108,7 @@ function DashboardCard(props: {
     <div className="rounded-2xl border border-border bg-background p-5 shadow-sm transition hover:shadow-md">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-surface text-text">
-            {props.icon}
-          </div>
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-surface text-text">{props.icon}</div>
           <div>
             <div className="text-sm font-extrabold">{props.title}</div>
             <div className="mt-1 text-sm text-text/70">{props.desc}</div>
@@ -128,9 +116,7 @@ function DashboardCard(props: {
         </div>
 
         {props.badge ? (
-          <div className="rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">
-            {props.badge}
-          </div>
+          <div className="rounded-full bg-surface px-2 py-1 text-[11px] font-bold text-text/70">{props.badge}</div>
         ) : null}
       </div>
     </div>
@@ -138,7 +124,10 @@ function DashboardCard(props: {
 
   if (props.href) {
     return (
-      <Link href={props.href} className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-2xl">
+      <Link
+        href={props.href}
+        className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
         {inner}
       </Link>
     );
@@ -148,11 +137,17 @@ function DashboardCard(props: {
     <button
       type="button"
       onClick={props.onClick}
-      className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-2xl"
+      className="w-full rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
     >
       {inner}
     </button>
   );
+}
+
+function formatName(firstName: unknown, lastName: unknown) {
+  const fn = sanitizeInlineText(firstName);
+  const ln = sanitizeInlineText(lastName);
+  return `${fn} ${ln}`.trim();
 }
 
 export default function AccountDashboardClient({
@@ -165,8 +160,45 @@ export default function AccountDashboardClient({
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const display = useMemo(() => niceName(user), [user]);
+  // ✅ Nome “reale” dal customer-profile
+  const [profileName, setProfileName] = useState<string>("");
+
   const isBusiness = user.accountType === "BUSINESS";
+
+  const display = useMemo(() => {
+    // priorità: nome dal profilo -> fallback server user
+    return profileName || niceFallbackName(user);
+  }, [profileName, user]);
+
+  const loadProfileName = useCallback(async () => {
+    try {
+      const res = await fetch("/api/account/profile", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return;
+
+      const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+      if (!data?.ok) return;
+
+      const full = formatName(data.firstName, data.lastName);
+      setProfileName(full);
+    } catch {
+      // best-effort
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProfileName();
+
+    const onAuth = () => {
+      loadProfileName();
+    };
+    window.addEventListener(AUTH_EVENT, onAuth);
+    return () => window.removeEventListener(AUTH_EVENT, onAuth);
+  }, [loadProfileName]);
 
   async function logout() {
     if (loggingOut) return;
@@ -182,7 +214,6 @@ export default function AccountDashboardClient({
     } catch {
       // best-effort
     } finally {
-      // aggiorna header & UI globalmente
       window.dispatchEvent(new Event(AUTH_EVENT));
       setLoggingOut(false);
       router.replace("/");
@@ -198,15 +229,13 @@ export default function AccountDashboardClient({
             <h1 className="text-2xl font-extrabold">
               Benvenuto, <span className="text-primary">{display}</span>
             </h1>
-            <p className="mt-2 text-sm text-text/70">
-              Da qui puoi gestire ordini, profilo e preferiti in modo semplice e veloce.
-            </p>
+            <p className="mt-2 text-sm text-text/70">Da qui puoi gestire ordini, profilo e preferiti in modo semplice e veloce.</p>
             <p className="mt-1 text-xs text-text/60">
               Email: <span className="font-semibold">{sanitizeInlineText(user.email, 80)}</span>
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Link
               href="/catalogo"
               className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-white px-4 text-sm font-extrabold hover:bg-surface"
@@ -226,27 +255,9 @@ export default function AccountDashboardClient({
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <DashboardCard
-            title="Profilo"
-            desc="Dati personali, sicurezza e preferenze."
-            href="/account/profilo"
-            icon={<CardIcon name="user" />}
-          />
-
-          <DashboardCard
-            title="Ordini"
-            desc="Storico ordini e dettagli delle spedizioni."
-            href="/account/ordini"
-            icon={<CardIcon name="box" />}
-          />
-
-          <DashboardCard
-            title="Preferiti"
-            desc="I prodotti salvati per acquisti futuri."
-            href="/account/preferiti"
-            icon={<CardIcon name="heart" />}
-          />
-
+          <DashboardCard title="Profilo" desc="Dati personali, sicurezza e preferenze." href="/account/profilo" icon={<CardIcon name="user" />} />
+          <DashboardCard title="Ordini" desc="Storico ordini e dettagli delle spedizioni." href="/account/ordini" icon={<CardIcon name="box" />} />
+          <DashboardCard title="Preferiti" desc="I prodotti salvati per acquisti futuri." href="/account/preferiti" icon={<CardIcon name="heart" />} />
           <DashboardCard
             title="Fatturazione"
             desc="Indirizzi, PEC/SDI e dati di fatturazione."
@@ -256,49 +267,14 @@ export default function AccountDashboardClient({
           />
 
           {whatsappHref ? (
-            <DashboardCard
-              title="Assistenza rapida"
-              desc="Scrivici su WhatsApp: ti aiutiamo subito."
-              href={whatsappHref}
-              icon={<CardIcon name="help" />}
-              badge="WhatsApp"
-            />
+            <DashboardCard title="Assistenza rapida" desc="Scrivici su WhatsApp: ti aiutiamo subito." href={whatsappHref} icon={<CardIcon name="help" />} badge="WhatsApp" />
           ) : (
-            <DashboardCard
-              title="Assistenza"
-              desc="Contattaci per supporto su ordini e prodotti."
-              href="/contatti"
-              icon={<CardIcon name="help" />}
-            />
-          )}
-
-          {isBusiness ? (
-            <DashboardCard
-              title="Area Azienda"
-              desc="Gestisci profilo business e richieste di sconto."
-              href="/account/azienda"
-              icon={<CardIcon name="file" />}
-              badge="B2B"
-            />
-          ) : (
-            <div className="rounded-2xl border border-border bg-surface p-5">
-              <div className="text-sm font-extrabold">Vuoi i vantaggi Business?</div>
-              <div className="mt-1 text-sm text-text/70">
-                Se acquisti per la tua attività, richiedi l’abilitazione Business per prezzi e condizioni dedicate.
-              </div>
-              <Link
-                href="/registrati?next=/account"
-                className="mt-3 inline-flex h-10 items-center justify-center rounded-xl bg-primary px-4 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-              >
-                Richiedi profilo Business
-              </Link>
-            </div>
+            <DashboardCard title="Assistenza" desc="Contattaci per supporto su ordini e prodotti." href="/contatti" icon={<CardIcon name="help" />} />
           )}
         </div>
 
         <div className="mt-6 text-xs text-text/60">
-          Suggerimento: per una gestione completa e ordinata, questa area evita menu a tendina sovrapposti e mantiene
-          l’esperienza pulita su mobile e desktop.
+          Suggerimento: per una gestione completa e ordinata, questa area evita menu a tendina sovrapposti e mantiene l’esperienza pulita su mobile e desktop.
         </div>
       </div>
     </section>
