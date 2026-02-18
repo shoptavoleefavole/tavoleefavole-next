@@ -57,34 +57,40 @@ function sanitize(input: unknown, maxLen = 160) {
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
 }
 
+function sanitizeCountry2(input: unknown) {
+  const s = sanitize(input, 2).toUpperCase();
+  return s.length === 2 ? s : "IT";
+}
+
 function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
   return String(v ?? "").toUpperCase().trim() === "BUSINESS" ? "BUSINESS" : "PRIVATE";
 }
 
 type Address = {
-  address?: string;
-  city?: string;
-  postalCode?: string;
-  province?: string;
-  country?: string;
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string;
 };
 
-function normalizeAddress(a: any): Required<Address> {
+function normalizeAddress(a: any): Address {
   return {
     address: sanitize(a?.address, 160),
     city: sanitize(a?.city, 80),
     postalCode: sanitize(a?.postalCode, 12),
     province: sanitize(a?.province, 40),
-    country: sanitize((a?.country || "IT").toUpperCase(), 2) || "IT",
+    country: sanitizeCountry2(a?.country ?? "IT"),
   };
 }
 
-function addressHasAny(a: Required<Address>) {
-  return [a.address, a.city, a.postalCode, a.province, a.country].some((x) => String(x || "").trim().length > 0);
+/** ✅ “vuoto” = tutti i campi *tranne country* sono vuoti */
+function addressIsMeaningfullyEmpty(a: Address) {
+  return ![a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
 }
 
-function validateAddressIfAny(a: Required<Address>) {
-  if (!addressHasAny(a)) return { ok: true as const, msg: "" };
+function validateAddressIfAny(a: Address) {
+  if (addressIsMeaningfullyEmpty(a)) return { ok: true as const, msg: "" };
 
   if (a.address.trim().length < 2) return { ok: false as const, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false as const, msg: "Città non valida." };
@@ -307,16 +313,25 @@ export async function PUT(req: Request) {
     return jsonNoStore({ ok: false, error: "INVALID_NAME" }, 400);
   }
 
-  const shippingAddress = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
-  const billingAddress = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
+  // ✅ supporta: shippingAddress: null per “cancellare”
+  const shipProvided = Object.prototype.hasOwnProperty.call(body, "shippingAddress");
+  const billProvided = Object.prototype.hasOwnProperty.call(body, "billingAddress");
 
-  const shipVal = validateAddressIfAny(shippingAddress);
-  if (!shipVal.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
+  const shipObj =
+    shipProvided && body.shippingAddress != null ? normalizeAddress(body.shippingAddress) : null;
 
-  const billVal = validateAddressIfAny(billingAddress);
-  if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
+  const billObj =
+    billProvided && body.billingAddress != null ? normalizeAddress(body.billingAddress) : null;
 
-  // ✅ const (fix ESLint)
+  if (shipObj) {
+    const v = validateAddressIfAny(shipObj);
+    if (!v.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: v.msg }, 400);
+  }
+  if (billObj) {
+    const v = validateAddressIfAny(billObj);
+    if (!v.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: v.msg }, 400);
+  }
+
   const profile = await findCustomerProfile(base, me.id);
 
   const patch: any = {
@@ -325,8 +340,10 @@ export async function PUT(req: Request) {
     customerType: profile?.attrs?.customerType ? normalizeCustomerType(profile.attrs.customerType) : "PRIVATE",
   };
 
-  if (addressHasAny(shippingAddress)) patch.shippingAddress = shippingAddress;
-  if (addressHasAny(billingAddress)) patch.billingAddress = billingAddress;
+  // ✅ Se l’utente manda null → svuotiamo in Strapi
+  // ✅ Se manda object ma “vuoto” → lo trattiamo come null
+  if (shipProvided) patch.shippingAddress = shipObj && !addressIsMeaningfullyEmpty(shipObj) ? shipObj : null;
+  if (billProvided) patch.billingAddress = billObj && !addressIsMeaningfullyEmpty(billObj) ? billObj : null;
 
   if (!profile?.attrs?.publishedAt) patch.publishedAt = new Date().toISOString();
 
@@ -342,8 +359,8 @@ export async function PUT(req: Request) {
         customerType: normalizeCustomerType(created.attrs?.customerType),
         firstName: String(created.attrs?.firstName ?? firstName),
         lastName: String(created.attrs?.lastName ?? lastName),
-        shippingAddress: created.attrs?.shippingAddress ?? (addressHasAny(shippingAddress) ? shippingAddress : null),
-        billingAddress: created.attrs?.billingAddress ?? (addressHasAny(billingAddress) ? billingAddress : null),
+        shippingAddress: created.attrs?.shippingAddress ?? patch.shippingAddress ?? null,
+        billingAddress: created.attrs?.billingAddress ?? patch.billingAddress ?? null,
       },
       200
     );
@@ -367,8 +384,8 @@ export async function PUT(req: Request) {
           customerType: normalizeCustomerType(attrs?.customerType ?? patch.customerType),
           firstName: String(attrs?.firstName ?? firstName),
           lastName: String(attrs?.lastName ?? lastName),
-          shippingAddress: attrs?.shippingAddress ?? (addressHasAny(shippingAddress) ? shippingAddress : null),
-          billingAddress: attrs?.billingAddress ?? (addressHasAny(billingAddress) ? billingAddress : null),
+          shippingAddress: attrs?.shippingAddress ?? patch.shippingAddress ?? null,
+          billingAddress: attrs?.billingAddress ?? patch.billingAddress ?? null,
         },
         200
       );

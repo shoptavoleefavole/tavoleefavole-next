@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type Address = {
@@ -16,16 +17,20 @@ type ProfilePayload = {
   exists?: boolean;
   email?: string | null;
   customerType?: "PRIVATE" | "BUSINESS";
-  firstName?: string;
-  lastName?: string;
+  firstName?: string | null;
+  lastName?: string | null;
   shippingAddress?: Address | null;
   billingAddress?: Address | null;
   error?: string;
   message?: string;
-  debug?: any; // utile se la route lo ritorna in dev
+  debug?: unknown;
 };
 
 const AUTH_EVENT = "tf:auth-changed";
+const LOGIN_REDIRECT = "/accedi?next=/account/profilo";
+
+// Stato "vuoto" canonico per input controllati (no undefined)
+const EMPTY_ADDRESS: Address = { address: "", city: "", postalCode: "", province: "", country: "IT" };
 
 function normalizeAddress(a: any): Address {
   return {
@@ -37,7 +42,7 @@ function normalizeAddress(a: any): Address {
   };
 }
 
-function clamp(v: string, max: number) {
+function clamp(v: unknown, max: number) {
   const s = String(v ?? "")
     .replace(/[\u0000-\u001F\u007F]/g, "")
     .replace(/\s+/g, " ")
@@ -45,18 +50,24 @@ function clamp(v: string, max: number) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-function toCountry2(v: string) {
+function toCountry2(v: unknown) {
   const s = clamp(v, 2).toUpperCase();
   return s.length === 2 ? s : "IT";
 }
 
+/**
+ * ✅ “vuoto” = tutti i campi *core* sono vuoti.
+ * country di default "IT" NON deve far risultare l’indirizzo “compilato”.
+ */
 function isEmptyAddress(a: Address) {
-  return ![a.address, a.city, a.postalCode, a.province, a.country].some((x) => String(x ?? "").trim().length > 0);
+  const coreEmpty = ![a.address, a.city, a.postalCode, a.province].some((x) => String(x ?? "").trim().length > 0);
+  const country = String(a.country ?? "").trim().toUpperCase();
+  const countryIsDefaultOrEmpty = !country || country === "IT";
+  return coreEmpty && countryIsDefaultOrEmpty;
 }
 
 function validateAddress(a: Address) {
-  const hasAny = !isEmptyAddress(a);
-  if (!hasAny) return { ok: true, msg: "" };
+  if (isEmptyAddress(a)) return { ok: true, msg: "" };
 
   if (a.address.trim().length < 2) return { ok: false, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false, msg: "Città non valida." };
@@ -72,6 +83,43 @@ function firstToken(full: string) {
   return s.split(/\s+/)[0] || s;
 }
 
+/** Non sovrascrivere con vuoto/undefined */
+function preferNonEmpty(current: string, incoming: unknown): string {
+  const next = String(incoming ?? "").trim();
+  return next ? next : current;
+}
+
+/**
+ * Merge address:
+ * - se incoming è null/undefined => NON sovrascrivere
+ * - se incoming è presente ma è “vuoto” => reset a EMPTY_ADDRESS (serve per cancellazioni)
+ * - altrimenti aggiorna campi (anche stringhe vuote hanno senso nei controlled input, ma qui proteggiamo dai payload parziali)
+ */
+function mergeAddress(current: Address, incoming: any): Address {
+  if (incoming == null) return current;
+
+  const inc = normalizeAddress(incoming);
+  const incN: Address = {
+    address: String(inc.address ?? ""),
+    city: String(inc.city ?? ""),
+    postalCode: String(inc.postalCode ?? ""),
+    province: String(inc.province ?? ""),
+    country: toCountry2(inc.country ?? "IT"),
+  };
+
+  if (isEmptyAddress(incN)) return { ...EMPTY_ADDRESS };
+
+  // Qui aggiorniamo con i valori incoming (anche vuoti) MA in modo difensivo:
+  // se server manda campi null/undefined -> manteniamo current
+  return {
+    address: inc.address != null ? String(inc.address) : current.address,
+    city: inc.city != null ? String(inc.city) : current.city,
+    postalCode: inc.postalCode != null ? String(inc.postalCode) : current.postalCode,
+    province: inc.province != null ? String(inc.province) : current.province,
+    country: toCountry2(inc.country ?? current.country ?? "IT"),
+  };
+}
+
 export default function ProfilePageClient() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -82,21 +130,8 @@ export default function ProfilePageClient() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  const [shippingAddress, setShippingAddress] = useState<Address>({
-    address: "",
-    city: "",
-    postalCode: "",
-    province: "",
-    country: "IT",
-  });
-
-  const [billingAddress, setBillingAddress] = useState<Address>({
-    address: "",
-    city: "",
-    postalCode: "",
-    province: "",
-    country: "IT",
-  });
+  const [shippingAddress, setShippingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
+  const [billingAddress, setBillingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
 
   const [sameAsShipping, setSameAsShipping] = useState(false);
 
@@ -105,6 +140,14 @@ export default function ProfilePageClient() {
   const [debugMsg, setDebugMsg] = useState<string | null>(null);
 
   const didLoadRef = useRef(false);
+  const aliveRef = useRef(true);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   // Validazioni minime
   const nameOk = useMemo(() => firstName.trim().length >= 2 && lastName.trim().length >= 2, [firstName, lastName]);
@@ -113,15 +156,97 @@ export default function ProfilePageClient() {
 
   const canSave = nameOk && shipVal.ok && billVal.ok && !saving;
 
-  // sync billing se flag attivo
+  // sync billing se flag attivo (solo dopo primo load)
   useEffect(() => {
     if (!didLoadRef.current) return;
     if (sameAsShipping) setBillingAddress(shippingAddress);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shippingAddress, sameAsShipping]);
 
+  const applyProfilePayload = useCallback((data: ProfilePayload, opts?: { strict?: boolean }) => {
+    const strict = Boolean(opts?.strict);
+
+    // email / type
+    if (strict) {
+      setEmail(String(data.email ?? ""));
+      setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+      setFirstName(String(data.firstName ?? ""));
+      setLastName(String(data.lastName ?? ""));
+    } else {
+      // NON sovrascrivere con vuoti
+      setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
+      setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+      setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
+      setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
+    }
+
+    // indirizzi (se server manda null => reset, se undefined => lascia com'è)
+    setShippingAddress((cur) => mergeAddress(cur, data.shippingAddress));
+    setBillingAddress((cur) => mergeAddress(cur, data.billingAddress));
+
+    // sameAsShipping: se abbiamo dati “affidabili”, ricalcoliamo davvero
+    // - caso 1: entrambi null => true (coerenti)
+    // - caso 2: uno null e l’altro no => false
+    // - caso 3: entrambi obj => confronta normalizzati
+    const shipRaw = data.shippingAddress;
+    const billRaw = data.billingAddress;
+
+    const sameComputed = (() => {
+      if (shipRaw == null && billRaw == null) return true;
+      if (shipRaw == null || billRaw == null) return false;
+
+      const ship = normalizeAddress(shipRaw);
+      const bill = normalizeAddress(billRaw);
+
+      const shipN = { ...ship, country: toCountry2(ship.country || "IT") };
+      const billN = { ...bill, country: toCountry2(bill.country || "IT") };
+
+      return JSON.stringify(shipN) === JSON.stringify(billN);
+    })();
+
+    // In strict (primo load / refresh post-save) aggiorniamo sempre.
+    // In non-strict, non “spegniamo” automaticamente se l'utente ha flaggato manualmente.
+    setSameAsShipping((cur) => (strict ? sameComputed : sameComputed ? true : cur));
+  }, []);
+
+  const reloadProfile = useCallback(async () => {
+    try {
+      const res = await fetch("/api/account/profile", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+
+      const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+      if (!aliveRef.current) return;
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          window.location.href = LOGIN_REDIRECT;
+          return;
+        }
+        setErrorMsg("Impossibile ricaricare il profilo. Riprova.");
+        return;
+      }
+
+      if (!data?.ok) {
+        setErrorMsg(data?.message || "Impossibile ricaricare il profilo. Riprova.");
+        if ((data as any)?.debug) setDebugMsg(JSON.stringify((data as any).debug, null, 2));
+        return;
+      }
+
+      // ✅ refresh “affidabile”: applichiamo in strict così allinei UI ai dati salvati
+      applyProfilePayload(data, { strict: true });
+    } catch {
+      if (!aliveRef.current) return;
+      setErrorMsg("Errore di rete durante il refresh profilo.");
+    }
+  }, [applyProfilePayload]);
+
+  // primo load
   useEffect(() => {
-    let alive = true;
+    let canceled = false;
 
     (async () => {
       setLoading(true);
@@ -138,12 +263,11 @@ export default function ProfilePageClient() {
         });
 
         const data = (await res.json().catch(() => null)) as ProfilePayload | null;
-
-        if (!alive) return;
+        if (canceled || !aliveRef.current) return;
 
         if (!res.ok) {
           if (res.status === 401) {
-            window.location.href = "/accedi?next=/account/profile";
+            window.location.href = LOGIN_REDIRECT;
             return;
           }
           setErrorMsg("Impossibile caricare il profilo. Riprova.");
@@ -156,46 +280,24 @@ export default function ProfilePageClient() {
           return;
         }
 
-        setEmail(String(data.email ?? ""));
-        setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
-
-        setFirstName(String(data.firstName ?? ""));
-        setLastName(String(data.lastName ?? ""));
-
-        const ship = normalizeAddress(data.shippingAddress);
-        const bill = normalizeAddress(data.billingAddress);
-
-        setShippingAddress({
-          ...ship,
-          country: toCountry2(ship.country || "IT"),
-        });
-
-        setBillingAddress({
-          ...bill,
-          country: toCountry2(bill.country || "IT"),
-        });
-
-        // auto-flag se già uguali
-        const same =
-          JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
-          JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") });
-        setSameAsShipping(Boolean(same));
+        // ✅ primo load: strict (la UI riflette esattamente lo stato server)
+        applyProfilePayload(data, { strict: true });
       } catch {
-        if (!alive) return;
+        if (canceled || !aliveRef.current) return;
         setErrorMsg("Errore di rete. Riprova.");
       } finally {
-        if (!alive) return;
+        if (canceled || !aliveRef.current) return;
         didLoadRef.current = true;
         setLoading(false);
       }
     })();
 
     return () => {
-      alive = false;
+      canceled = true;
     };
-  }, []);
+  }, [applyProfilePayload]);
 
-  async function onSave(e: React.FormEvent) {
+  async function onSave(e: FormEvent) {
     e.preventDefault();
     setSuccessMsg(null);
     setErrorMsg(null);
@@ -208,11 +310,11 @@ export default function ProfilePageClient() {
       return;
     }
 
-    if (saving) return; // hard stop double-submit
+    if (saving) return;
     setSaving(true);
 
     try {
-      const ship = {
+      const ship: Address = {
         address: clamp(shippingAddress.address, 160),
         city: clamp(shippingAddress.city, 80),
         postalCode: clamp(shippingAddress.postalCode, 12),
@@ -222,18 +324,18 @@ export default function ProfilePageClient() {
 
       const billBase = sameAsShipping ? ship : billingAddress;
 
-      const bill = {
+      const bill: Address = {
         address: clamp(billBase.address, 160),
         city: clamp(billBase.city, 80),
         postalCode: clamp(billBase.postalCode, 12),
         province: clamp(billBase.province, 40),
-        country: toCountry2(billBase.country || "IT"),
+        country: toCountry2((billBase as any).country || "IT"),
       };
 
-      // IMPORTANT: se un address è completamente vuoto, mandiamo null (evita validation su componenti)
       const payload = {
         firstName: clamp(firstName, 60),
         lastName: clamp(lastName, 60),
+        // ✅ se vuoto, mandiamo null (server dovrebbe gestire null come “cancella”)
         shippingAddress: isEmptyAddress(ship) ? null : ship,
         billingAddress: isEmptyAddress(bill) ? null : bill,
       };
@@ -250,22 +352,41 @@ export default function ProfilePageClient() {
 
       if (!res.ok || !data?.ok) {
         if (res.status === 401) {
-          window.location.href = "/accedi?next=/account/profile";
+          window.location.href = LOGIN_REDIRECT;
           return;
         }
-
         setErrorMsg(data?.message || "Salvataggio non riuscito. Riprova.");
-
-        // se la route in dev manda debug, mostralo
         if (data?.debug) setDebugMsg(JSON.stringify(data.debug, null, 2));
         return;
       }
 
+      // ✅ 1) Update locale immediato (campi NON si svuotano mai)
+      setFirstName(payload.firstName);
+      setLastName(payload.lastName);
+
+      setShippingAddress(payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS });
+
+      if (payload.billingAddress) {
+        setBillingAddress({ ...payload.billingAddress });
+      } else if (sameAsShipping && payload.shippingAddress) {
+        setBillingAddress({ ...payload.shippingAddress });
+      } else {
+        setBillingAddress({ ...EMPTY_ADDRESS });
+      }
+
+      // se coincide, fissiamo true
+      if (sameAsShipping) setSameAsShipping(true);
+
+      // eventi UI
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
 
-      // Aggiorna anche lo stato locale: se sameAsShipping, riallinea billing
-      if (sameAsShipping) setBillingAddress(ship);
+      // ✅ 2) allinea dai dati server (se server ritorna null/obj)
+      // così risolviamo al 100% i casi “celle vuote dopo save”
+      applyProfilePayload(data, { strict: true });
+
+      // ✅ 3) refresh best-effort per sicurezza (non rompe i campi)
+      void reloadProfile();
     } catch {
       setErrorMsg("Errore di rete. Riprova.");
     } finally {
@@ -302,7 +423,6 @@ export default function ProfilePageClient() {
       </p>
 
       <form onSubmit={onSave} className="mt-6 space-y-6">
-        {/* Dati base */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Dati account</h2>
 
@@ -337,17 +457,15 @@ export default function ProfilePageClient() {
             </div>
           </div>
 
-          {!nameOk ? (
+          {firstName.trim().length < 2 || lastName.trim().length < 2 ? (
             <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p>
           ) : null}
 
-          {/* mini-preview UI: Benvenuto, Nome */}
           <p className="mt-3 text-sm text-muted-text">
             Anteprima header: <span className="font-semibold">Benvenuto,</span> {firstToken(firstName) || "Account"}
           </p>
         </section>
 
-        {/* Spedizione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Indirizzo di spedizione</h2>
 
@@ -407,7 +525,6 @@ export default function ProfilePageClient() {
           {!shipVal.ok ? <p className="mt-2 text-sm text-red-700">{shipVal.msg}</p> : null}
         </section>
 
-        {/* Fatturazione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <div className="flex items-start justify-between gap-3">
             <h2 className="text-lg font-bold">Dati di fatturazione</h2>
@@ -491,9 +608,7 @@ export default function ProfilePageClient() {
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
             {errorMsg}
             {debugMsg ? (
-              <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">
-                {debugMsg}
-              </pre>
+              <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">{debugMsg}</pre>
             ) : null}
           </div>
         ) : null}

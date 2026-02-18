@@ -26,7 +26,19 @@ function niceName(u: SafeUser) {
   const fn = sanitizeInlineText(u.firstName);
   const ln = sanitizeInlineText(u.lastName);
   const full = `${fn} ${ln}`.trim();
-  return full || sanitizeInlineText(u.username) || "Account";
+  if (full) return full;
+
+  const un = sanitizeInlineText(u.username);
+  if (un) {
+    // se username sembra una mail → mostra solo la parte prima della @
+    if (un.includes("@")) return un.split("@")[0] || "Account";
+    return un;
+  }
+
+  // ultima spiaggia: email (ma abbreviata)
+  const em = sanitizeInlineText(u.email);
+  if (em.includes("@")) return em.split("@")[0] || "Account";
+  return em || "Account";
 }
 
 function CardIcon({ name }: { name: "user" | "box" | "heart" | "file" | "help" }) {
