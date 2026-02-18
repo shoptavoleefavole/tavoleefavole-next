@@ -7,20 +7,10 @@ export const dynamic = "force-dynamic";
 const BODY_LIMIT = 32 * 1024;
 
 function strapiBaseUrl() {
-  const raw =
-    process.env.STRAPI_URL ||
-    process.env.NEXT_PUBLIC_STRAPI_URL ||
-    "http://localhost:1337";
-
+  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
   let base = raw.replace(/\/+$/, "");
-  const isLocal =
-    base.includes("localhost") ||
-    base.includes("127.0.0.1") ||
-    base.includes("0.0.0.0");
-
-  if (process.env.NODE_ENV === "production" && !isLocal) {
-    base = base.replace(/^http:\/\//i, "https://");
-  }
+  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
+  if (process.env.NODE_ENV === "production" && !isLocal) base = base.replace(/^http:\/\//i, "https://");
   return base;
 }
 
@@ -57,40 +47,38 @@ function sanitize(input: unknown, maxLen = 160) {
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
 }
 
-function sanitizeCountry2(input: unknown) {
-  const s = sanitize(input, 2).toUpperCase();
-  return s.length === 2 ? s : "IT";
-}
-
 function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
   return String(v ?? "").toUpperCase().trim() === "BUSINESS" ? "BUSINESS" : "PRIVATE";
 }
 
 type Address = {
-  address: string;
-  city: string;
-  postalCode: string;
-  province: string;
-  country: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  province?: string;
+  country?: string;
 };
 
-function normalizeAddress(a: any): Address {
+function normalizeAddress(a: any): Required<Address> {
   return {
     address: sanitize(a?.address, 160),
     city: sanitize(a?.city, 80),
     postalCode: sanitize(a?.postalCode, 12),
     province: sanitize(a?.province, 40),
-    country: sanitizeCountry2(a?.country ?? "IT"),
+    country: sanitize((a?.country || "IT").toUpperCase(), 2) || "IT",
   };
 }
 
-/** ✅ “vuoto” = tutti i campi *tranne country* sono vuoti */
-function addressIsMeaningfullyEmpty(a: Address) {
-  return ![a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
+function addressHasAny(a: Required<Address>) {
+  // attenzione: "IT" da solo non deve far risultare l'indirizzo “compilato”
+  const core = [a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
+  const country = String(a.country || "").trim().toUpperCase();
+  const countryMeaningful = country && country !== "IT";
+  return core || countryMeaningful;
 }
 
-function validateAddressIfAny(a: Address) {
-  if (addressIsMeaningfullyEmpty(a)) return { ok: true as const, msg: "" };
+function validateAddressIfAny(a: Required<Address>) {
+  if (!addressHasAny(a)) return { ok: true as const, msg: "" };
 
   if (a.address.trim().length < 2) return { ok: false as const, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false as const, msg: "Città non valida." };
@@ -133,6 +121,21 @@ async function getUserFromJwt(base: string, jwt: string) {
 }
 
 /**
+ * ✅ Strapi v4: row.attributes contiene i campi
+ * ✅ Strapi v5: i campi sono “flat” su row
+ */
+function extractAttrs(row: any) {
+  if (!row || typeof row !== "object") return {};
+  if (row.attributes && typeof row.attributes === "object") return row.attributes;
+
+  // v5 flat: copiamo tutto tranne id/documentId e meta noti
+  const out: any = { ...row };
+  delete out.id;
+  delete out.documentId;
+  return out;
+}
+
+/**
  * Trova CustomerProfile e ritorna anche documentId (Strapi v5).
  * Prova prima senza publicationState, poi con publicationState=preview.
  */
@@ -143,10 +146,11 @@ async function findCustomerProfile(base: string, userId: number) {
     const r = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers });
     const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
     if (!row?.id && !row?.documentId) return null;
+
     return {
       id: Number(row.id ?? 0),
       documentId: String(row.documentId ?? ""),
-      attrs: row.attributes ?? {},
+      attrs: extractAttrs(row),
     };
   }
 
@@ -162,6 +166,7 @@ async function findCustomerProfile(base: string, userId: number) {
   found = await tryQuery(qs1b);
   if (found) return found;
 
+  // fallback per relazioni legacy
   const qs2 = new URLSearchParams();
   qs2.set("populate", "*");
   qs2.set("pagination[pageSize]", "1");
@@ -198,11 +203,12 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
     body: JSON.stringify(payload),
   });
 
-  if (c.res.ok && c.json?.data?.id) {
+  const row = c.json?.data ?? null;
+  if (c.res.ok && row?.id) {
     return {
-      id: Number(c.json.data.id ?? 0),
-      documentId: String(c.json.data.documentId ?? ""),
-      attrs: c.json.data.attributes ?? {},
+      id: Number(row.id ?? 0),
+      documentId: String(row.documentId ?? ""),
+      attrs: extractAttrs(row),
     };
   }
 
@@ -235,7 +241,6 @@ async function updateCustomerProfile(base: string, key: string, patch: any) {
       headers,
       body: JSON.stringify({ data: patch }),
     });
-
     last = r;
     if (r.res.ok) return r;
   }
@@ -271,16 +276,18 @@ export async function GET() {
     );
   }
 
+  const attrs = profile.attrs || {};
+
   return jsonNoStore(
     {
       ok: true,
       exists: true,
       email: me.email,
-      customerType: normalizeCustomerType(profile.attrs?.customerType),
-      firstName: String(profile.attrs?.firstName ?? ""),
-      lastName: String(profile.attrs?.lastName ?? ""),
-      shippingAddress: profile.attrs?.shippingAddress ?? null,
-      billingAddress: profile.attrs?.billingAddress ?? null,
+      customerType: normalizeCustomerType(attrs.customerType),
+      firstName: String(attrs.firstName ?? ""),
+      lastName: String(attrs.lastName ?? ""),
+      shippingAddress: attrs.shippingAddress ?? null,
+      billingAddress: attrs.billingAddress ?? null,
     },
     200
   );
@@ -313,24 +320,14 @@ export async function PUT(req: Request) {
     return jsonNoStore({ ok: false, error: "INVALID_NAME" }, 400);
   }
 
-  // ✅ supporta: shippingAddress: null per “cancellare”
-  const shipProvided = Object.prototype.hasOwnProperty.call(body, "shippingAddress");
-  const billProvided = Object.prototype.hasOwnProperty.call(body, "billingAddress");
+  const shippingAddress = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
+  const billingAddress = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
 
-  const shipObj =
-    shipProvided && body.shippingAddress != null ? normalizeAddress(body.shippingAddress) : null;
+  const shipVal = validateAddressIfAny(shippingAddress);
+  if (!shipVal.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
 
-  const billObj =
-    billProvided && body.billingAddress != null ? normalizeAddress(body.billingAddress) : null;
-
-  if (shipObj) {
-    const v = validateAddressIfAny(shipObj);
-    if (!v.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: v.msg }, 400);
-  }
-  if (billObj) {
-    const v = validateAddressIfAny(billObj);
-    if (!v.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: v.msg }, 400);
-  }
+  const billVal = validateAddressIfAny(billingAddress);
+  if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
   const profile = await findCustomerProfile(base, me.id);
 
@@ -340,32 +337,34 @@ export async function PUT(req: Request) {
     customerType: profile?.attrs?.customerType ? normalizeCustomerType(profile.attrs.customerType) : "PRIVATE",
   };
 
-  // ✅ Se l’utente manda null → svuotiamo in Strapi
-  // ✅ Se manda object ma “vuoto” → lo trattiamo come null
-  if (shipProvided) patch.shippingAddress = shipObj && !addressIsMeaningfullyEmpty(shipObj) ? shipObj : null;
-  if (billProvided) patch.billingAddress = billObj && !addressIsMeaningfullyEmpty(billObj) ? billObj : null;
+  // ✅ IMPORTANT: se indirizzo vuoto → settiamo null (così Strapi aggiorna davvero)
+  patch.shippingAddress = addressHasAny(shippingAddress) ? shippingAddress : null;
+  patch.billingAddress = addressHasAny(billingAddress) ? billingAddress : null;
 
   if (!profile?.attrs?.publishedAt) patch.publishedAt = new Date().toISOString();
 
+  // CREATE
   if (!profile) {
     const created = await createCustomerProfile(base, me.id, patch);
     if (!created) return jsonNoStore({ ok: false, error: "CREATE_FAILED" }, 502);
 
+    const attrs = created.attrs || {};
     return jsonNoStore(
       {
         ok: true,
         exists: true,
         email: me.email,
-        customerType: normalizeCustomerType(created.attrs?.customerType),
-        firstName: String(created.attrs?.firstName ?? firstName),
-        lastName: String(created.attrs?.lastName ?? lastName),
-        shippingAddress: created.attrs?.shippingAddress ?? patch.shippingAddress ?? null,
-        billingAddress: created.attrs?.billingAddress ?? patch.billingAddress ?? null,
+        customerType: normalizeCustomerType(attrs.customerType ?? patch.customerType),
+        firstName: String(attrs.firstName ?? firstName),
+        lastName: String(attrs.lastName ?? lastName),
+        shippingAddress: attrs.shippingAddress ?? patch.shippingAddress ?? null,
+        billingAddress: attrs.billingAddress ?? patch.billingAddress ?? null,
       },
       200
     );
   }
 
+  // UPDATE
   const keysToTry = [profile.documentId ? profile.documentId : null, profile.id ? String(profile.id) : null].filter(
     Boolean
   ) as string[];
@@ -375,17 +374,19 @@ export async function PUT(req: Request) {
   for (const key of keysToTry) {
     const upd = await updateCustomerProfile(base, key, patch);
     if (upd?.res?.ok) {
-      const attrs = upd.json?.data?.attributes ?? upd.json?.data ?? null;
+      const row = upd.json?.data ?? null;
+      const attrs = extractAttrs(row);
+
       return jsonNoStore(
         {
           ok: true,
           exists: true,
           email: me.email,
-          customerType: normalizeCustomerType(attrs?.customerType ?? patch.customerType),
-          firstName: String(attrs?.firstName ?? firstName),
-          lastName: String(attrs?.lastName ?? lastName),
-          shippingAddress: attrs?.shippingAddress ?? patch.shippingAddress ?? null,
-          billingAddress: attrs?.billingAddress ?? patch.billingAddress ?? null,
+          customerType: normalizeCustomerType(attrs.customerType ?? patch.customerType),
+          firstName: String(attrs.firstName ?? firstName),
+          lastName: String(attrs.lastName ?? lastName),
+          shippingAddress: attrs.shippingAddress ?? patch.shippingAddress ?? null,
+          billingAddress: attrs.billingAddress ?? patch.billingAddress ?? null,
         },
         200
       );
