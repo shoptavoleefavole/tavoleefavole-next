@@ -1,38 +1,311 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+const AUTH_EVENT = "tf:auth-changed";
+
+function clamp(v: string, max: number) {
+  const s = (v ?? "").trim();
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+function isValidEmail(email: string) {
+  const e = email.trim().toLowerCase();
+  if (!e || e.length > 254) return false;
+  if (/\s/.test(e)) return false;
+  const at = e.indexOf("@");
+  if (at <= 0 || at !== e.lastIndexOf("@")) return false;
+  const domain = e.slice(at + 1);
+  if (!domain || !domain.includes(".")) return false;
+  if (domain.startsWith(".") || domain.endsWith(".")) return false;
+  return true;
+}
 
 export const dynamic = "force-dynamic";
 
-export default function RegisterBusinessPlaceholder() {
+export default function RegisterBusinessPage() {
+  const router = useRouter();
+
+  // account
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
+  // dati azienda (OBBLIGATORI)
+  const [companyName, setCompanyName] = useState("");
+  const [vatNumber, setVatNumber] = useState("");
+  const [pec, setPec] = useState("");
+  const [sdi, setSdi] = useState("");
+
+  // referenti (facoltativi ma utili)
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const emailOk = useMemo(() => isValidEmail(email), [email]);
+  const pecOk = useMemo(() => isValidEmail(pec), [pec]);
+
+  const pwOk = useMemo(() => password.length >= 8 && password.length <= 200, [password]);
+  const pwMatch = useMemo(() => password.length > 0 && password === confirmPassword, [password, confirmPassword]);
+
+  const companyOk = useMemo(() => companyName.trim().length >= 2 && companyName.trim().length <= 140, [companyName]);
+  const vatOk = useMemo(() => vatNumber.trim().length >= 5 && vatNumber.trim().length <= 40, [vatNumber]);
+  const sdiOk = useMemo(() => sdi.trim().length >= 3 && sdi.trim().length <= 20, [sdi]);
+
+  const canSubmit = emailOk && pwOk && pwMatch && companyOk && vatOk && pecOk && sdiOk && !loading;
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (loading) return;
+    setErrorMsg(null);
+
+    if (!canSubmit) {
+      setErrorMsg("Controlla i campi obbligatori e riprova.");
+      return;
+    }
+
+    const payload = {
+      type: "BUSINESS" as const,
+      email: clamp(email.toLowerCase(), 254),
+      password,
+
+      // referenti (se li vuoi salvare in customer-profile)
+      firstName: clamp(firstName, 60),
+      lastName: clamp(lastName, 60),
+
+      // 4 obbligatori
+      companyName: clamp(companyName, 140),
+      vatNumber: clamp(vatNumber, 40),
+      pec: clamp(pec.toLowerCase(), 254),
+      sdi: clamp(sdi.toUpperCase(), 20),
+    };
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        cache: "no-store",
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && data?.ok) {
+        window.dispatchEvent(new Event(AUTH_EVENT));
+        router.replace("/account");
+        return;
+      }
+
+      if (data?.error === "CHECK_EMAIL") {
+        setErrorMsg(data?.message || "Controlla la tua email per recuperare l’accesso.");
+        return;
+      }
+      if (data?.error === "WEAK_PASSWORD") {
+        setErrorMsg("Password troppo debole (minimo 8 caratteri).");
+        return;
+      }
+      if (data?.error === "INVALID_INPUT") {
+        setErrorMsg("Dati non validi. Controlla i campi e riprova.");
+        return;
+      }
+      if (data?.error === "MISSING_COMPANY_FIELDS") {
+        setErrorMsg("Compila tutti i campi aziendali obbligatori (Ragione sociale, P.IVA, PEC, SDI).");
+        return;
+      }
+
+      setErrorMsg("Registrazione non riuscita. Riprova tra qualche secondo.");
+    } catch {
+      setErrorMsg("Errore di rete. Controlla la connessione e riprova.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-md p-6">
-      <h1 className="text-3xl font-extrabold">Registrazione Azienda</h1>
+      <div className="mb-4">
+        <Link href="/registrati" className="text-sm font-semibold underline">
+          ← Torna alla scelta
+        </Link>
+      </div>
 
-      <p className="mt-3 text-sm text-text/70">
-        Qui inseriremo i campi aziendali (ragione sociale, P.IVA, PEC, SDI, ecc.).
+      <h1 className="text-3xl font-extrabold">Registra la tua azienda per avere prezzi dedicati</h1>
+      <p className="mt-2 text-sm text-text/70">
+        Compila i dati aziendali: Ragione sociale, P.IVA, PEC e SDI sono obbligatori.
       </p>
 
-      <div className="mt-6 rounded-2xl border border-border bg-surface p-5">
-        <div className="text-sm font-extrabold">Step successivo</div>
-        <p className="mt-1 text-sm text-text/70">
-          Creiamo la form completa e inviamo <b>type: &quot;BUSINESS&quot;</b> al tuo endpoint.
-        </p>
-      </div>
+      <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
+        <section className="rounded-2xl border border-border bg-background p-5">
+          <div className="text-sm font-extrabold">Dati azienda (obbligatori)</div>
 
-      <div className="mt-6 flex gap-3">
-        <Link
-          href="/registrati"
-          className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface"
-        >
-          ← Indietro
-        </Link>
+          <div className="mt-4 space-y-3">
+            <div>
+              <label className="block text-sm font-medium">Ragione sociale</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                disabled={loading}
+                maxLength={140}
+                required
+              />
+              {!companyOk && companyName.length > 0 ? (
+                <p className="mt-1 text-sm text-red-600">Inserisci una ragione sociale valida.</p>
+              ) : null}
+            </div>
 
-        <Link
-          href="/registrati/privato"
-          className="inline-flex h-11 flex-1 items-center justify-center rounded-xl bg-primary px-4 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+            <div>
+              <label className="block text-sm font-medium">Partita IVA</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={vatNumber}
+                onChange={(e) => setVatNumber(e.target.value)}
+                disabled={loading}
+                maxLength={40}
+                required
+              />
+              {!vatOk && vatNumber.length > 0 ? (
+                <p className="mt-1 text-sm text-red-600">Inserisci una P.IVA valida.</p>
+              ) : null}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium">PEC</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={pec}
+                onChange={(e) => setPec(e.target.value)}
+                disabled={loading}
+                type="email"
+                inputMode="email"
+                maxLength={254}
+                required
+              />
+              {pec.length > 0 && !pecOk ? (
+                <p className="mt-1 text-sm text-red-600">Inserisci una PEC valida.</p>
+              ) : null}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium">SDI</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3 uppercase"
+                value={sdi}
+                onChange={(e) => setSdi(e.target.value)}
+                disabled={loading}
+                maxLength={20}
+                required
+              />
+              {!sdiOk && sdi.length > 0 ? (
+                <p className="mt-1 text-sm text-red-600">Inserisci un SDI valido.</p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-border bg-background p-5">
+          <div className="text-sm font-extrabold">Dati account</div>
+
+          <div className="mt-4 space-y-3">
+            <div>
+              <label className="block text-sm font-medium">Email (accesso)</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                type="email"
+                autoComplete="email"
+                disabled={loading}
+                required
+              />
+              {email.length > 0 && !emailOk ? (
+                <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium">Nome referente (opz.)</label>
+                <input
+                  className="mt-1 w-full rounded-md border p-3"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  disabled={loading}
+                  maxLength={60}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium">Cognome referente (opz.)</label>
+                <input
+                  className="mt-1 w-full rounded-md border p-3"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  disabled={loading}
+                  maxLength={60}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium">Password</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                autoComplete="new-password"
+                required
+                disabled={loading}
+                minLength={8}
+                maxLength={200}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium">Conferma password</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                type="password"
+                autoComplete="new-password"
+                required
+                disabled={loading}
+                minLength={8}
+                maxLength={200}
+              />
+              {confirmPassword.length > 0 && !pwMatch ? (
+                <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        {errorMsg ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
+        ) : null}
+
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
         >
-          Vai a Privato
-        </Link>
-      </div>
+          {loading ? "Creazione..." : "Crea account Business"}
+        </button>
+
+        <div className="flex items-center justify-between text-sm">
+          <span>Hai già un account?</span>
+          <Link href="/accedi" className="font-semibold underline">
+            Accedi
+          </Link>
+        </div>
+      </form>
     </main>
   );
 }

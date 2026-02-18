@@ -348,7 +348,15 @@ export async function POST(req: Request) {
 
     if (!isValidEmail(email)) return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
     if (!isStrongEnough(password)) return jsonNoStore({ ok: false, error: "WEAK_PASSWORD" }, 400);
-    if (type === "BUSINESS" && !companyName) return jsonNoStore({ ok: false, error: "MISSING_COMPANY" }, 400);
+    if (type === "BUSINESS") {
+      if (!companyName || !vatNumber || !sdi || !pec) {
+        return jsonNoStore({ ok: false, error: "MISSING_COMPANY_FIELDS" }, 400);
+      }
+      if (!isValidEmail(pec)) {
+        return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
+      }
+    }
+
 
     const REG_TIMEOUT = 15_000;
     const FORGOT_TIMEOUT = 6_000;
