@@ -20,16 +20,17 @@ type Product = {
   // legacy/fallback
   inStock?: boolean;
 
-  // ✅ inventario Strapi
+  // inventario
   stockQty?: number | null;
   trackInventory?: boolean | null;
 
-  // opzionali (mock/compat)
   popularity?: number;
   createdAt?: string; // ISO string
 };
 
 type SortValue = "popularity" | "price_asc" | "price_desc" | "newest";
+
+const MAX_Q_LEN = 80;
 
 function toNumber(v: unknown): number {
   const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v);
@@ -51,15 +52,43 @@ function isBool(v: unknown): v is boolean {
   return typeof v === "boolean";
 }
 
+function sanitizeText(input: unknown, maxLen: number) {
+  const s = String(input ?? "")
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
 /**
- * ✅ Regola unica disponibilità:
- * - trackInventory=false  => sempre disponibile
- * - trackInventory=true (default) e stockQty numero => disponibile solo se stockQty > 0
- * - altrimenti fallback su inStock (se presente)
- * - default finale: true (non blocchiamo acquisto senza dati certi)
+ * Protegge da URL strane (javascript:, data:, ecc.)
+ * Consente solo http/https e path relativo "/..."
+ */
+function safeImageSrc(u: unknown): string {
+  const raw = String(u ?? "").trim();
+  if (!raw) return "/brand/tavoleefavole-logo.svg";
+  if (raw.startsWith("/")) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.toString();
+  } catch {
+    // ignore
+  }
+
+  return "/brand/tavoleefavole-logo.svg";
+}
+
+/**
+ * Regola disponibilità:
+ * - trackInventory=false => sempre disponibile
+ * - trackInventory=true e stockQty numero => disponibile solo se stockQty>0
+ * - altrimenti fallback su inStock
+ * - default finale: true
  */
 function isProductInStock(p: Product): boolean {
-  const track = p.trackInventory !== false; // default true
+  const track = p.trackInventory !== false;
   const qty = toIntOrNull(p.stockQty);
 
   if (!track) return true;
@@ -81,7 +110,7 @@ export default function ProductsGridWithFilters({
   const pathname = usePathname() ?? "/catalogo";
   const searchParams = useSearchParams();
 
-  const [q, setQ] = useState(() => searchParams.get("q") ?? initialQuery);
+  const [q, setQ] = useState(() => sanitizeText(searchParams.get("q") ?? initialQuery, MAX_Q_LEN));
 
   const [inStockOnly, setInStockOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
@@ -96,18 +125,12 @@ export default function ProductsGridWithFilters({
   });
 
   useEffect(() => {
-    const urlQ = searchParams.get("q") ?? "";
+    const urlQ = sanitizeText(searchParams.get("q") ?? "", MAX_Q_LEN);
     if (urlQ !== q) setQ(urlQ);
 
     const raw = (searchParams.get("sort") ?? "popularity").toLowerCase();
     const nextSort: SortValue =
-      raw === "price_asc"
-        ? "price_asc"
-        : raw === "price_desc"
-          ? "price_desc"
-          : raw === "newest"
-            ? "newest"
-            : "popularity";
+      raw === "price_asc" ? "price_asc" : raw === "price_desc" ? "price_desc" : raw === "newest" ? "newest" : "popularity";
 
     if (nextSort !== sort) setSort(nextSort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -146,7 +169,8 @@ export default function ProductsGridWithFilters({
     const query = q.trim().toLowerCase();
 
     let list = items.filter((p) => {
-      if (query && !p.name?.toLowerCase().includes(query)) return false;
+      const name = String(p?.name ?? "");
+      if (query && !name.toLowerCase().includes(query)) return false;
 
       const inStock = isProductInStock(p);
       if (inStockOnly && !inStock) return false;
@@ -189,7 +213,6 @@ export default function ProductsGridWithFilters({
           const pb = Number((b as any).popularity ?? 0);
           if (pa !== pb) return pb - pa;
 
-          // disponibili prima
           const sa = Number(isProductInStock(a));
           const sb = Number(isProductInStock(b));
           if (sa !== sb) return sb - sa;
@@ -210,12 +233,14 @@ export default function ProductsGridWithFilters({
           <input
             value={q}
             onChange={(e) => {
-              const next = e.target.value;
+              const next = sanitizeText(e.target.value, MAX_Q_LEN);
               setQ(next);
               setParam("q", next.trim() ? next : null);
             }}
             placeholder="Cerca un prodotto…"
             className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/25 sm:w-72"
+            inputMode="search"
+            maxLength={MAX_Q_LEN}
           />
 
           <div className="flex flex-wrap items-center gap-2">
@@ -288,10 +313,10 @@ export default function ProductsGridWithFilters({
             const compare = p.compareAtPrice != null ? toNumber(p.compareAtPrice) : null;
             const hasSale = compare != null && compare > price;
 
-            const id = (p as any).documentId ?? p.documentId ?? p.id ?? p.slug;
-            const slug = p.slug ?? String(p.id);
+            const id = String((p as any).documentId ?? p.documentId ?? p.id ?? p.slug);
+            const slug = String(p.slug ?? p.id ?? "");
 
-            const image = (p as any).imageUrl ?? p.imageUrl ?? p.image ?? "/brand/tavoleefavole-logo.svg";
+            const image = safeImageSrc((p as any).imageUrl ?? p.imageUrl ?? p.image);
 
             const inStock = isProductInStock(p);
             const notBuyable = price <= 0;
@@ -299,15 +324,12 @@ export default function ProductsGridWithFilters({
 
             return (
               <div
-                key={String(id)}
+                key={id}
                 className="rounded-2xl border border-border bg-background p-3 hover:shadow-sm flex h-full flex-col"
               >
-                {/* Link solo su immagine + titolo */}
                 <Link href={`/prodotto/${slug}`} className="block">
                   <div className="aspect-[4/3] overflow-hidden rounded-xl bg-surface-2/60">
-                    {image ? (
-                      <img src={image} alt={p.name} className="h-full w-full object-cover" loading="lazy" />
-                    ) : null}
+                    <img src={image} alt={String(p.name ?? "")} className="h-full w-full object-cover" loading="lazy" />
                   </div>
 
                   <div className="mt-3">
@@ -317,9 +339,7 @@ export default function ProductsGridWithFilters({
 
                 <div className="mt-2 flex items-baseline gap-2">
                   <span className="text-sm font-bold">{formatEUR(price)}</span>
-                  {hasSale ? (
-                    <span className="text-xs line-through text-text/50">{formatEUR(compare!)}</span>
-                  ) : null}
+                  {hasSale ? <span className="text-xs line-through text-text/50">{formatEUR(compare!)}</span> : null}
                 </div>
 
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -336,12 +356,11 @@ export default function ProductsGridWithFilters({
                   ) : null}
                 </div>
 
-                {/* ✅ CTA sempre in basso e allineata */}
                 <div className="mt-auto pt-3">
                   <AddToCartButton
-                    id={String(id)}
+                    id={id}
                     slug={slug}
-                    name={p.name}
+                    name={String(p.name ?? "")}
                     image={image}
                     price={price}
                     qty={1}
@@ -349,7 +368,6 @@ export default function ProductsGridWithFilters({
                     disabled={isDisabled}
                     disabledLabel={notBuyable ? "Non acquistabile" : "Esaurito"}
                     className="h-11 w-full rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    // ✅ passiamo anche inventario (se il tuo AddToCartButton lo supporta)
                     stockQty={typeof p.stockQty === "number" ? p.stockQty : undefined}
                     trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
                   />

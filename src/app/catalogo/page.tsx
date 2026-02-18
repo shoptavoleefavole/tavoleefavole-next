@@ -1,311 +1,435 @@
-"use client";
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
-type Favorite = {
-  id: number | string;
-  product: {
-    id: number | string;
-    name: string;
-    slug: string;
-    price: number;
-  };
+import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
+import Breadcrumbs from "@/components/Breadcrumbs";
+import { getAvailability } from "@/lib/inventory.server";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export const metadata = {
+  title: "Catalogo",
 };
 
-const API_ENDPOINTS = ["/api/account/favorite", "/api/account/favorites"] as const;
+type CatalogoSearchParams = {
+  categoria?: string;
+  q?: string;
+  page?: string;
+};
 
-function safeMoney(v: any) {
+const PAGE_SIZE = 24;
+
+const STRAPI_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || process.env.STRAPI_URL || "http://localhost:1337").replace(
+  /\/+$/,
+  ""
+);
+
+const STRAPI_TOKEN =
+  process.env.STRAPI_API_TOKEN ||
+  process.env.STRAPI_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
+  "";
+
+function safeText(input: unknown, maxLen: number) {
+  const s = String(input ?? "")
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return "";
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+function safeSlug(input: unknown) {
+  const s = safeText(input, 80).toLowerCase();
+  // accetta solo slug classico
+  if (!s) return "";
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s)) return "";
+  return s;
+}
+
+function toInt(v: unknown, fallback: number) {
   const n = Number(v);
-  if (!Number.isFinite(n)) return "0.00";
-  return n.toFixed(2);
+  if (!Number.isFinite(n)) return fallback;
+  const x = Math.floor(n);
+  return x > 0 ? x : fallback;
 }
 
-function normalizeFavorites(json: any): Favorite[] {
-  const raw =
-    (json && Array.isArray(json.favorites) && json.favorites) ||
-    (json && Array.isArray(json.data) && json.data) ||
-    [];
+function absUrl(base: string, maybeUrl: string | null | undefined) {
+  if (!maybeUrl) return null;
+  const u = String(maybeUrl).trim();
+  if (!u) return null;
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
+  return u;
+}
 
-  const out: Favorite[] = [];
-  for (const item of raw) {
-    const id = item?.id ?? item?.documentId ?? item?._id;
-    const p = item?.product ?? item?.attributes?.product ?? item?.data?.product;
+function safeJsonParse(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
 
-    const productId = p?.id ?? p?.documentId ?? p?._id;
-    const name = p?.name ?? p?.Titolo ?? p?.title ?? "";
-    const slug = p?.slug ?? "";
-    const price = Number(p?.price ?? 0);
+function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
+  return headers;
+}
 
-    if (id == null) continue;
-    if (productId == null || !slug || !name) continue;
+function getDefaultSku(item: any): string | null {
+  return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
+}
 
-    out.push({
-      id,
-      product: {
-        id: productId,
-        name: String(name),
-        slug: String(slug),
-        price: Number.isFinite(price) ? price : 0,
-      },
-    });
+function normalizeStrapiProduct(row: any) {
+  const a = row?.attributes ?? row ?? {};
+
+  const variantsData = a?.variants?.data ?? a?.variants ?? [];
+  const variants = Array.isArray(variantsData)
+    ? variantsData
+        .map((v: any) => {
+          const va = v?.attributes ?? v ?? {};
+          const sku = va?.sku ?? null;
+          return sku ? { sku: String(sku) } : null;
+        })
+        .filter(Boolean)
+    : [];
+
+  const imagesData =
+    a?.images?.data ??
+    a?.images ??
+    a?.image?.data ??
+    a?.image ??
+    a?.cover?.data ??
+    a?.cover ??
+    a?.thumbnail?.data ??
+    a?.thumbnail ??
+    null;
+
+  const firstImage = Array.isArray(imagesData) ? imagesData[0] : imagesData;
+
+  const imageUrlRaw =
+    firstImage?.attributes?.url ??
+    firstImage?.url ??
+    a?.imageUrl ??
+    a?.image ??
+    null;
+
+  const imageUrl = absUrl(STRAPI_URL, imageUrlRaw);
+
+  const categorySlug =
+    a?.category?.data?.attributes?.slug ??
+    a?.category?.slug ??
+    a?.categories?.[0]?.slug ??
+    a?.categoria?.data?.attributes?.slug ??
+    a?.categoria?.slug ??
+    a?.categorySlug ??
+    a?.macroSlug ??
+    a?.macroAreaSlug ??
+    null;
+
+  return {
+    id: row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? null,
+    documentId: row?.documentId ?? a?.documentId ?? null,
+    name: String(a?.name ?? a?.title ?? ""),
+    slug: String(a?.slug ?? ""),
+    price: a?.price ?? null,
+    compareAtPrice: a?.compareAtPrice ?? null,
+    shortDescription: String(a?.shortDescription ?? ""),
+    inStock: a?.inStock ?? undefined,
+    variants,
+    image: imageUrl,
+    imageUrl,
+    categorySlug,
+    __raw: a,
+  };
+}
+
+async function fetchCategoryBySlug(slug: string) {
+  const qs = new URLSearchParams();
+  qs.set("filters[slug][$eq]", slug);
+  qs.set("pagination[pageSize]", "1");
+  qs.set("populate", "*");
+
+  const url = `${STRAPI_URL}/api/categories?${qs.toString()}`;
+
+  const res = await fetch(url, { headers: getHeaders(), next: { revalidate: 30 } });
+  if (!res.ok) return null;
+
+  const text = await res.text().catch(() => "");
+  const json = safeJsonParse(text);
+  const data: any[] = Array.isArray(json?.data) ? json.data : [];
+  if (!data.length) return null;
+
+  const a = data[0]?.attributes ?? data[0] ?? {};
+  return {
+    id: data[0]?.id ?? null,
+    documentId: data[0]?.documentId ?? null,
+    slug: String(a?.slug ?? slug),
+    label: String(a?.label ?? a?.name ?? a?.title ?? slug),
+  };
+}
+
+function buildProductsQS(params: {
+  categoria?: string;
+  q?: string;
+  page: number;
+  pageSize: number;
+  categoryFilterKey?: string;
+  categoryMode?: "rel" | "scalar";
+}) {
+  const qs = new URLSearchParams();
+  qs.set("populate", "*");
+  qs.set("sort[0]", "createdAt:desc");
+  qs.set("pagination[page]", String(params.page));
+  qs.set("pagination[pageSize]", String(params.pageSize));
+
+  if (params.categoria && params.categoryFilterKey) {
+    const key = params.categoryFilterKey;
+    if (params.categoryMode === "scalar") {
+      qs.set(`filters[${key}][$eq]`, params.categoria);
+    } else {
+      qs.set(`filters[${key}][slug][$eq]`, params.categoria);
+    }
   }
 
-  return out;
-}
-
-function prettyError(res: Response, json: any): string {
-  if (res.status === 401) return "Devi accedere per vedere i preferiti.";
-  if (res.status === 403) return "Non hai i permessi per questa operazione.";
-  const serverMsg = json?.error ? String(json.error) : "";
-  if (serverMsg) return serverMsg;
-  return `Errore (HTTP ${res.status})`;
-}
-
-async function fetchJsonTryEndpoints(
-  buildUrl: (base: string) => string,
-  init?: RequestInit
-): Promise<{ res: Response; json: any; used: string } | null> {
-  for (const base of API_ENDPOINTS) {
-    const url = buildUrl(base);
-    const res = await fetch(url, { cache: "no-store", credentials: "include", ...init });
-
-    let json: any = null;
-    try {
-      json = await res.json();
-    } catch {
-      json = null;
-    }
-
-    if (res.status === 404) continue;
-
-    return { res, json, used: base };
+  if (params.q) {
+    qs.set("filters[$or][0][name][$containsi]", params.q);
+    qs.set("filters[$or][1][shortDescription][$containsi]", params.q);
+    qs.set("filters[$or][2][slug][$containsi]", params.q);
   }
 
-  return null;
+  return qs;
 }
 
-export default function FavoritesPage() {
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string>("");
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
-  const [removingId, setRemovingId] = useState<string | null>(null);
+async function fetchProductsOnce(params: {
+  categoria?: string;
+  q?: string;
+  page: number;
+  pageSize: number;
+  categoryFilterKey?: string;
+  categoryMode?: "rel" | "scalar";
+}) {
+  const qs = buildProductsQS(params);
 
-  const aliveRef = useRef(true);
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
+  const url = `${STRAPI_URL}/api/products?${qs.toString()}`;
+  const res = await fetch(url, { headers: getHeaders(), next: { revalidate: 30 } });
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr("");
+  const text = await res.text().catch(() => "");
+  const json = safeJsonParse(text);
 
-    try {
-      const result = await fetchJsonTryEndpoints((base) => base, { method: "GET" });
+  if (!res.ok) {
+    const isValidation = res.status === 400 && json?.error?.name === "ValidationError";
+    return { ok: false as const, status: res.status, json, isValidation };
+  }
 
-      if (!result) {
-        if (!aliveRef.current) return;
-        setFavorites([]);
-        setErr("Endpoint preferiti non trovato (né /favorite né /favorites).");
-        setLoading(false);
-        return;
-      }
+  const data: any[] = Array.isArray(json?.data) ? json.data : [];
+  const meta = json?.meta?.pagination ?? null;
 
-      const { res, json } = result;
-
-      if (!res.ok || json?.ok === false) {
-        if (!aliveRef.current) return;
-        setFavorites([]);
-        setErr(prettyError(res, json));
-        setLoading(false);
-        return;
-      }
-
-      const normalized = normalizeFavorites(json);
-      if (!aliveRef.current) return;
-      setFavorites(normalized);
-      setLoading(false);
-    } catch (e: any) {
-      if (!aliveRef.current) return;
-      setFavorites([]);
-      setErr(e?.message || "Errore di rete");
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const count = useMemo(() => favorites.length, [favorites]);
-
-  const remove = useCallback(
-    async (productId: string | number) => {
-      const key = String(productId);
-      setRemovingId(key);
-      setErr("");
-
-      try {
-        const result = await fetchJsonTryEndpoints(
-          (base) => `${base}?productId=${encodeURIComponent(key)}`,
-          { method: "DELETE" }
-        );
-
-        if (!result) {
-          if (!aliveRef.current) return;
-          setErr("Endpoint rimozione preferiti non trovato.");
-          setRemovingId(null);
-          return;
-        }
-
-        const { res, json } = result;
-
-        if (!res.ok || json?.ok === false) {
-          if (!aliveRef.current) return;
-          setErr(prettyError(res, json));
-          setRemovingId(null);
-          return;
-        }
-
-        await load();
-        if (!aliveRef.current) return;
-        setRemovingId(null);
-      } catch (e: any) {
-        if (!aliveRef.current) return;
-        setErr(e?.message || "Errore di rete");
-        setRemovingId(null);
-      }
+  return {
+    ok: true as const,
+    items: data.map(normalizeStrapiProduct),
+    pagination: {
+      page: Number(meta?.page ?? params.page),
+      pageSize: Number(meta?.pageSize ?? params.pageSize),
+      pageCount: Number(meta?.pageCount ?? 1),
+      total: Number(meta?.total ?? data.length),
     },
-    [load]
+  };
+}
+
+async function fetchProductsFromStrapi(params: {
+  categoria?: string;
+  q?: string;
+  page: number;
+  pageSize: number;
+}) {
+  if (!params.categoria) {
+    const r = await fetchProductsOnce({ ...params });
+    if (r.ok) return r;
+    return { ok: true as const, items: [], pagination: { page: 1, pageSize: params.pageSize, pageCount: 1, total: 0 } };
+  }
+
+  const attempts: Array<{ key: string; mode: "rel" | "scalar" }> = [
+    { key: "category", mode: "rel" },
+    { key: "categories", mode: "rel" },
+    { key: "categoria", mode: "rel" },
+    { key: "macro", mode: "rel" },
+    { key: "categorySlug", mode: "scalar" },
+    { key: "macroSlug", mode: "scalar" },
+  ];
+
+  for (const a of attempts) {
+    const r = await fetchProductsOnce({
+      ...params,
+      categoryFilterKey: a.key,
+      categoryMode: a.mode,
+    });
+
+    if (r.ok) return r;
+
+    // se non è validation error, non ha senso continuare
+    if (!r.isValidation) break;
+  }
+
+  // fallback safe: non rompiamo la pagina
+  return {
+    ok: true as const,
+    items: [],
+    pagination: { page: params.page, pageSize: params.pageSize, pageCount: 1, total: 0 },
+  };
+}
+
+function buildCatalogHref(params: { categoria?: string; q?: string; page?: number }) {
+  const sp = new URLSearchParams();
+  if (params.categoria) sp.set("categoria", params.categoria);
+  if (params.q) sp.set("q", params.q);
+  if (params.page && params.page > 1) sp.set("page", String(params.page));
+  const qs = sp.toString();
+  return qs ? `/catalogo?${qs}` : "/catalogo";
+}
+
+export default async function CatalogoPage({
+  searchParams,
+}: {
+  searchParams?: Promise<CatalogoSearchParams>;
+}) {
+  const sp = (await searchParams) ?? {};
+
+  const categoria = safeSlug(sp.categoria);
+  const q = safeText(sp.q, 80);
+  const pageRequested = toInt(sp.page, 1);
+
+  const macro = categoria ? await fetchCategoryBySlug(categoria) : null;
+  if (categoria && !macro) return notFound();
+
+  const res = await fetchProductsFromStrapi({
+    categoria,
+    q,
+    page: pageRequested,
+    pageSize: PAGE_SIZE,
+  });
+
+  let items = res.items;
+  let pagination = res.pagination;
+
+  const totalPages = Math.max(1, Number(pagination.pageCount ?? 1));
+  const safePage = Math.min(Math.max(pageRequested, 1), totalPages);
+
+  if (safePage !== pageRequested) {
+    const res2 = await fetchProductsFromStrapi({
+      categoria,
+      q,
+      page: safePage,
+      pageSize: PAGE_SIZE,
+    });
+    items = res2.items;
+    pagination = res2.pagination;
+  }
+
+  // Availability: non deve mai rompere la pagina
+  const skus: string[] = Array.from(
+    new Set(
+      items
+        .map((p: any) => getDefaultSku(p))
+        .filter((x: unknown): x is string => typeof x === "string" && x.length > 0)
+    )
   );
 
+  let bySku: Record<string, any> = {};
+  try {
+    const availability = skus.length ? await getAvailability({ skus, warehouse: "MAIN" }) : null;
+    bySku = (availability as any)?.data?.MAIN ?? {};
+  } catch {
+    bySku = {};
+  }
+
+  const itemsWithStock = items.map((p: any) => {
+    const sku = getDefaultSku(p);
+    const row = sku ? bySku?.[sku] ?? null : null;
+    const available = Number(row?.available ?? 0);
+
+    return {
+      ...p,
+      inStock: sku ? available > 0 : p?.inStock,
+      inventory: row,
+      sku,
+    };
+  });
+
+  const total = Number(pagination.total ?? 0);
+  const pageCount = Math.max(1, Number(pagination.pageCount ?? 1));
+
+  const prevPage = safePage > 1 ? safePage - 1 : null;
+  const nextPage = safePage < pageCount ? safePage + 1 : null;
+
   return (
-    <main style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-        <h1 style={{ fontSize: 40, fontWeight: 800, marginBottom: 12 }}>Preferiti</h1>
-        <Link href="/account" style={{ fontWeight: 800 }}>
-          ← Account
-        </Link>
-      </div>
+    <div className="mx-auto max-w-7xl px-4 py-8">
+      <Breadcrumbs
+        items={[
+          { label: "Home", href: "/" },
+          { label: macro ? `Catalogo · ${macro.label}` : "Catalogo" },
+        ]}
+      />
 
-      <div style={{ opacity: 0.75, marginTop: 6 }}>
-        Totale: <b>{count}</b>
-      </div>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            cursor: loading ? "not-allowed" : "pointer",
-            fontWeight: 800,
-          }}
-        >
-          {loading ? "Aggiorno..." : "Ricarica"}
-        </button>
-
-        <Link
-          href="/catalogo"
-          style={{
-            padding: "8px 12px",
-            borderRadius: 10,
-            border: "1px solid #ddd",
-            fontWeight: 800,
-            display: "inline-block",
-          }}
-        >
-          Vai al catalogo
-        </Link>
-      </div>
-
-      {loading && <p style={{ marginTop: 12 }}>Caricamento…</p>}
-
-      {!loading && err && (
-        <div style={{ marginTop: 12 }}>
-          <p style={{ color: "crimson", marginBottom: 8 }}>❌ {err}</p>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              onClick={load}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                cursor: "pointer",
-                fontWeight: 800,
-              }}
-            >
-              Riprova
-            </button>
-
-            <Link
-              href="/account/login"
-              style={{
-                padding: "8px 12px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                fontWeight: 800,
-                display: "inline-block",
-              }}
-            >
-              Vai al login
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {!loading && !err && favorites.length === 0 && (
-        <div style={{ marginTop: 12 }}>
-          <p>Non hai ancora aggiunto preferiti.</p>
-          <p style={{ opacity: 0.75, marginTop: 6 }}>
-            Vai al catalogo e clicca sul ❤️ per aggiungere prodotti ai preferiti.
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-extrabold">
+            {macro ? `Catalogo · ${macro.label}` : "Catalogo"}
+          </h1>
+          <p className="mt-1 text-sm text-text/70">
+            {total} prodotti{macro ? " nella macroarea selezionata" : ""}.{q ? ` Ricerca: “${q}”.` : ""}
           </p>
         </div>
-      )}
 
-      {!loading && !err && favorites.length > 0 && (
-        <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
-          {favorites.map((f) => (
-            <div key={String(f.id)} style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontWeight: 800 }}>{f.product.name}</div>
-                  <div style={{ opacity: 0.75, marginTop: 4 }}>€ {safeMoney(f.product.price)}</div>
-                </div>
+        {macro ? (
+          <Link
+            href={buildCatalogHref({ q, page: 1 })}
+            className="text-sm font-semibold text-link hover:text-link-hover"
+          >
+            Rimuovi filtro categoria
+          </Link>
+        ) : null}
+      </div>
 
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <Link
-                    href={`/prodotto/${f.product.slug}`}
-                    style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ddd" }}
-                  >
-                    Vedi prodotto
-                  </Link>
-
-                  <button
-                    onClick={() => remove(f.product.id)}
-                    disabled={removingId === String(f.product.id)}
-                    style={{
-                      padding: "8px 12px",
-                      borderRadius: 10,
-                      border: "1px solid #ddd",
-                      cursor: removingId === String(f.product.id) ? "not-allowed" : "pointer",
-                      fontWeight: 800,
-                    }}
-                  >
-                    {removingId === String(f.product.id) ? "Rimozione..." : "Rimuovi"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <div className="text-sm text-text/70">
+          Pagina {safePage} di {pageCount}
         </div>
-      )}
-    </main>
+
+        <div className="flex items-center gap-2">
+          {prevPage ? (
+            <Link
+              href={buildCatalogHref({ categoria, q, page: prevPage })}
+              className="rounded-md border px-3 py-1 text-sm hover:bg-black/5"
+            >
+              ← Prev
+            </Link>
+          ) : (
+            <span className="rounded-md border px-3 py-1 text-sm text-text/40">← Prev</span>
+          )}
+
+          {nextPage ? (
+            <Link
+              href={buildCatalogHref({ categoria, q, page: nextPage })}
+              className="rounded-md border px-3 py-1 text-sm hover:bg-black/5"
+            >
+              Next →
+            </Link>
+          ) : (
+            <span className="rounded-md border px-3 py-1 text-sm text-text/40">Next →</span>
+          )}
+        </div>
+      </div>
+
+      <ProductsGridWithFilters
+        key={`${categoria}|${q}|${safePage}`}
+        items={itemsWithStock as any}
+        emptyText="Nessun prodotto trovato."
+        initialQuery={q}
+      />
+    </div>
   );
 }

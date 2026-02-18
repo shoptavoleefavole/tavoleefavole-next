@@ -237,11 +237,17 @@ function normalizeProduct(row: AnyObj): Product {
 }
 
 // -------- fetch helpers (robusti)
-async function fetchWithTimeout(url: string, init: RequestInit = {}) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+) {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const { timeoutMs, ...rest } = init;
+
+  const t = setTimeout(() => controller.abort(), timeoutMs ?? FETCH_TIMEOUT_MS);
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    return await fetch(url, { ...rest, signal: controller.signal });
   } finally {
     clearTimeout(t);
   }

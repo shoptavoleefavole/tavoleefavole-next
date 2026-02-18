@@ -13,44 +13,41 @@ type Props = {
   /** quantità da aggiungere (default 1) */
   qty?: number;
 
-  /** classi tailwind (se presenti, non usiamo inline style) */
+  /** classi tailwind */
   className?: string;
 
-  /** opzionale: testo bottone */
+  /** testo bottone */
   label?: string;
 
-  /** opzionale: testo durante loading */
+  /** testo durante loading */
   loadingLabel?: string;
 
-  /** opzionale: testo quando disabilitato (es. esaurito) */
+  /** testo quando disabilitato per stock */
   disabledLabel?: string;
 
-  /** se true, disabilita il bottone (forzato) */
+  /** disabilita il bottone (forzato) */
   disabled?: boolean;
 
-  /**
-   * Compatibilità vecchia: se false, NON può entrare nel carrello
-   * (ma ora consigliamo stockQty/trackInventory)
-   */
+  /** fallback legacy */
   inStock?: boolean;
 
-  /** ✅ Nuovo: quantità stock (se presente, guida la disponibilità) */
+  /** quantità stock (se presente, guida la disponibilità) */
   stockQty?: number | null;
 
-  /** ✅ Nuovo: se false, sempre acquistabile */
+  /** se false, sempre acquistabile */
   trackInventory?: boolean;
 
-  /** opzionale: meta per prodotti personalizzati (es. cialde) */
+  /** meta per prodotti personalizzati */
   meta?: CartItemMeta;
 
-  /** opzionale: cosa fare dopo l'aggiunta (es. redirect) */
+  /** callback dopo aggiunta */
   onAdded?: () => void;
 };
 
 const FALLBACK_IMAGE = "/brand/tavoleefavole-logo.svg";
 
 function toSafeString(v: unknown, fallback = ""): string {
-  const s = String(v ?? "").trim();
+  const s = String(v ?? "").replace(/\s+/g, " ").trim();
   return s || fallback;
 }
 
@@ -109,20 +106,31 @@ export default function AddToCartButton({
     };
   }, [id, slug, name, image, price, qty]);
 
-  // ✅ Disponibilità robusta:
-  // 1) Se trackInventory === false => sempre acquistabile
-  // 2) Se stockQty è un numero => acquistabile solo se > 0
-  // 3) Altrimenti fallback su inStock (vecchio)
+  /**
+   * ✅ Disponibilità robusta:
+   * 1) trackInventory === false => sempre acquistabile
+   * 2) stockQty numero => acquistabile solo se > 0
+   * 3) fallback su inStock (legacy)
+   */
   const track = trackInventory !== false; // default true
-  const qtyNumber = stockQty === null ? null : toFiniteNumberOrNull(stockQty);
+  const stockNumber = stockQty === null ? null : toFiniteNumberOrNull(stockQty);
 
   const computedInStock =
-    track === false ? true : qtyNumber !== null ? qtyNumber > 0 : inStock !== false;
+    track === false ? true : stockNumber !== null ? stockNumber > 0 : inStock !== false;
 
-  // Regole di disabilitazione “a prova di sicurezza”
+  // Se lo stock è noto e track=true, impedisci di aggiungere più di quanto disponibile
+  const exceedsKnownStock =
+    track !== false &&
+    stockNumber !== null &&
+    Number.isFinite(stockNumber) &&
+    stockNumber >= 0 &&
+    normalized.qty > stockNumber;
+
+  // Regole “sicure” (non aggiungere roba invalida)
   const isUnavailable = computedInStock === false;
   const isNotBuyable = normalized.price <= 0 || !normalized.id || !normalized.slug;
-  const isDisabled = busy || disabled || isUnavailable || isNotBuyable;
+
+  const isDisabled = busy || disabled || isUnavailable || isNotBuyable || exceedsKnownStock;
 
   async function handleClick() {
     if (isDisabled) return;
@@ -130,27 +138,23 @@ export default function AddToCartButton({
     try {
       setBusy(true);
 
-      await Promise.resolve(
-        addItem(
-          {
-            // coerente con CartProvider: id/slug obbligatori
-            id: normalized.id,
-            slug: normalized.slug,
-            name: normalized.name,
-            image: normalized.image,
-            price: normalized.price,
-          } as any,
-          normalized.qty,
-          meta,
-          { inStock: computedInStock }
-        )
-      );
+      // item minimale compatibile (evita any)
+      const item = {
+        id: normalized.id,
+        slug: normalized.slug,
+        name: normalized.name,
+        image: normalized.image,
+        price: normalized.price,
+      };
+
+      // addItem(...) può essere sincrona o async: gestiamo entrambi i casi
+      await Promise.resolve(addItem(item, normalized.qty, meta, { inStock: computedInStock }));
 
       onAdded?.();
     } catch (err) {
       console.error("AddToCartButton: addItem failed", err);
     } finally {
-      // anti spam click
+      // anti spam-click (micro delay)
       window.setTimeout(() => setBusy(false), 200);
     }
   }
@@ -159,21 +163,25 @@ export default function AddToCartButton({
     className ??
     "h-11 w-full rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
-  const title = isUnavailable
-    ? "Prodotto non disponibile"
-    : isNotBuyable
-    ? "Prodotto non acquistabile"
-    : busy
-    ? loadingLabel
-    : label;
+  const title = exceedsKnownStock
+    ? `Disponibilità insufficiente (max ${stockNumber})`
+    : isUnavailable
+      ? "Prodotto non disponibile"
+      : isNotBuyable
+        ? "Prodotto non acquistabile"
+        : busy
+          ? loadingLabel
+          : label;
 
   const text = busy
     ? loadingLabel
-    : isUnavailable
-    ? disabledLabel
-    : isNotBuyable
-    ? "Non acquistabile"
-    : label;
+    : exceedsKnownStock
+      ? "Disponibilità insufficiente"
+      : isUnavailable
+        ? disabledLabel
+        : isNotBuyable
+          ? "Non acquistabile"
+          : label;
 
   return (
     <button
@@ -184,7 +192,8 @@ export default function AddToCartButton({
       aria-label={text}
       title={title}
       data-in-stock={String(computedInStock)}
-      data-disabled={String(disabled)}
+      data-track-inventory={String(track)}
+      data-stock={stockNumber == null ? "" : String(stockNumber)}
     >
       {text}
     </button>

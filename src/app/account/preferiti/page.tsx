@@ -4,9 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 type Favorite = {
-  id: number | string;
+  id: string;
   product: {
-    id: number | string;
+    id: string;
     name: string;
     slug: string;
     price: number;
@@ -17,36 +17,45 @@ const API_ENDPOINTS = ["/api/account/favorite", "/api/account/favorites"] as con
 
 function safeMoney(v: unknown) {
   const n = Number(v);
-  if (!Number.isFinite(n)) return "0.00";
+  if (!Number.isFinite(n) || n < 0) return "0.00";
   return n.toFixed(2);
 }
 
-function normalizeFavorites(json: any): Favorite[] {
-  const raw =
-    (json && Array.isArray(json.favorites) && json.favorites) ||
-    (json && Array.isArray(json.data) && json.data) ||
+function toStrId(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+function normalizeFavorites(json: unknown): Favorite[] {
+  const j = (json ?? {}) as any;
+  const raw: any[] =
+    (Array.isArray(j?.favorites) && j.favorites) ||
+    (Array.isArray(j?.data) && j.data) ||
     [];
 
   const out: Favorite[] = [];
+
   for (const item of raw) {
-    const id = item?.id ?? item?.documentId ?? item?._id;
-    const p = item?.product ?? item?.attributes?.product ?? item?.data?.product;
+    const favId = toStrId(item?.id ?? item?.documentId ?? item?._id);
+    if (!favId) continue;
 
-    const productId = p?.id ?? p?.documentId ?? p?._id;
-    const name = p?.name ?? p?.Titolo ?? p?.title ?? "";
-    const slug = p?.slug ?? "";
-    const price = Number(p?.price ?? 0);
+    const p = item?.product ?? item?.attributes?.product ?? item?.data?.product ?? null;
+    const productId = toStrId(p?.id ?? p?.documentId ?? p?._id);
+    const slug = toStrId(p?.slug);
+    const name = toStrId(p?.name ?? p?.Titolo ?? p?.title);
 
-    if (id == null) continue;
-    if (productId == null || !slug || !name) continue;
+    if (!productId || !slug || !name) continue;
+
+    const priceNum = Number(p?.price ?? 0);
 
     out.push({
-      id,
+      id: favId,
       product: {
         id: productId,
-        name: String(name),
-        slug: String(slug),
-        price: Number.isFinite(price) ? price : 0,
+        name,
+        slug,
+        price: Number.isFinite(priceNum) && priceNum >= 0 ? priceNum : 0,
       },
     });
   }
@@ -57,18 +66,29 @@ function normalizeFavorites(json: any): Favorite[] {
 function prettyError(res: Response, json: any): string {
   if (res.status === 401) return "Devi accedere per vedere i preferiti.";
   if (res.status === 403) return "Non hai i permessi per questa operazione.";
-  const serverMsg = json?.error ? String(json.error) : "";
-  if (serverMsg) return serverMsg;
-  return `Errore (HTTP ${res.status})`;
+  if (res.status === 429) return "Troppe richieste. Riprova tra poco.";
+  const serverMsg = json?.message || json?.error ? String(json.message || json.error) : "";
+  return serverMsg || `Errore (HTTP ${res.status})`;
 }
 
 async function fetchJsonTryEndpoints(
   buildUrl: (base: string) => string,
-  init?: RequestInit
+  init: RequestInit,
+  signal: AbortSignal
 ): Promise<{ res: Response; json: any; used: string } | null> {
   for (const base of API_ENDPOINTS) {
     const url = buildUrl(base);
-    const res = await fetch(url, { cache: "no-store", credentials: "include", ...init });
+
+    const res = await fetch(url, {
+      ...init,
+      signal,
+      cache: "no-store",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        ...(init.headers || {}),
+      },
+    });
 
     let json: any = null;
     try {
@@ -77,9 +97,10 @@ async function fetchJsonTryEndpoints(
       json = null;
     }
 
-    if (res.status === 404) continue;
+    if (res.status === 404) continue; // endpoint non esiste, prova l’altro
     return { res, json, used: base };
   }
+
   return null;
 }
 
@@ -87,25 +108,38 @@ export default function FavoritesPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string>("");
   const [favorites, setFavorites] = useState<Favorite[]>([]);
-  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removingProductId, setRemovingProductId] = useState<string | null>(null);
 
+  // evita setState dopo unmount + abort fetch pendenti
   const aliveRef = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      abortRef.current?.abort();
     };
   }, []);
 
   const load = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setErr("");
 
     try {
-      const result = await fetchJsonTryEndpoints((base) => base, { method: "GET" });
+      const result = await fetchJsonTryEndpoints(
+        (base) => base,
+        { method: "GET" },
+        controller.signal
+      );
+
+      if (!aliveRef.current) return;
 
       if (!result) {
-        if (!aliveRef.current) return;
         setFavorites([]);
         setErr("Endpoint preferiti non trovato (né /favorite né /favorites).");
         setLoading(false);
@@ -115,19 +149,17 @@ export default function FavoritesPage() {
       const { res, json } = result;
 
       if (!res.ok || json?.ok === false) {
-        if (!aliveRef.current) return;
         setFavorites([]);
         setErr(prettyError(res, json));
         setLoading(false);
         return;
       }
 
-      const normalized = normalizeFavorites(json);
-      if (!aliveRef.current) return;
-      setFavorites(normalized);
+      setFavorites(normalizeFavorites(json));
       setLoading(false);
     } catch (e: any) {
       if (!aliveRef.current) return;
+      if (e?.name === "AbortError") return; // navigazione/refresh rapido
       setFavorites([]);
       setErr(e?.message || "Errore di rete");
       setLoading(false);
@@ -141,40 +173,45 @@ export default function FavoritesPage() {
   const count = useMemo(() => favorites.length, [favorites]);
 
   const remove = useCallback(
-    async (productId: string | number) => {
-      const key = String(productId);
-      setRemovingId(key);
+    async (productId: string) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setRemovingProductId(productId);
       setErr("");
 
       try {
         const result = await fetchJsonTryEndpoints(
-          (base) => `${base}?productId=${encodeURIComponent(key)}`,
-          { method: "DELETE" }
+          (base) => `${base}?productId=${encodeURIComponent(productId)}`,
+          { method: "DELETE" },
+          controller.signal
         );
 
+        if (!aliveRef.current) return;
+
         if (!result) {
-          if (!aliveRef.current) return;
           setErr("Endpoint rimozione preferiti non trovato.");
-          setRemovingId(null);
+          setRemovingProductId(null);
           return;
         }
 
         const { res, json } = result;
 
         if (!res.ok || json?.ok === false) {
-          if (!aliveRef.current) return;
           setErr(prettyError(res, json));
-          setRemovingId(null);
+          setRemovingProductId(null);
           return;
         }
 
         await load();
         if (!aliveRef.current) return;
-        setRemovingId(null);
+        setRemovingProductId(null);
       } catch (e: any) {
         if (!aliveRef.current) return;
+        if (e?.name === "AbortError") return;
         setErr(e?.message || "Errore di rete");
-        setRemovingId(null);
+        setRemovingProductId(null);
       }
     },
     [load]
@@ -270,7 +307,7 @@ export default function FavoritesPage() {
       {!loading && !err && favorites.length > 0 && (
         <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
           {favorites.map((f) => (
-            <div key={String(f.id)} style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
+            <div key={f.id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                 <div>
                   <div style={{ fontWeight: 800 }}>{f.product.name}</div>
@@ -287,16 +324,16 @@ export default function FavoritesPage() {
 
                   <button
                     onClick={() => remove(f.product.id)}
-                    disabled={removingId === String(f.product.id)}
+                    disabled={removingProductId === f.product.id}
                     style={{
                       padding: "8px 12px",
                       borderRadius: 10,
                       border: "1px solid #ddd",
-                      cursor: removingId === String(f.product.id) ? "not-allowed" : "pointer",
+                      cursor: removingProductId === f.product.id ? "not-allowed" : "pointer",
                       fontWeight: 800,
                     }}
                   >
-                    {removingId === String(f.product.id) ? "Rimozione..." : "Rimuovi"}
+                    {removingProductId === f.product.id ? "Rimozione..." : "Rimuovi"}
                   </button>
                 </div>
               </div>

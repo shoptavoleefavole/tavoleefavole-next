@@ -62,14 +62,14 @@ function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
 }
 
 type Address = {
-  address: string;
-  city: string;
-  postalCode: string;
-  province: string;
-  country: string; // ISO2 (IT)
+  address?: string;
+  city?: string;
+  postalCode?: string;
+  province?: string;
+  country?: string;
 };
 
-function normalizeAddress(a: any): Address {
+function normalizeAddress(a: any): Required<Address> {
   return {
     address: sanitize(a?.address, 160),
     city: sanitize(a?.city, 80),
@@ -79,17 +79,12 @@ function normalizeAddress(a: any): Address {
   };
 }
 
-/**
- * IMPORTANT:
- * Non consideriamo "country" per stabilire se l’utente ha compilato l’indirizzo,
- * perché di default è "IT" e farebbe scattare la validazione anche quando tutto il resto è vuoto.
- */
-function addressHasAnyMeaningful(a: Address) {
-  return [a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
+function addressHasAny(a: Required<Address>) {
+  return [a.address, a.city, a.postalCode, a.province, a.country].some((x) => String(x || "").trim().length > 0);
 }
 
-function validateAddressIfAny(a: Address) {
-  if (!addressHasAnyMeaningful(a)) return { ok: true as const, msg: "" };
+function validateAddressIfAny(a: Required<Address>) {
+  if (!addressHasAny(a)) return { ok: true as const, msg: "" };
 
   if (a.address.trim().length < 2) return { ok: false as const, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false as const, msg: "Città non valida." };
@@ -99,7 +94,6 @@ function validateAddressIfAny(a: Address) {
   return { ok: true as const, msg: "" };
 }
 
-/** Body limit */
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   const raw = await req.text().catch(() => "");
   if (raw && raw.length > limitBytes) return { raw: "", tooLarge: true };
@@ -110,6 +104,13 @@ async function fetchJson(url: string, init: RequestInit) {
   const res = await fetch(url, { ...init, cache: "no-store" });
   const text = await res.text().catch(() => "");
   return { res, json: safeJsonParse(text), text };
+}
+
+async function getJwtOr401() {
+  const cookieStore = await cookies();
+  const jwt = cookieStore.get("tf_token")?.value || "";
+  if (!jwt) return { jwt: "", err: jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401) };
+  return { jwt, err: null as any };
 }
 
 async function getUserFromJwt(base: string, jwt: string) {
@@ -126,38 +127,53 @@ async function getUserFromJwt(base: string, jwt: string) {
 }
 
 /**
- * Legge il CustomerProfile anche se è in draft (publicationState=preview).
+ * Trova il CustomerProfile e ritorna anche documentId (Strapi v5).
+ * Prova prima senza publicationState, poi con publicationState=preview.
  */
 async function findCustomerProfile(base: string, userId: number) {
   const headers = { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` };
 
-  const qs = new URLSearchParams();
-  qs.set("publicationState", "preview");
-  qs.set("populate", "*");
-  qs.set("pagination[pageSize]", "1");
-  qs.set("filters[user][id][$eq]", String(userId));
+  async function tryQuery(qs: URLSearchParams) {
+    const r = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers });
+    const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+    if (!row?.id && !row?.documentId) return null;
+    return {
+      id: Number(row.id ?? 0),
+      documentId: String(row.documentId ?? ""),
+      attrs: row.attributes ?? {},
+    };
+  }
 
-  const p1 = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers });
-  const row1 = Array.isArray(p1.json?.data) ? p1.json.data[0] : null;
-  if (row1?.id) return { id: Number(row1.id), attrs: row1.attributes ?? {} };
+  // 1) relation: user
+  const qs1 = new URLSearchParams();
+  qs1.set("populate", "*");
+  qs1.set("pagination[pageSize]", "1");
+  qs1.set("filters[user][id][$eq]", String(userId));
+  let found = await tryQuery(qs1);
+  if (found) return found;
 
-  // fallback legacy
+  // 1b) v4 draft preview
+  const qs1b = new URLSearchParams(qs1);
+  qs1b.set("publicationState", "preview");
+  found = await tryQuery(qs1b);
+  if (found) return found;
+
+  // 2) fallback: users_permissions_user (vecchie prove)
   const qs2 = new URLSearchParams();
-  qs2.set("publicationState", "preview");
   qs2.set("populate", "*");
   qs2.set("pagination[pageSize]", "1");
   qs2.set("filters[users_permissions_user][id][$eq]", String(userId));
+  found = await tryQuery(qs2);
+  if (found) return found;
 
-  const p2 = await fetchJson(`${base}/api/customer-profiles?${qs2.toString()}`, { method: "GET", headers });
-  const row2 = Array.isArray(p2.json?.data) ? p2.json.data[0] : null;
-  if (row2?.id) return { id: Number(row2.id), attrs: row2.attributes ?? {} };
+  const qs2b = new URLSearchParams(qs2);
+  qs2b.set("publicationState", "preview");
+  found = await tryQuery(qs2b);
+  if (found) return found;
 
   return null;
 }
 
-/**
- * Crea un CustomerProfile (auto-publish se D&P attivo) con relazione user.
- */
 async function createCustomerProfile(base: string, userId: number, data: any) {
   const headers = {
     "Content-Type": "application/json",
@@ -169,37 +185,67 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
     data: {
       ...data,
       user: userId,
-      // se D&P è attivo, pubblica subito; se non lo è, Strapi ignora publishedAt
+      // se D&P attivo, pubblica subito
       publishedAt: new Date().toISOString(),
     },
   };
 
-  const c = await fetchJson(`${base}/api/customer-profiles?publicationState=preview`, {
+  const c = await fetchJson(`${base}/api/customer-profiles`, {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
   });
 
   if (c.res.ok && c.json?.data?.id) {
-    return { id: Number(c.json.data.id), attrs: c.json.data.attributes ?? {} };
+    return {
+      id: Number(c.json.data.id ?? 0),
+      documentId: String(c.json.data.documentId ?? ""),
+      attrs: c.json.data.attributes ?? {},
+    };
   }
+
   return null;
 }
 
-async function getJwtOr401() {
-  const cookieStore = await cookies();
-  const jwt = cookieStore.get("tf_token")?.value || "";
-  if (!jwt) return { jwt: "", err: jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401) };
-  return { jwt, err: null as any };
+/**
+ * ✅ Update robusto:
+ * - prova PUT con documentId (Strapi v5)
+ * - poi con id numerico (Strapi v4)
+ * - per ciascuno prova URL “liscia” e “?publicationState=preview”
+ */
+async function updateCustomerProfile(base: string, key: string, patch: any) {
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
+  };
+
+  const candidates = [
+    `${base}/api/customer-profiles/${encodeURIComponent(key)}`,
+    `${base}/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
+  ];
+
+  let last: any = null;
+
+  for (const url of candidates) {
+    const r = await fetchJson(url, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ data: patch }),
+    });
+
+    last = r;
+    if (r.res.ok) return r;
+  }
+
+  return last;
 }
 
 export async function GET() {
   const { jwt, err } = await getJwtOr401();
   if (err) return err;
 
-  if (!STRAPI_SERVICE_TOKEN) {
-    return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
-  }
+  if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
   const base = strapiBaseUrl();
   const me = await getUserFromJwt(base, jwt);
@@ -242,9 +288,7 @@ export async function PUT(req: Request) {
   const { jwt, err } = await getJwtOr401();
   if (err) return err;
 
-  if (!STRAPI_SERVICE_TOKEN) {
-    return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
-  }
+  if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
   const base = strapiBaseUrl();
   const me = await getUserFromJwt(base, jwt);
@@ -267,8 +311,8 @@ export async function PUT(req: Request) {
     return jsonNoStore({ ok: false, error: "INVALID_NAME" }, 400);
   }
 
-  const shippingAddress = normalizeAddress(body?.shippingAddress);
-  const billingAddress = normalizeAddress(body?.billingAddress);
+  const shippingAddress = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
+  const billingAddress = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
 
   const shipVal = validateAddressIfAny(shippingAddress);
   if (!shipVal.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
@@ -276,85 +320,85 @@ export async function PUT(req: Request) {
   const billVal = validateAddressIfAny(billingAddress);
   if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
-  const profile = await findCustomerProfile(base, me.id);
+  // trova profilo
+  let profile = await findCustomerProfile(base, me.id);
 
-  // patch dati
   const patch: any = {
     firstName,
     lastName,
-    customerType: profile?.attrs?.customerType
-      ? normalizeCustomerType(profile.attrs.customerType)
-      : "PRIVATE",
+    customerType: profile?.attrs?.customerType ? normalizeCustomerType(profile.attrs.customerType) : "PRIVATE",
   };
 
-  if (addressHasAnyMeaningful(shippingAddress)) patch.shippingAddress = shippingAddress;
-  if (addressHasAnyMeaningful(billingAddress)) patch.billingAddress = billingAddress;
+  if (addressHasAny(shippingAddress)) patch.shippingAddress = shippingAddress;
+  if (addressHasAny(billingAddress)) patch.billingAddress = billingAddress;
 
-  // auto-publish al primo salvataggio se entry è draft
-  const publishedAt = profile?.attrs?.publishedAt ?? null;
-  if (!publishedAt) patch.publishedAt = new Date().toISOString();
+  // se draft/publish è attivo e la entry è draft, pubblica
+  if (!profile?.attrs?.publishedAt) patch.publishedAt = new Date().toISOString();
 
-  // se non esiste, crealo ora (abbiamo nome/cognome validi)
+  // se non esiste, crealo
   if (!profile) {
     const created = await createCustomerProfile(base, me.id, patch);
-    if (!created) {
-      const isDev = process.env.NODE_ENV !== "production";
-      return jsonNoStore(
-        { ok: false, error: "CREATE_FAILED", ...(isDev ? { debug: "CustomerProfile create failed" } : {}) },
-        502
-      );
-    }
+    if (!created) return jsonNoStore({ ok: false, error: "CREATE_FAILED" }, 502);
 
     return jsonNoStore(
       {
         ok: true,
         exists: true,
         email: me.email,
-        customerType: normalizeCustomerType(created.attrs?.customerType ?? patch.customerType),
+        customerType: normalizeCustomerType(created.attrs?.customerType),
         firstName: String(created.attrs?.firstName ?? firstName),
         lastName: String(created.attrs?.lastName ?? lastName),
-        shippingAddress: created.attrs?.shippingAddress ?? (addressHasAnyMeaningful(shippingAddress) ? shippingAddress : null),
-        billingAddress: created.attrs?.billingAddress ?? (addressHasAnyMeaningful(billingAddress) ? billingAddress : null),
+        shippingAddress: created.attrs?.shippingAddress ?? (addressHasAny(shippingAddress) ? shippingAddress : null),
+        billingAddress: created.attrs?.billingAddress ?? (addressHasAny(billingAddress) ? billingAddress : null),
       },
       200
     );
   }
 
-  const upd = await fetchJson(`${base}/api/customer-profiles/${profile.id}?publicationState=preview`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
-    },
-    body: JSON.stringify({ data: patch }),
-  });
+  // ✅ UPDATE: prova documentId (v5) poi id (v4)
+  const keysToTry = [
+    profile.documentId ? profile.documentId : null,
+    profile.id ? String(profile.id) : null,
+  ].filter(Boolean) as string[];
 
-  if (!upd.res.ok) {
-    const isDev = process.env.NODE_ENV !== "production";
-    return jsonNoStore(
-      {
-        ok: false,
-        error: "UPDATE_FAILED",
-        ...(isDev ? { debug: { status: upd.res.status, text: (upd.text || "").slice(0, 1200) } } : {}),
-      },
-      502
-    );
+  let lastFail: any = null;
+
+  for (const key of keysToTry) {
+    const upd = await updateCustomerProfile(base, key, patch);
+    if (upd?.res?.ok) {
+      const attrs = upd.json?.data?.attributes ?? upd.json?.data ?? null;
+      return jsonNoStore(
+        {
+          ok: true,
+          exists: true,
+          email: me.email,
+          customerType: normalizeCustomerType(attrs?.customerType ?? patch.customerType),
+          firstName: String(attrs?.firstName ?? firstName),
+          lastName: String(attrs?.lastName ?? lastName),
+          shippingAddress: attrs?.shippingAddress ?? (addressHasAny(shippingAddress) ? shippingAddress : null),
+          billingAddress: attrs?.billingAddress ?? (addressHasAny(billingAddress) ? billingAddress : null),
+        },
+        200
+      );
+    }
+    lastFail = upd;
   }
 
-  const attrs = upd.json?.data?.attributes ?? {};
-
+  const isDev = process.env.NODE_ENV !== "production";
   return jsonNoStore(
     {
-      ok: true,
-      exists: true,
-      email: me.email,
-      customerType: normalizeCustomerType(attrs?.customerType ?? patch.customerType),
-      firstName: String(attrs?.firstName ?? firstName),
-      lastName: String(attrs?.lastName ?? lastName),
-      shippingAddress: attrs?.shippingAddress ?? (addressHasAnyMeaningful(shippingAddress) ? shippingAddress : null),
-      billingAddress: attrs?.billingAddress ?? (addressHasAnyMeaningful(billingAddress) ? billingAddress : null),
+      ok: false,
+      error: "UPDATE_FAILED",
+      ...(isDev
+        ? {
+            debug: {
+              triedKeys: keysToTry,
+              status: lastFail?.res?.status ?? null,
+              text: String(lastFail?.text ?? "").slice(0, 1500),
+            },
+          }
+        : {}),
     },
-    200
+    502
   );
 }
