@@ -1,234 +1,86 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useMemo } from "react";
 
-const AUTH_EVENT = "tf:auth-changed";
+function Card({
+  title,
+  desc,
+  badge,
+  onClick,
+}: {
+  title: string;
+  desc: string;
+  badge: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group w-full text-left rounded-3xl border border-border bg-background p-6 shadow-sm transition hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xl font-extrabold">{title}</div>
+          <div className="mt-2 text-sm text-text/70 leading-relaxed">{desc}</div>
+        </div>
+        <div className="shrink-0 rounded-full bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
+          {badge}
+        </div>
+      </div>
 
-// validazione email semplice ma più corretta di includes("@")
-function isValidEmail(email: string) {
-  const e = email.trim().toLowerCase();
-  if (!e || e.length > 254) return false;
-  if (/\s/.test(e)) return false;
-  const at = e.indexOf("@");
-  if (at <= 0 || at !== e.lastIndexOf("@")) return false;
-  const domain = e.slice(at + 1);
-  if (!domain || !domain.includes(".")) return false;
-  if (domain.startsWith(".") || domain.endsWith(".")) return false;
-  return true;
-}
-
-function clamp(v: string, max: number) {
-  const s = (v ?? "").trim();
-  return s.length > max ? s.slice(0, max) : s;
-}
-
-export default function RegisterPage() {
-  const router = useRouter();
-
-  const [email, setEmail] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const emailOk = useMemo(() => isValidEmail(email), [email]);
-
-  const pwOk = useMemo(() => password.length >= 8 && password.length <= 200, [password]);
-  const pwMatch = useMemo(
-    () => password.length > 0 && password === confirmPassword,
-    [password, confirmPassword]
+      <div className="mt-5 inline-flex items-center gap-2 text-sm font-extrabold text-primary group-hover:underline">
+        Continua
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M10 7l5 5-5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+    </button>
   );
+}
 
-  const nameOk = useMemo(() => {
-    const fn = firstName.trim();
-    const ln = lastName.trim();
-    return fn.length >= 2 && ln.length >= 2 && fn.length <= 60 && ln.length <= 60;
-  }, [firstName, lastName]);
+export default function RegisterChooserPage() {
+  const router = useRouter();
+  const sp = useSearchParams();
 
-  const canSubmit = emailOk && nameOk && pwOk && pwMatch && !loading;
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (loading) return; // anti double-submit
-    setErrorMsg(null);
-
-    if (!canSubmit) {
-      setErrorMsg("Controlla i campi e riprova.");
-      return;
-    }
-
-    // normalizza lato client (no sorprese)
-    const payload = {
-      type: "PERSON" as const,
-      email: clamp(email.toLowerCase(), 254),
-      firstName: clamp(firstName, 60),
-      lastName: clamp(lastName, 60),
-      password: password, // non trimmiamo le password
-    };
-
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        cache: "no-store",
-        credentials: "include",
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => null);
-
-      // success
-      if (res.ok && data?.ok) {
-        // aggiorna header e stato auth
-        window.dispatchEvent(new Event(AUTH_EVENT));
-
-        // redirect a dashboard account
-        router.replace("/account");
-        return;
-      }
-
-      // messaggi controllati
-      if (data?.error === "CHECK_EMAIL") {
-        setErrorMsg(data?.message || "Controlla la tua email per recuperare l’accesso.");
-        return;
-      }
-      if (data?.error === "WEAK_PASSWORD") {
-        setErrorMsg("Password troppo debole (minimo 8 caratteri).");
-        return;
-      }
-      if (data?.error === "INVALID_INPUT") {
-        setErrorMsg("Dati non validi. Controlla email e riprova.");
-        return;
-      }
-
-      // fallback generico
-      setErrorMsg("Registrazione non riuscita. Riprova tra qualche secondo.");
-    } catch {
-      setErrorMsg("Errore di rete. Controlla la connessione e riprova.");
-    } finally {
-      setLoading(false);
-    }
-  }
+  // preserva eventuale next (es. /account)
+  const next = useMemo(() => {
+    const n = sp.get("next");
+    return n ? `?next=${encodeURIComponent(n)}` : "";
+  }, [sp]);
 
   return (
-    <div className="mx-auto max-w-md p-6">
-      <h1 className="text-3xl font-extrabold">Registrati</h1>
+    <main className="mx-auto max-w-4xl px-4 py-10">
+      <div className="rounded-3xl border border-border bg-background p-8 shadow-sm">
+        <h1 className="text-3xl font-extrabold">Crea il tuo account</h1>
+        <p className="mt-2 text-sm text-text/70">
+          Seleziona il tipo di profilo per completare la registrazione.
+        </p>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
-        <div>
-          <label className="block text-sm font-medium">Email</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-            autoComplete="email"
-            required
-            disabled={loading}
-            inputMode="email"
+        <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Card
+            title="Privato"
+            badge="B2C"
+            desc="Per acquisti personali. Potrai inserire (facoltativo) il codice fiscale per la fattura."
+            onClick={() => router.push(`/registrati/privato${next}`)}
           />
-          {email.length > 0 && !emailOk ? (
-            <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p>
-          ) : null}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium">Nome</label>
-            <input
-              className="mt-1 w-full rounded-md border p-3"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              autoComplete="given-name"
-              required
-              disabled={loading}
-              maxLength={60}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium">Cognome</label>
-            <input
-              className="mt-1 w-full rounded-md border p-3"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-              autoComplete="family-name"
-              required
-              disabled={loading}
-              maxLength={60}
-            />
-          </div>
-        </div>
-
-        {!nameOk && (firstName.length > 0 || lastName.length > 0) ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Inserisci nome e cognome (almeno 2 caratteri).
-          </div>
-        ) : null}
-
-        <div>
-          <label className="block text-sm font-medium">Password</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            autoComplete="new-password"
-            required
-            disabled={loading}
-            minLength={8}
-            maxLength={200}
+          <Card
+            title="Azienda"
+            badge="B2B"
+            desc="Per attività e professionisti. Ti chiederemo Ragione sociale, P.IVA, PEC e SDI (tutti obbligatori)."
+            onClick={() => router.push(`/registrati/azienda${next}`)}
           />
-          {!pwOk && password.length > 0 ? (
-            <p className="mt-1 text-sm text-red-600">Minimo 8 caratteri (massimo 200).</p>
-          ) : null}
         </div>
 
-        <div>
-          <label className="block text-sm font-medium">Conferma password</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            type="password"
-            autoComplete="new-password"
-            required
-            disabled={loading}
-            minLength={8}
-            maxLength={200}
-          />
-          {confirmPassword.length > 0 && !pwMatch ? (
-            <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p>
-          ) : null}
-        </div>
-
-        {errorMsg ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-            {errorMsg}
-          </div>
-        ) : null}
-
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
-        >
-          {loading ? "Creazione..." : "Crea account"}
-        </button>
-
-        <div className="flex items-center justify-between text-sm">
-          <span>Hai già un account?</span>
-          <Link href="/accedi" className="font-semibold underline">
+        <div className="mt-8 flex items-center justify-between text-sm">
+          <span className="text-text/70">Hai già un account?</span>
+          <Link href="/accedi" className="font-extrabold underline">
             Accedi
           </Link>
         </div>
-      </form>
-    </div>
+      </div>
+    </main>
   );
 }

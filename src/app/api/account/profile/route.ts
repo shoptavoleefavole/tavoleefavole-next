@@ -101,8 +101,8 @@ async function fetchJson(url: string, init: RequestInit) {
 }
 
 async function getJwtOr401() {
-  const cookieStore = await cookies();
-  const jwt = cookieStore.get("tf_token")?.value || "";
+  const cookieStore = await cookies(); // ✅ in route handlers è async
+  const jwt = cookieStore.get("tf_token")?.value || ""; // <-- usa il nome cookie corretto
   if (!jwt) return { jwt: "", err: jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401) };
   return { jwt, err: null as any };
 }

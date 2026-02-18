@@ -184,7 +184,7 @@ export default function ProfilePageClient() {
       }
       if (!data?.ok) return;
 
-      // ✅ refresh “non distruttivo”: non può svuotare campi
+      // ✅ refresh “non distruttivo”
       applyProfileNonDestructive(data);
     } catch {
       // best-effort
@@ -223,7 +223,7 @@ export default function ProfilePageClient() {
           return;
         }
 
-        // primo load: qui possiamo applicare “completo”
+        // primo load: applica completo
         setEmail(String(data.email ?? ""));
         setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
         setFirstName(String(data.firstName ?? ""));
@@ -244,7 +244,9 @@ export default function ProfilePageClient() {
 
         setSameAsShipping(Boolean(same));
       } catch {
-        if (!canceled || aliveRef.current) setErrorMsg("Errore di rete. Riprova.");
+        // ✅ FIX: non settare stato se unmounted/canceled
+        if (canceled || !aliveRef.current) return;
+        setErrorMsg("Errore di rete. Riprova.");
       } finally {
         if (canceled || !aliveRef.current) return;
         didLoadRef.current = true;
@@ -322,13 +324,22 @@ export default function ProfilePageClient() {
       // ✅ optimistic: i campi restano pieni SEMPRE
       setFirstName(payload.firstName);
       setLastName(payload.lastName);
-      setShippingAddress(payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS });
-      setBillingAddress(payload.billingAddress ? { ...payload.billingAddress } : sameAsShipping && payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS });
+
+      const nextShip = payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS };
+      const nextBill =
+        payload.billingAddress
+          ? { ...payload.billingAddress }
+          : sameAsShipping
+            ? { ...nextShip }
+            : { ...EMPTY_ADDRESS };
+
+      setShippingAddress(nextShip);
+      setBillingAddress(nextBill);
 
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
 
-      // ✅ applica risposta server in modo NON distruttivo (non svuota)
+      // ✅ applica risposta server non distruttiva
       applyProfileNonDestructive(data);
 
       // ✅ refresh non distruttivo (best-effort)

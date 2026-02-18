@@ -4,18 +4,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const REGISTER_VERSION = "2026-02-17-v5";
+const BODY_LIMIT = 32 * 1024;
 
 function strapiBaseUrl() {
-  const raw =
-    process.env.STRAPI_URL ||
-    process.env.NEXT_PUBLIC_STRAPI_URL ||
-    "http://localhost:1337";
+  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
 
   let base = raw.replace(/\/+$/, "");
-  const isLocal =
-    base.includes("localhost") ||
-    base.includes("127.0.0.1") ||
-    base.includes("0.0.0.0");
+  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
 
   if (process.env.NODE_ENV === "production" && !isLocal) {
     base = base.replace(/^http:\/\//i, "https://");
@@ -134,13 +129,37 @@ async function strapiPost(path: string, body: any, timeoutMs: number, token?: st
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetchWithRetry(
-    url,
-    { method: "POST", headers, body: JSON.stringify(body) },
-    timeoutMs,
-    2
-  );
+  const res = await fetchWithRetry(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs, 2);
 
+  const text = await res.text().catch(() => "");
+  const data = safeJsonParse(text);
+  return { res, data, text, url };
+}
+
+async function strapiGet(pathWithQs: string, timeoutMs: number, token?: string) {
+  const base = strapiBaseUrl();
+  const url = `${base}${pathWithQs}`;
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetchWithRetry(url, { method: "GET", headers }, timeoutMs, 2);
+  const text = await res.text().catch(() => "");
+  const data = safeJsonParse(text);
+  return { res, data, text, url };
+}
+
+async function strapiPut(path: string, body: any, timeoutMs: number, token?: string) {
+  const base = strapiBaseUrl();
+  const url = `${base}${path}`;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetchWithRetry(url, { method: "PUT", headers, body: JSON.stringify(body) }, timeoutMs, 2);
   const text = await res.text().catch(() => "");
   const data = safeJsonParse(text);
   return { res, data, text, url };
@@ -165,7 +184,17 @@ function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText:
   );
 }
 
-async function readBodyWithLimit(req: Request, limitBytes = 32 * 1024) {
+function looksLikeUniqueViolation(status: number, strapiData: any, strapiText: string) {
+  if (!(status === 400 || status === 409)) return false;
+  const msg =
+    String(strapiData?.error?.message ?? "") ||
+    String(strapiData?.message ?? "") ||
+    String(strapiText ?? "");
+  const m = msg.toLowerCase();
+  return m.includes("unique") || m.includes("duplicate") || m.includes("already");
+}
+
+async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   const raw = await req.text().catch(() => "");
   if (raw && raw.length > limitBytes) return { raw: "", tooLarge: true };
   return { raw, tooLarge: false };
@@ -186,6 +215,11 @@ function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
   return type === "BUSINESS" ? "BUSINESS" : "PRIVATE";
 }
 
+/**
+ * ✅ Upsert CustomerProfile:
+ * - prova create
+ * - se fallisce per unique/duplicate, prova a trovare il profilo per userId e fare update
+ */
 async function ensureCustomerProfile(
   userId: number,
   firstName: string,
@@ -194,26 +228,46 @@ async function ensureCustomerProfile(
   userJwt?: string
 ) {
   const TIMEOUT = 12_000;
-  const payload = {
+
+  // patch pulito
+  const patch = {
     firstName: firstName || undefined,
     lastName: lastName || undefined,
     customerType: toStrapiCustomerType(type),
     user: userId,
   };
 
-  if (STRAPI_SERVICE_TOKEN) {
-    const r = await strapiPost("/api/customer-profiles", { data: payload }, TIMEOUT, STRAPI_SERVICE_TOKEN);
-    console.warn("[register] ensureCustomerProfile service", { ok: r.res.ok, status: r.res.status });
-    if (r.res.ok) return true;
-  }
+  // scegliamo il token migliore disponibile
+  const tokenToUse = STRAPI_SERVICE_TOKEN || userJwt || "";
+  if (!tokenToUse) return false;
 
-  if (userJwt) {
-    const r = await strapiPost("/api/customer-profiles", { data: payload }, TIMEOUT, userJwt);
-    console.warn("[register] ensureCustomerProfile jwt", { ok: r.res.ok, status: r.res.status });
-    if (r.res.ok) return true;
-  }
+  // 1) prova CREATE
+  const create = await strapiPost("/api/customer-profiles", { data: patch }, TIMEOUT, tokenToUse);
+  console.warn("[register] ensureCustomerProfile create", { ok: create.res.ok, status: create.res.status });
 
-  return false;
+  if (create.res.ok) return true;
+
+  // se non è un errore da “già esiste”, fermati
+  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text)) return false;
+
+  // 2) trova profilo esistente e fai UPDATE
+  const qs = new URLSearchParams();
+  qs.set("pagination[pageSize]", "1");
+  qs.set("filters[user][id][$eq]", String(userId));
+  qs.set("publicationState", "preview"); // compat v5/v4
+  const found = await strapiGet(`/api/customer-profiles?${qs.toString()}`, TIMEOUT, tokenToUse);
+
+  const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
+  const docId = row?.documentId ? String(row.documentId) : null;
+  const id = row?.id ? String(row.id) : null;
+  const key = docId || id;
+
+  if (!key) return false;
+
+  const upd = await strapiPut(`/api/customer-profiles/${encodeURIComponent(key)}`, { data: patch }, TIMEOUT, tokenToUse);
+  console.warn("[register] ensureCustomerProfile update", { ok: upd.res.ok, status: upd.res.status });
+
+  return upd.res.ok;
 }
 
 async function createCompanyBestEffort(
@@ -299,11 +353,7 @@ export async function POST(req: Request) {
     const REG_TIMEOUT = 15_000;
     const FORGOT_TIMEOUT = 6_000;
 
-    const reg = await strapiPost(
-      "/api/auth/local/register",
-      { email, password, username: email },
-      REG_TIMEOUT
-    );
+    const reg = await strapiPost("/api/auth/local/register", { email, password, username: email }, REG_TIMEOUT);
 
     if (reg.res.ok) {
       const jwt = reg.data?.jwt as string | undefined;
@@ -314,8 +364,8 @@ export async function POST(req: Request) {
 
       if (userId > 0) {
         try {
-          const created = await ensureCustomerProfile(userId, firstName, lastName, type, jwt);
-          console.warn("[register] ensureCustomerProfile result", { userId, created });
+          const createdOrUpdated = await ensureCustomerProfile(userId, firstName, lastName, type, jwt);
+          console.warn("[register] ensureCustomerProfile result", { userId, createdOrUpdated });
         } catch {
           // noop
         }
