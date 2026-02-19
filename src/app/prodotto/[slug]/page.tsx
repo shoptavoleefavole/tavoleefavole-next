@@ -49,7 +49,7 @@ type ProductLike = {
   seoImage?: string | null;
   isNew?: boolean;
 
-  // ✅ STOCK (Strapi source of truth)
+  // ✅ STOCK (Strapi)
   stockQty?: number | null;
   trackInventory?: boolean | null;
 };
@@ -321,12 +321,18 @@ export default async function ProductPage({
   const favId = favoriteKey(product);
 
   // ✅ SOURCE OF TRUTH: Strapi stock fields
-  const stockQty = typeof product?.stockQty === "number" && Number.isFinite(product.stockQty) ? product.stockQty : null;
+  const stockQty =
+    typeof product?.stockQty === "number" && Number.isFinite(product.stockQty) ? product.stockQty : null;
+
   const trackInventory =
     typeof product?.trackInventory === "boolean" ? product.trackInventory : null;
 
   const status = getStockStatus(trackInventory, stockQty);
   const badge = stockBadge(status);
+
+  // ✅ quantità da mostrare in UI (solo se inventario tracciato)
+  const stockQtyUi =
+    trackInventory === true && stockQty != null ? Math.max(0, stockQty) : null;
 
   // (Debug) Availability via inventory API - non decide lo stock, solo info in dev
   const defaultSku = getDefaultSku(product);
@@ -446,6 +452,14 @@ export default async function ProductPage({
                   )}
                 </div>
               </div>
+
+              {/* ✅ Quantità disponibile (solo se trackInventory=true e qty valida) */}
+              {stockQtyUi != null ? (
+                <div className="mt-2 flex items-center justify-between text-sm">
+                  <span className="text-text/70">Quantità disponibile</span>
+                  <span className="font-extrabold text-text">{stockQtyUi}</span>
+                </div>
+              ) : null}
 
               <p className="mt-2 text-sm text-text/70">
                 {status === "in"
