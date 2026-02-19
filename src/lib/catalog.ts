@@ -15,18 +15,18 @@ const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL ||
   "http://localhost:1337";
 
+// ✅ include anche STRAPI_TOKEN (nel tuo screen esiste)
 const STRAPI_TOKEN =
-  process.env.STRAPI_API_TOKEN || process.env.NEXT_PUBLIC_STRAPI_API_TOKEN;
+  process.env.STRAPI_API_TOKEN ||
+  process.env.STRAPI_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
+  process.env.NEXT_PUBLIC_STRAPI_TOKEN;
 
 const BASE_URL = String(STRAPI_URL || "").replace(/\/+$/, "");
 
 const DEFAULT_REVALIDATE = 60;
-
-// ⚠️ in produzione Strapi spesso impone un max pageSize.
-// lasciamo 200 come target, ma faremo retry più basso se Strapi rifiuta.
 const MAX_PAGE_SIZE = 200;
-
-const FETCH_TIMEOUT_MS = Number(process.env.CATALOG_STRAPI_TIMEOUT_MS ?? 6500);
+const FETCH_TIMEOUT_MS = Number(process.env.CATALOG_STRAPI_TIMEOUT_MS ?? 10000);
 
 // -------- utils
 function isNonNull<T>(v: T | null | undefined): v is T {
@@ -81,8 +81,8 @@ function unwrapCollection(json: any): any[] {
 }
 
 function pickAttrs(row: any) {
-  // Strapi 4: { id, attributes: {...} }
-  // Strapi 5 (e/o custom response): spesso flat
+  // Strapi v4: row.attributes
+  // Strapi v5: row è flat
   return row?.attributes ?? row ?? {};
 }
 
@@ -149,7 +149,6 @@ function extractMediaUrls(base: string, media: any): string[] {
 function normalizeCategoryRef(x: any): TaxonomyRef | null {
   if (!x) return null;
 
-  // già normalizzato
   if (typeof x?.slug === "string") {
     const slug = String(x.slug).trim();
     if (!slug) return null;
@@ -168,19 +167,10 @@ function normalizeCategoryRef(x: any): TaxonomyRef | null {
 function normalizeProduct(row: AnyObj): Product {
   const a = pickAttrs(row);
 
+  // ✅ nel tuo schema esiste "images" (Multiple Media) e "seoImage" (Media)
   const imagesFromImages = extractMediaUrls(BASE_URL, (a as any)?.images);
-  const imagesFromImage = extractMediaUrls(BASE_URL, (a as any)?.image);
-  const imagesFromCover = extractMediaUrls(BASE_URL, (a as any)?.cover);
-  const imagesFromThumb = extractMediaUrls(BASE_URL, (a as any)?.thumbnail);
-
-  const images =
-    imagesFromImages.length
-      ? imagesFromImages
-      : imagesFromImage.length
-        ? imagesFromImage
-        : imagesFromCover.length
-          ? imagesFromCover
-          : imagesFromThumb;
+  const imagesFromSeo = extractMediaUrls(BASE_URL, (a as any)?.seoImage);
+  const images = imagesFromImages.length ? imagesFromImages : imagesFromSeo;
 
   const variantsData = (a as any)?.variants?.data ?? (a as any)?.variants ?? [];
   const variants: ProductVariant[] = Array.isArray(variantsData)
@@ -193,14 +183,8 @@ function normalizeProduct(row: AnyObj): Product {
         .filter(isNonNull)
     : [];
 
-  let category = normalizeCategoryRef((a as any)?.category);
+  const category = normalizeCategoryRef((a as any)?.category);
   const subcategory = normalizeCategoryRef((a as any)?.subcategory);
-
-  if (!category) {
-    const subRaw = (a as any)?.subcategory;
-    const subAttrs = pickAttrs(subRaw?.data ?? subRaw);
-    if (subAttrs?.category) category = normalizeCategoryRef(subAttrs.category);
-  }
 
   const idRaw =
     (row as any)?.documentId ??
@@ -218,7 +202,8 @@ function normalizeProduct(row: AnyObj): Product {
   const legacySub = String((a as any)?.subSlug ?? "").trim();
   const subSlug = subcategory?.slug ?? (legacySub ? legacySub : undefined);
 
-  return {
+  // 👇 nota: aggiungo stockQty/trackInventory ecc. senza “rompere” Product
+  const out: any = {
     id,
     documentId: (row as any)?.documentId ?? (a as any)?.documentId ?? null,
     slug: String((a as any)?.slug ?? "").trim(),
@@ -243,25 +228,24 @@ function normalizeProduct(row: AnyObj): Product {
 
     seoTitle: (a as any)?.seoTitle ?? null,
     seoDescription: (a as any)?.seoDescription ?? null,
-    seoImage: extractMediaUrls(BASE_URL, (a as any)?.seoImage)?.[0] ?? null,
+    seoImage: imagesFromSeo?.[0] ?? null,
 
-    // ✅ stock fields (Strapi flat)
     stockQty: typeof (a as any)?.stockQty === "number" ? (a as any).stockQty : null,
-    trackInventory:
-      typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
+    trackInventory: typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
     aziendaDiscountEligible:
       typeof (a as any)?.aziendaDiscountEligible === "boolean"
         ? (a as any).aziendaDiscountEligible
         : undefined,
     priceAziende: toNumber((a as any)?.priceAziende),
-  } as any;
+  };
+
+  return out as Product;
 }
 
-// -------- fetch helpers (robusti)
+// -------- fetch helpers
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const controller = new AbortController();
   const { timeoutMs, ...rest } = init;
-
   const t = setTimeout(() => controller.abort(), timeoutMs ?? FETCH_TIMEOUT_MS);
 
   try {
@@ -275,35 +259,23 @@ function isValidationErrorPayload(json: any) {
   return json?.error?.name === "ValidationError";
 }
 
+// ✅ POPULATE “pulito”: solo campi che esistono nel tuo schema Product
 function buildProductsPopulate(qs: URLSearchParams) {
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
-  qs.set("populate[image][fields][0]", "url");
-  qs.set("populate[image][fields][1]", "formats");
-  qs.set("populate[cover][fields][0]", "url");
-  qs.set("populate[cover][fields][1]", "formats");
-  qs.set("populate[thumbnail][fields][0]", "url");
-  qs.set("populate[thumbnail][fields][1]", "formats");
+
   qs.set("populate[seoImage][fields][0]", "url");
   qs.set("populate[seoImage][fields][1]", "formats");
-
-  qs.set("populate[variants][fields][0]", "sku");
 
   qs.set("populate[category][fields][0]", "slug");
   qs.set("populate[category][fields][1]", "label");
 
   qs.set("populate[subcategory][fields][0]", "slug");
   qs.set("populate[subcategory][fields][1]", "label");
-  qs.set("populate[subcategory][populate][category][fields][0]", "slug");
-  qs.set("populate[subcategory][populate][category][fields][1]", "label");
 
-  qs.set("populate[categories][fields][0]", "slug");
-  qs.set("populate[categories][fields][1]", "label");
-
-  qs.set("populate[subcategories][fields][0]", "slug");
-  qs.set("populate[subcategories][fields][1]", "label");
-  qs.set("populate[subcategories][populate][category][fields][0]", "slug");
-  qs.set("populate[subcategories][populate][category][fields][1]", "label");
+  // opzionale ma coerente con schema (offers c’è)
+  qs.set("populate[offers][fields][0]", "slug");
+  qs.set("populate[offers][fields][1]", "label");
 }
 
 async function fetchStrapi(
@@ -311,31 +283,46 @@ async function fetchStrapi(
   qs?: URLSearchParams,
   revalidate = DEFAULT_REVALIDATE,
   opts?: { auth?: boolean }
-): Promise<{ ok: boolean; status: number; json: any; text: string }> {
+): Promise<{ ok: boolean; status: number; json: any; text: string; url: string }> {
   const url = `${BASE_URL}${path}${qs ? `?${qs.toString()}` : ""}`;
+
+  // ✅ di default: se ho token, uso auth (più affidabile in prod)
+  const useAuth = opts?.auth ?? Boolean(STRAPI_TOKEN);
 
   try {
     const res = await fetchWithTimeout(url, {
       next: { revalidate },
-      headers: opts?.auth ? headersWithToken() : publicHeaders(),
+      headers: useAuth ? headersWithToken() : publicHeaders(),
     });
 
     const text = await res.text().catch(() => "");
     const json = safeJsonParse(text);
-    return { ok: res.ok, status: res.status, json, text };
+
+    if (!res.ok) {
+      console.error("[catalog] Strapi fetch failed", {
+        status: res.status,
+        url,
+        hint: json?.error?.name ?? json?.error?.message ?? text.slice(0, 180),
+      });
+    }
+
+    return { ok: res.ok, status: res.status, json, text, url };
   } catch (e: any) {
     const isAbort = e?.name === "AbortError";
+    console.error("[catalog] Strapi fetch exception", { url, err: e?.message ?? String(e) });
+
     return {
       ok: false,
       status: isAbort ? 504 : 0,
       json: null,
       text: isAbort ? "Timeout" : "Fetch failed",
+      url,
     };
   }
 }
 
 /**
- * ✅ Helper: recupera 1 singolo prodotto via filters (evita di scaricare tutto il catalogo)
+ * ✅ Helper: recupera 1 singolo prodotto via filters (no download catalogo)
  */
 async function fetchFirstProductByFilter(
   buildFilters: (qs: URLSearchParams) => void,
@@ -345,11 +332,10 @@ async function fetchFirstProductByFilter(
   buildProductsPopulate(qs);
   buildFilters(qs);
   qs.set("pagination[pageSize]", "1");
-  qs.set("sort[0]", "createdAt:desc");
 
-  const res = await fetchStrapi("/api/products", qs, revalidate);
+  const res = await fetchStrapi("/api/products", qs, revalidate, { auth: Boolean(STRAPI_TOKEN) });
+
   if (!res.ok) return null;
-
   const rows = unwrapCollection(res.json);
   const first = rows?.[0];
   if (!first) return null;
@@ -386,7 +372,6 @@ async function fetchSubcategoriesAll(): Promise<NavSub[]> {
 }
 
 async function fetchProductsAll(): Promise<Product[]> {
-  // ✅ retry su pageSize più basso se Strapi rifiuta il 200
   const pageSizes = [MAX_PAGE_SIZE, 100, 50];
 
   for (const size of pageSizes) {
@@ -404,7 +389,6 @@ async function fetchProductsAll(): Promise<Product[]> {
     }
 
     if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
-
     return [];
   }
 
@@ -415,20 +399,12 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
   const slug = String(macroSlug ?? "").trim();
   if (!slug) return [];
 
-  const pageSizes = [MAX_PAGE_SIZE, 100, 50];
-
   const attempts: Array<() => URLSearchParams> = [
     () => {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[subcategory][category][slug][$eq]", slug);
-      qs.set("sort[0]", "createdAt:desc");
-      return qs;
-    },
-    () => {
-      const qs = new URLSearchParams();
-      buildProductsPopulate(qs);
-      qs.set("filters[subcategories][category][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -436,13 +412,7 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[category][slug][$eq]", slug);
-      qs.set("sort[0]", "createdAt:desc");
-      return qs;
-    },
-    () => {
-      const qs = new URLSearchParams();
-      buildProductsPopulate(qs);
-      qs.set("filters[categories][slug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -450,6 +420,7 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[categorySlug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -457,45 +428,33 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[macroSlug][$eq]", slug);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
   ];
 
   for (const makeQs of attempts) {
-    for (const size of pageSizes) {
-      const qs = makeQs();
-      qs.set("pagination[pageSize]", String(size));
+    const qs = makeQs();
+    const res = await fetchStrapi("/api/products", qs, 10);
 
-      const res = await fetchStrapi("/api/products", qs, 10);
-
-      if (res.ok) {
-        return unwrapCollection(res.json)
-          .map((row: any) => normalizeProduct(row))
-          .filter((p: Product | null): p is Product => Boolean(p?.slug));
-      }
-
-      if (res.status === 400 && isValidationErrorPayload(res.json)) {
-        // prova size più basso
-        continue;
-      }
-
-      return [];
+    if (res.ok) {
+      return unwrapCollection(res.json)
+        .map((row: any) => normalizeProduct(row))
+        .filter((p: Product | null): p is Product => Boolean(p?.slug));
     }
+
+    if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
+    return [];
   }
 
   return [];
 }
 
-async function fetchProductsByMacroAndSubSlug(
-  macroSlug: string,
-  subSlug: string
-): Promise<Product[]> {
+async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string): Promise<Product[]> {
   const cat = String(macroSlug ?? "").trim();
   const sub = String(subSlug ?? "").trim();
   if (!cat || !sub) return [];
-
-  const pageSizes = [MAX_PAGE_SIZE, 100, 50];
 
   const attempts: Array<() => URLSearchParams> = [
     () => {
@@ -503,14 +462,7 @@ async function fetchProductsByMacroAndSubSlug(
       buildProductsPopulate(qs);
       qs.set("filters[subcategory][slug][$eq]", sub);
       qs.set("filters[subcategory][category][slug][$eq]", cat);
-      qs.set("sort[0]", "createdAt:desc");
-      return qs;
-    },
-    () => {
-      const qs = new URLSearchParams();
-      buildProductsPopulate(qs);
-      qs.set("filters[subcategories][slug][$eq]", sub);
-      qs.set("filters[subcategories][category][slug][$eq]", cat);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -519,14 +471,7 @@ async function fetchProductsByMacroAndSubSlug(
       buildProductsPopulate(qs);
       qs.set("filters[category][slug][$eq]", cat);
       qs.set("filters[subcategory][slug][$eq]", sub);
-      qs.set("sort[0]", "createdAt:desc");
-      return qs;
-    },
-    () => {
-      const qs = new URLSearchParams();
-      buildProductsPopulate(qs);
-      qs.set("filters[categories][slug][$eq]", cat);
-      qs.set("filters[subcategories][slug][$eq]", sub);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -535,31 +480,24 @@ async function fetchProductsByMacroAndSubSlug(
       buildProductsPopulate(qs);
       qs.set("filters[categorySlug][$eq]", cat);
       qs.set("filters[subSlug][$eq]", sub);
+      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
   ];
 
   for (const makeQs of attempts) {
-    for (const size of pageSizes) {
-      const qs = makeQs();
-      qs.set("pagination[pageSize]", String(size));
+    const qs = makeQs();
+    const res = await fetchStrapi("/api/products", qs, 10);
 
-      const res = await fetchStrapi("/api/products", qs, 10);
-
-      if (res.ok) {
-        return unwrapCollection(res.json)
-          .map((row: any) => normalizeProduct(row))
-          .filter((p: Product | null): p is Product => Boolean(p?.slug));
-      }
-
-      if (res.status === 400 && isValidationErrorPayload(res.json)) {
-        // prova size più basso
-        continue;
-      }
-
-      return [];
+    if (res.ok) {
+      return unwrapCollection(res.json)
+        .map((row: any) => normalizeProduct(row))
+        .filter((p: Product | null): p is Product => Boolean(p?.slug));
     }
+
+    if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
+    return [];
   }
 
   return [];
@@ -574,7 +512,6 @@ export async function getMacroBySlug(macroSlug: string): Promise<MacroCategory |
   const found = cats.find((c) => c.slug === slug);
   if (found) return found;
 
-  // fallback (ultimo tentativo)
   const products = await fetchProductsAll();
   const p = products.find((x) => x?.category?.slug === slug);
   if (p) {
@@ -612,9 +549,6 @@ export async function getAllProducts(): Promise<Product[]> {
   return fetchProductsAll();
 }
 
-/**
- * ✅ FIX: query diretta su Strapi (non più fetch di tutto il catalogo)
- */
 export async function getProductBySlug(slugInput: string): Promise<Product | null> {
   const slug = String(slugInput ?? "").trim();
   if (!slug) return null;
@@ -624,21 +558,17 @@ export async function getProductBySlug(slugInput: string): Promise<Product | nul
   }, 10);
 }
 
-/**
- * ✅ FIX: supporto documentId (Strapi 5) + fallback id numerico + fallback slug
- */
 export async function getProductById(idInput: string): Promise<Product | null> {
   const id = String(idInput ?? "").trim();
   if (!id) return null;
 
-  // 1) prova documentId (Strapi 5)
+  // 1) documentId (Strapi 5)
   const byDocId = await fetchFirstProductByFilter((qs) => {
     qs.set("filters[documentId][$eq]", id);
   }, 10);
-
   if (byDocId) return byDocId;
 
-  // 2) prova id numerico
+  // 2) id numerico
   const maybeNum = Number(id);
   if (Number.isFinite(maybeNum)) {
     const byId = await fetchFirstProductByFilter((qs) => {
@@ -647,7 +577,7 @@ export async function getProductById(idInput: string): Promise<Product | null> {
     if (byId) return byId;
   }
 
-  // 3) fallback: se arriva uno slug per errore
+  // 3) fallback slug
   return getProductBySlug(id);
 }
 
@@ -655,15 +585,12 @@ export async function getProductsByMacro(macroSlug: string): Promise<Product[]> 
   return fetchProductsByMacroSlug(macroSlug);
 }
 
-export async function getProductsByMacroAndSub(
-  macroSlug: string,
-  subSlug: string
-): Promise<Product[]> {
+export async function getProductsByMacroAndSub(macroSlug: string, subSlug: string): Promise<Product[]> {
   return fetchProductsByMacroAndSubSlug(macroSlug, subSlug);
 }
 
 export async function getRelatedProducts(product: Product, limit = 8): Promise<Product[]> {
-  const catSlug = String(product?.category?.slug ?? "").trim();
+  const catSlug = String((product as any)?.category?.slug ?? "").trim();
   const mySlug = String(product?.slug ?? "").trim();
   if (!catSlug) return [];
 
