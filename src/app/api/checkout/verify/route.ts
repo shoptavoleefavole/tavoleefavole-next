@@ -70,14 +70,18 @@ async function strapiRequest(
   init: RequestInit,
   timeoutMs = 25_000
 ) {
-  const res = await fetchWithRetry(`${strapiBaseUrl(STRAPI_URL)}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${STRAPI_API_TOKEN}`,
-      "Content-Type": "application/json",
-      ...(init.headers || {}),
+  const res = await fetchWithRetry(
+    `${strapiBaseUrl(STRAPI_URL)}${path}`,
+    {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${STRAPI_API_TOKEN}`,
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+      },
     },
-  }, timeoutMs);
+    timeoutMs
+  );
 
   const text = await res.text().catch(() => "");
   const data = text ? safeJsonParse(text) : null;
@@ -100,7 +104,6 @@ async function findFirstOrderByFilter(args: {
   const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
   if (!first) return null;
 
-  // supporta sia Strapi v4 (attributes) che v5 (flat)
   const a = first?.attributes ?? first ?? {};
   const numericId = typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
   const documentId =
@@ -120,17 +123,16 @@ async function updateOrderSmart(args: {
 
   const tries: Array<{ label: string; path: string }> = [];
   if (documentId) tries.push({ label: "documentId", path: `/api/orders/${encodeURIComponent(documentId)}` });
-  if (typeof numericId === "number") tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
+  if (typeof numericId === "number")
+    tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
 
   let last: any = null;
 
   for (const t of tries) {
-    const upd = await strapiRequest(
-      STRAPI_URL,
-      STRAPI_API_TOKEN,
-      t.path,
-      { method: "PUT", body: JSON.stringify({ data: payload }) }
-    );
+    const upd = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, t.path, {
+      method: "PUT",
+      body: JSON.stringify({ data: payload }),
+    });
 
     if (upd.res.ok) return { ok: true as const, via: t.label };
 
@@ -155,7 +157,8 @@ export async function GET(request: Request) {
     const session_id = String(searchParams.get("session_id") || "").trim();
     if (!session_id) return json({ ok: false, error: "Missing session_id" }, 400);
 
-    const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2025-12-15.clover" });
+    // ✅ ROBUSTO: niente apiVersion hardcoded (evita rotture al prossimo update di stripe)
+    const stripe = new Stripe(STRIPE_SECRET_KEY);
 
     const session = await stripe.checkout.sessions.retrieve(session_id, {
       expand: ["payment_intent"],

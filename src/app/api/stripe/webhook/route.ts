@@ -20,10 +20,7 @@ function requireEnv(name: string) {
 }
 
 function strapiBaseUrl() {
-  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(
-    /\/+$/,
-    ""
-  );
+  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(/\/+$/, "");
 }
 
 function safeJsonParse(text: string) {
@@ -69,8 +66,6 @@ function pickAttrs(row: any) {
 
 function pickOrderIds(row: any): { numericId: number | null; documentId: string | null } {
   const a = pickAttrs(row);
-
-  // Strapi v4: id è su row.id; Strapi v5: spesso è flat ma comunque row.id
   const numericId = typeof row?.id === "number" ? row.id : typeof a?.id === "number" ? a.id : null;
 
   const documentId =
@@ -126,7 +121,8 @@ async function updateOrderSmart(orderRow: any, payload: any) {
 
   const tries: Array<{ label: string; path: string }> = [];
   if (documentId) tries.push({ label: "documentId", path: `/api/orders/${encodeURIComponent(documentId)}` });
-  if (typeof numericId === "number") tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
+  if (typeof numericId === "number")
+    tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
 
   let last: any = null;
 
@@ -137,7 +133,6 @@ async function updateOrderSmart(orderRow: any, payload: any) {
     });
 
     if (r.res.ok) return { ok: true as const, used: t.label };
-
     last = { used: t.label, status: r.res.status, details: r.data ?? r.text };
   }
 
@@ -160,8 +155,8 @@ export async function POST(req: Request) {
 
     const rawBuf = Buffer.from(await req.arrayBuffer());
 
-    // ✅ usa la tua API version attuale (coerente con dashboard)
-    const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2025-12-15.clover" });
+    // ✅ ROBUSTO: niente apiVersion hardcoded (evita build fail e rotture future)
+    const stripe = new Stripe(STRIPE_SECRET_KEY);
 
     let event: Stripe.Event;
     try {
@@ -186,7 +181,6 @@ export async function POST(req: Request) {
 
     const orderIdMeta = session.metadata?.orderId ? String(session.metadata.orderId) : null;
 
-    // ✅ retry: ordine appena creato / stripeSessionId scritto “dopo”
     let orderRow: any = null;
     for (let i = 0; i < 8; i++) {
       orderRow = await findOrder({ sessionId, orderRef, orderId: orderIdMeta });
@@ -197,18 +191,13 @@ export async function POST(req: Request) {
     if (!orderRow) {
       console.error("[stripe/webhook] order NOT found", { sessionId, orderRef, orderIdMeta });
       return json(
-        {
-          ok: false,
-          error: "Order not found on Strapi (will retry).",
-          debug: { sessionId, orderRef, orderId: orderIdMeta },
-        },
+        { ok: false, error: "Order not found on Strapi (will retry).", debug: { sessionId, orderRef, orderId: orderIdMeta } },
         500
       );
     }
 
     const stripePaymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
-    const customerEmail =
-      session.customer_details?.email ?? session.customer_email ?? session.metadata?.customerEmail ?? null;
+    const customerEmail = session.customer_details?.email ?? session.customer_email ?? session.metadata?.customerEmail ?? null;
 
     const payload: any = {
       orderStatus: "PAID",
@@ -221,10 +210,7 @@ export async function POST(req: Request) {
 
     if (!upd.ok) {
       console.error("[stripe/webhook] Strapi update failed", upd.last);
-      return json(
-        { ok: false, error: "Failed updating order on Strapi", ...upd.last },
-        500
-      );
+      return json({ ok: false, error: "Failed updating order on Strapi", ...upd.last }, 500);
     }
 
     console.log("[stripe/webhook] updated order => PAID (via", upd.used, ")");
