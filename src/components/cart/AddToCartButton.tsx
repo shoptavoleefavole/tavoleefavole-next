@@ -4,7 +4,19 @@ import React, { useMemo, useState } from "react";
 import { useCart, type CartItemMeta } from "@/components/cart/CartProvider";
 
 type Props = {
+  /**
+   * Identificatore prodotto usato dal frontend (oggi lo passi già).
+   * Su Strapi 5 conviene che sia il documentId.
+   */
   id: string | number;
+
+  /**
+   * ✅ (Opzionale ma consigliato) documentId Strapi 5 del prodotto.
+   * Se lo passi, verrà usato come chiave per scalare lo stock in modo sicuro.
+   * Se NON lo passi, useremo id come fallback.
+   */
+  productDocumentId?: string;
+
   slug: string;
   name: string;
   image?: string;
@@ -69,6 +81,7 @@ function toFiniteNumberOrNull(v: unknown): number | null {
 
 export default function AddToCartButton({
   id,
+  productDocumentId,
   slug,
   name,
   image,
@@ -90,6 +103,8 @@ export default function AddToCartButton({
 
   const normalized = useMemo(() => {
     const normalizedId = toSafeString(id);
+    const normalizedDocId = toSafeString(productDocumentId) || normalizedId; // ✅ fallback su id
+
     const normalizedSlug = toSafeString(slug);
     const normalizedName = toSafeString(name, "Prodotto");
     const normalizedImage = toSafeString(image, FALLBACK_IMAGE) || FALLBACK_IMAGE;
@@ -98,13 +113,14 @@ export default function AddToCartButton({
 
     return {
       id: normalizedId,
+      productDocumentId: normalizedDocId, // ✅ chiave robusta per Strapi 5
       slug: normalizedSlug,
       name: normalizedName,
       image: normalizedImage,
       price: normalizedPrice,
       qty: normalizedQty,
     };
-  }, [id, slug, name, image, price, qty]);
+  }, [id, productDocumentId, slug, name, image, price, qty]);
 
   /**
    * ✅ Disponibilità robusta:
@@ -138,9 +154,16 @@ export default function AddToCartButton({
     try {
       setBusy(true);
 
-      // item minimale compatibile (evita any)
+      /**
+       * ✅ Item compatibile con l'attuale CartProvider:
+       * - mantiene i campi esistenti
+       * - aggiunge productDocumentId (Strapi 5)
+       * - aggiunge productId (legacy) così non rompi niente se altrove lo usi
+       */
       const item = {
         id: normalized.id,
+        productId: normalized.id, // legacy/fallback
+        productDocumentId: normalized.productDocumentId, // ✅ per stock su Strapi 5
         slug: normalized.slug,
         name: normalized.name,
         image: normalized.image,
@@ -149,7 +172,7 @@ export default function AddToCartButton({
 
       // addItem(...) può essere sincrona o async: gestiamo entrambi i casi
       await Promise.resolve(
-        addItem(item, normalized.qty, meta, {
+        addItem(item as any, normalized.qty, meta, {
           inStock: computedInStock,
           stockQty: stockNumber,
           trackInventory: track,
@@ -200,6 +223,7 @@ export default function AddToCartButton({
       data-in-stock={String(computedInStock)}
       data-track-inventory={String(track)}
       data-stock={stockNumber == null ? "" : String(stockNumber)}
+      data-product-doc-id={normalized.productDocumentId}
     >
       {text}
     </button>
