@@ -33,6 +33,10 @@ function isNonNull<T>(v: T | null | undefined): v is T {
   return v !== null && v !== undefined;
 }
 
+function publicHeaders(): HeadersInit {
+  return { Accept: "application/json" };
+}
+
 function headersWithToken(): HeadersInit {
   const h: Record<string, string> = { Accept: "application/json" };
   if (STRAPI_TOKEN) h.Authorization = `Bearer ${STRAPI_TOKEN}`;
@@ -77,6 +81,8 @@ function unwrapCollection(json: any): any[] {
 }
 
 function pickAttrs(row: any) {
+  // Strapi 4: { id, attributes: {...} }
+  // Strapi 5 (e/o custom response): spesso flat
   return row?.attributes ?? row ?? {};
 }
 
@@ -143,6 +149,7 @@ function extractMediaUrls(base: string, media: any): string[] {
 function normalizeCategoryRef(x: any): TaxonomyRef | null {
   if (!x) return null;
 
+  // già normalizzato
   if (typeof x?.slug === "string") {
     const slug = String(x.slug).trim();
     if (!slug) return null;
@@ -238,20 +245,20 @@ function normalizeProduct(row: AnyObj): Product {
     seoDescription: (a as any)?.seoDescription ?? null,
     seoImage: extractMediaUrls(BASE_URL, (a as any)?.seoImage)?.[0] ?? null,
 
-    // ✅ stock fields (arrivano da Strapi flat, quindi qui li includiamo se esistono)
+    // ✅ stock fields (Strapi flat)
     stockQty: typeof (a as any)?.stockQty === "number" ? (a as any).stockQty : null,
-    trackInventory: typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
+    trackInventory:
+      typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
     aziendaDiscountEligible:
-      typeof (a as any)?.aziendaDiscountEligible === "boolean" ? (a as any).aziendaDiscountEligible : undefined,
+      typeof (a as any)?.aziendaDiscountEligible === "boolean"
+        ? (a as any).aziendaDiscountEligible
+        : undefined,
     priceAziende: toNumber((a as any)?.priceAziende),
   } as any;
 }
 
 // -------- fetch helpers (robusti)
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit & { timeoutMs?: number } = {}
-) {
+async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const controller = new AbortController();
   const { timeoutMs, ...rest } = init;
 
@@ -302,14 +309,15 @@ function buildProductsPopulate(qs: URLSearchParams) {
 async function fetchStrapi(
   path: string,
   qs?: URLSearchParams,
-  revalidate = DEFAULT_REVALIDATE
+  revalidate = DEFAULT_REVALIDATE,
+  opts?: { auth?: boolean }
 ): Promise<{ ok: boolean; status: number; json: any; text: string }> {
   const url = `${BASE_URL}${path}${qs ? `?${qs.toString()}` : ""}`;
 
   try {
     const res = await fetchWithTimeout(url, {
       next: { revalidate },
-      headers: headersWithToken(),
+      headers: opts?.auth ? headersWithToken() : publicHeaders(),
     });
 
     const text = await res.text().catch(() => "");
@@ -337,6 +345,7 @@ async function fetchFirstProductByFilter(
   buildProductsPopulate(qs);
   buildFilters(qs);
   qs.set("pagination[pageSize]", "1");
+  qs.set("sort[0]", "createdAt:desc");
 
   const res = await fetchStrapi("/api/products", qs, revalidate);
   if (!res.ok) return null;
@@ -394,10 +403,7 @@ async function fetchProductsAll(): Promise<Product[]> {
         .filter((p: Product | null): p is Product => Boolean(p?.slug));
     }
 
-    if (res.status === 400 && isValidationErrorPayload(res.json)) {
-      // prova con pageSize più basso
-      continue;
-    }
+    if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
 
     return [];
   }
@@ -409,12 +415,13 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
   const slug = String(macroSlug ?? "").trim();
   if (!slug) return [];
 
+  const pageSizes = [MAX_PAGE_SIZE, 100, 50];
+
   const attempts: Array<() => URLSearchParams> = [
     () => {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[subcategory][category][slug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -422,7 +429,6 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[subcategories][category][slug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -430,7 +436,6 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[category][slug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -438,7 +443,6 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[categories][slug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -446,7 +450,6 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[categorySlug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -454,34 +457,45 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
       const qs = new URLSearchParams();
       buildProductsPopulate(qs);
       qs.set("filters[macroSlug][$eq]", slug);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
   ];
 
   for (const makeQs of attempts) {
-    const qs = makeQs();
-    const res = await fetchStrapi("/api/products", qs, 10);
+    for (const size of pageSizes) {
+      const qs = makeQs();
+      qs.set("pagination[pageSize]", String(size));
 
-    if (res.ok) {
-      return unwrapCollection(res.json)
-        .map((row: any) => normalizeProduct(row))
-        .filter((p: Product | null): p is Product => Boolean(p?.slug));
+      const res = await fetchStrapi("/api/products", qs, 10);
+
+      if (res.ok) {
+        return unwrapCollection(res.json)
+          .map((row: any) => normalizeProduct(row))
+          .filter((p: Product | null): p is Product => Boolean(p?.slug));
+      }
+
+      if (res.status === 400 && isValidationErrorPayload(res.json)) {
+        // prova size più basso
+        continue;
+      }
+
+      return [];
     }
-
-    if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
-
-    return [];
   }
 
   return [];
 }
 
-async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string): Promise<Product[]> {
+async function fetchProductsByMacroAndSubSlug(
+  macroSlug: string,
+  subSlug: string
+): Promise<Product[]> {
   const cat = String(macroSlug ?? "").trim();
   const sub = String(subSlug ?? "").trim();
   if (!cat || !sub) return [];
+
+  const pageSizes = [MAX_PAGE_SIZE, 100, 50];
 
   const attempts: Array<() => URLSearchParams> = [
     () => {
@@ -489,7 +503,6 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
       buildProductsPopulate(qs);
       qs.set("filters[subcategory][slug][$eq]", sub);
       qs.set("filters[subcategory][category][slug][$eq]", cat);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -498,7 +511,6 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
       buildProductsPopulate(qs);
       qs.set("filters[subcategories][slug][$eq]", sub);
       qs.set("filters[subcategories][category][slug][$eq]", cat);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -507,7 +519,6 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
       buildProductsPopulate(qs);
       qs.set("filters[category][slug][$eq]", cat);
       qs.set("filters[subcategory][slug][$eq]", sub);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -516,7 +527,6 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
       buildProductsPopulate(qs);
       qs.set("filters[categories][slug][$eq]", cat);
       qs.set("filters[subcategories][slug][$eq]", sub);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
@@ -525,25 +535,31 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
       buildProductsPopulate(qs);
       qs.set("filters[categorySlug][$eq]", cat);
       qs.set("filters[subSlug][$eq]", sub);
-      qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
       qs.set("sort[0]", "createdAt:desc");
       return qs;
     },
   ];
 
   for (const makeQs of attempts) {
-    const qs = makeQs();
-    const res = await fetchStrapi("/api/products", qs, 10);
+    for (const size of pageSizes) {
+      const qs = makeQs();
+      qs.set("pagination[pageSize]", String(size));
 
-    if (res.ok) {
-      return unwrapCollection(res.json)
-        .map((row: any) => normalizeProduct(row))
-        .filter((p: Product | null): p is Product => Boolean(p?.slug));
+      const res = await fetchStrapi("/api/products", qs, 10);
+
+      if (res.ok) {
+        return unwrapCollection(res.json)
+          .map((row: any) => normalizeProduct(row))
+          .filter((p: Product | null): p is Product => Boolean(p?.slug));
+      }
+
+      if (res.status === 400 && isValidationErrorPayload(res.json)) {
+        // prova size più basso
+        continue;
+      }
+
+      return [];
     }
-
-    if (res.status === 400 && isValidationErrorPayload(res.json)) continue;
-
-    return [];
   }
 
   return [];
@@ -558,10 +574,16 @@ export async function getMacroBySlug(macroSlug: string): Promise<MacroCategory |
   const found = cats.find((c) => c.slug === slug);
   if (found) return found;
 
+  // fallback (ultimo tentativo)
   const products = await fetchProductsAll();
   const p = products.find((x) => x?.category?.slug === slug);
   if (p) {
-    return { slug, label: String(p.category?.label ?? titleFromSlug(slug)), icon: null, subcategories: [] };
+    return {
+      slug,
+      label: String(p.category?.label ?? titleFromSlug(slug)),
+      icon: null,
+      subcategories: [],
+    };
   }
 
   return null;
@@ -616,7 +638,7 @@ export async function getProductById(idInput: string): Promise<Product | null> {
 
   if (byDocId) return byDocId;
 
-  // 2) prova id numerico (se qualcuno passa "18")
+  // 2) prova id numerico
   const maybeNum = Number(id);
   if (Number.isFinite(maybeNum)) {
     const byId = await fetchFirstProductByFilter((qs) => {
@@ -633,7 +655,10 @@ export async function getProductsByMacro(macroSlug: string): Promise<Product[]> 
   return fetchProductsByMacroSlug(macroSlug);
 }
 
-export async function getProductsByMacroAndSub(macroSlug: string, subSlug: string): Promise<Product[]> {
+export async function getProductsByMacroAndSub(
+  macroSlug: string,
+  subSlug: string
+): Promise<Product[]> {
   return fetchProductsByMacroAndSubSlug(macroSlug, subSlug);
 }
 
@@ -645,7 +670,5 @@ export async function getRelatedProducts(product: Product, limit = 8): Promise<P
   const take = Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 8);
   const products = await fetchProductsByMacroSlug(catSlug);
 
-  return products
-    .filter((p) => String(p?.slug ?? "") !== mySlug)
-    .slice(0, take);
+  return products.filter((p) => String(p?.slug ?? "") !== mySlug).slice(0, take);
 }
