@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
 import AddToCartButton from "@/components/cart/AddToCartButton";
+// ✅ lasciamo import per debug, ma non è più source of truth
 import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 
@@ -24,6 +25,7 @@ const STRAPI_URL =
   "http://localhost:1337";
 
 type CategoryRef = { slug: string; label: string };
+
 type ProductLike = {
   id?: string | number | null;
   documentId?: string | null;
@@ -45,6 +47,10 @@ type ProductLike = {
   seoDescription?: string | null;
   seoImage?: string | null;
   isNew?: boolean;
+
+  // ✅ STOCK (Strapi source of truth)
+  stockQty?: number | null;
+  trackInventory?: boolean | null;
 };
 
 function safeDecode(v: unknown): string {
@@ -153,6 +159,23 @@ function getDefaultSku(p: ProductLike): string | null {
 // ✅ chiave robusta per preferiti (Strapi 5: documentId)
 function favoriteKey(p: { documentId?: any; id?: any; slug?: any }) {
   return String(p?.documentId ?? p?.id ?? p?.slug ?? "").trim();
+}
+
+type StockStatus = "in" | "out" | "unknown";
+
+function getStockStatus(trackInventory?: boolean | null, stockQty?: number | null): StockStatus {
+  // trackInventory === false => sempre acquistabile
+  if (trackInventory === false) return "in";
+
+  const n = typeof stockQty === "number" && Number.isFinite(stockQty) ? stockQty : null;
+  if (n === null) return "unknown"; // fallback permissivo
+  return n > 0 ? "in" : "out";
+}
+
+function stockBadge(status: StockStatus) {
+  if (status === "in") return { text: "Disponibile", cls: "border-border" };
+  if (status === "out") return { text: "Esaurito", cls: "border-red-200 text-red-600" };
+  return { text: "Disponibilità da verificare", cls: "border-border text-text/70" };
 }
 
 export async function generateMetadata({
@@ -295,19 +318,21 @@ export default async function ProductPage({
 
   const favId = favoriteKey(product);
 
-  // Availability
+  // ✅ SOURCE OF TRUTH: Strapi stock fields
+  const stockQty = typeof product?.stockQty === "number" && Number.isFinite(product.stockQty) ? product.stockQty : null;
+  const trackInventory =
+    typeof product?.trackInventory === "boolean" ? product.trackInventory : null;
+
+  const status = getStockStatus(trackInventory, stockQty);
+  const badge = stockBadge(status);
+
+  // (Debug) Availability via inventory API - non decide lo stock, solo info in dev
   const defaultSku = getDefaultSku(product);
   const availability = defaultSku
     ? await getAvailability({ skus: [defaultSku], warehouse: "MAIN" })
     : null;
 
   const row = defaultSku ? (availability as any)?.data?.MAIN?.[defaultSku] ?? null : null;
-
-  // ✅ regola robusta:
-  // - se ho row inventory => decide da available
-  // - se NON ho row => fallback su product.inStock (se esplicitamente false => esaurito)
-  const isAvailable =
-    row != null ? Number(row.available ?? 0) > 0 : product?.inStock !== false;
 
   // Category/Subcategory
   const catSlug = product?.category?.slug ?? null;
@@ -373,15 +398,9 @@ export default async function ProductPage({
               </span>
             ) : null}
 
-            {isAvailable ? (
-              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold">
-                Disponibile
-              </span>
-            ) : (
-              <span className="rounded-full border border-red-200 px-3 py-1 text-xs font-semibold text-red-600">
-                Esaurito
-              </span>
-            )}
+            <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badge.cls}`}>
+              {badge.text}
+            </span>
           </div>
         </div>
 
@@ -416,22 +435,33 @@ export default async function ProductPage({
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm font-extrabold">Disponibilità</div>
                 <div className="text-sm font-semibold">
-                  {isAvailable ? (
+                  {status === "in" ? (
                     <span className="text-text">Disponibile</span>
-                  ) : (
+                  ) : status === "out" ? (
                     <span className="text-red-600">Esaurito</span>
+                  ) : (
+                    <span className="text-text/70">Da verificare</span>
                   )}
                 </div>
               </div>
 
               <p className="mt-2 text-sm text-text/70">
-                {isAvailable
+                {status === "in"
                   ? "Spedizione veloce: prepariamo l’ordine appena confermato."
-                  : "Puoi comunque salvare il prodotto e tornare più tardi."}
+                  : status === "out"
+                    ? "Puoi comunque salvare il prodotto e tornare più tardi."
+                    : "La disponibilità verrà confermata durante l’ordine."}
               </p>
 
               {process.env.NODE_ENV !== "production" ? (
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-text/60">
+                  <span className="rounded-full border border-border px-3 py-1">
+                    trackInventory:{" "}
+                    <b className="text-text">{String(trackInventory ?? "null")}</b>
+                  </span>
+                  <span className="rounded-full border border-border px-3 py-1">
+                    stockQty: <b className="text-text">{String(stockQty ?? "null")}</b>
+                  </span>
                   <span className="rounded-full border border-border px-3 py-1">
                     SKU: <b className="text-text">{defaultSku ?? "—"}</b>
                   </span>
@@ -466,10 +496,14 @@ export default async function ProductPage({
                     image={cartImage}
                     price={price}
                     qty={1}
-                    // ✅ difesa in profondità:
-                    inStock={isAvailable}
+                    // ✅ stock da Strapi
+                    stockQty={stockQty}
+                    trackInventory={trackInventory ?? undefined}
+                    // ✅ legacy fallback (se unknown -> true)
+                    inStock={status !== "out"}
                     disabledLabel="Non disponibile"
-                    disabled={isAvailable === false}
+                    // ✅ blocco solo se OUT. Unknown non blocca.
+                    disabled={status === "out"}
                   />
                 </div>
               ) : (

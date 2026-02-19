@@ -24,28 +24,22 @@ type CartSummary = { count: number; total: number };
 type AddItemOptions = {
   /** se false, blocca l'inserimento nel carrello (sicurezza) */
   inStock?: boolean;
+
+  /**
+   * ✅ stock info (opzionale)
+   * Se presente e trackInventory !== false, impedisce qty > stockQty
+   */
+  stockQty?: number | null;
+  trackInventory?: boolean;
 };
 
 type CartContextValue = {
   items: CartItem[];
   summary: CartSummary;
 
-  /**
-   * meta è opzionale:
-   * - se assente => comportamento classico (unisce per product.id senza meta)
-   * - se presente => unisce solo se product.id + metaKey coincidono, altrimenti nuova riga
-   *
-   * options:
-   * - inStock === false => NON inserisce (a prova di click forzati)
-   */
   addItem: (product: Product, qty?: number, meta?: CartItemMeta, options?: AddItemOptions) => void;
-
-  /** rimuove una riga specifica del carrello */
   removeItem: (lineId: string) => void;
-
-  /** aggiorna qty di una riga specifica */
   setQty: (lineId: string, qty: number) => void;
-
   clear: () => void;
 };
 
@@ -72,8 +66,12 @@ function toSafeQty(v: unknown): number {
   return Math.max(1, Math.floor(n));
 }
 
+function toFiniteNumberOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function stableStringify(obj: any): string {
-  // stringify deterministico per generare key stabile
   try {
     if (obj == null) return "";
     if (typeof obj !== "object") return String(obj);
@@ -106,14 +104,61 @@ function buildMetaKey(meta?: CartItemMeta): string {
 }
 
 function buildLineId(productId: string, metaKey: string): string {
-  // lineId stabile: productId + metaKey (accorciato)
   const base = `${productId}::${metaKey}`;
-  // hash semplice per non avere stringhe enormi
   let hash = 0;
   for (let idx = 0; idx < base.length; idx++) {
     hash = (hash * 31 + base.charCodeAt(idx)) >>> 0;
   }
   return `${productId}_${hash.toString(16)}`;
+}
+
+/**
+ * ✅ Regola stock
+ * - trackInventory === false => nessun limite
+ * - stockQty numero finito >=0 => clamp a [1..stockQty]
+ * - stockQty null/undefined => unknown, non clampare
+ */
+function clampQtyByStock(
+  desiredQty: number,
+  trackInventory?: boolean,
+  stockQty?: number | null
+): number {
+  const safe = toSafeQty(desiredQty);
+
+  if (trackInventory === false) return safe;
+
+  const n = typeof stockQty === "number" && Number.isFinite(stockQty) ? stockQty : null;
+  if (n === null) return safe; // unknown => non bloccare
+  if (n <= 0) return 1; // prodotto esaurito: qui il bottone dovrebbe già bloccare, ma difesa extra
+
+  return Math.min(safe, Math.floor(n));
+}
+
+/**
+ * Salviamo info stock dentro meta "tecnica" per poter clampare anche in setQty in futuro
+ * Non rompe nulla perché meta è already any.
+ */
+function attachStockMeta(meta: CartItemMeta | undefined, options?: AddItemOptions): CartItemMeta | undefined {
+  const stockQty = options?.stockQty;
+  const trackInventory = options?.trackInventory;
+
+  const hasStock =
+    typeof trackInventory === "boolean" ||
+    (typeof stockQty === "number" && Number.isFinite(stockQty));
+
+  if (!hasStock) return meta;
+
+  const next: CartItemMeta = { ...(meta ?? {}) };
+  if (typeof trackInventory === "boolean") next.__trackInventory = trackInventory;
+  if (typeof stockQty === "number" && Number.isFinite(stockQty)) next.__stockQty = stockQty;
+
+  return next;
+}
+
+function readStockMeta(meta?: CartItemMeta): { trackInventory?: boolean; stockQty?: number | null } {
+  const ti = meta && typeof meta.__trackInventory === "boolean" ? meta.__trackInventory : undefined;
+  const sq = meta ? toFiniteNumberOrNull(meta.__stockQty) : null;
+  return { trackInventory: ti, stockQty: sq };
 }
 
 function sanitizeCartItem(raw: any): CartItem | null {
@@ -134,7 +179,6 @@ function sanitizeCartItem(raw: any): CartItem | null {
 
   const lineId = toSafeString(raw.lineId) || buildLineId(id, metaKey);
 
-  // slug può essere vuoto? per coerenza del tuo shop, lo consideriamo richiesto
   if (!id || !slug) return null;
 
   return { lineId, id, slug, name, image, price, qty, meta };
@@ -144,10 +188,7 @@ function parseStoredItems(raw: string | null): CartItem[] {
   if (!raw) return [];
   try {
     const data = JSON.parse(raw);
-
-    // supporto array diretto o oggetto {items:[...]}
     const arr: any[] = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
-
     return arr.map(sanitizeCartItem).filter(Boolean) as CartItem[];
   } catch {
     return [];
@@ -164,10 +205,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
-  // solo per sicurezza/debug (non indispensabile ma ok)
   const hydratingRef = useRef(true);
 
-  // 1) load after mount
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -177,7 +216,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     hydratingRef.current = false;
   }, []);
 
-  // 1b) cross-tab sync
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -191,7 +229,6 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // 2) persist after hydrate
   useEffect(() => {
     if (!hydrated) return;
     if (typeof window === "undefined") return;
@@ -220,32 +257,38 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
     const safeQty = toSafeQty(qty);
 
-    // Leggo product in modo tollerante (senza dipendere da campi extra)
     const pid = toSafeString((product as any)?.id);
     const pslug = toSafeString((product as any)?.slug);
     const pname = toSafeString((product as any)?.name, "Prodotto");
     const pimage = (product as any)?.image ? toSafeString((product as any)?.image) : undefined;
     const pprice = toSafePrice((product as any)?.price);
 
-    // sicurezza: niente id/slug => niente carrello
     if (!pid || !pslug) return;
-
-    // sicurezza: se prezzo invalido/non acquistabile, evita inserimento
     if (pprice <= 0) return;
 
-    const metaKey = buildMetaKey(meta);
+    const metaWithStock = attachStockMeta(meta, options);
+    const metaKey = buildMetaKey(metaWithStock);
     const lineId = buildLineId(pid, metaKey);
 
+    // clamp sulla qty che stiamo aggiungendo (se stock noto)
+    const desiredAddQty = clampQtyByStock(safeQty, options?.trackInventory, options?.stockQty);
+
     setItems((prev) => {
-      // Se meta è presente => unisci solo se stessa riga (lineId)
-      // Se meta assente => unisci per id (compat comportamento vecchio)
-      const match = meta
+      const match = metaWithStock
         ? prev.find((x) => x.lineId === lineId)
         : prev.find((x) => x.id === pid && !x.meta);
 
       if (match) {
+        // clamp anche sulla qty totale (existing + add)
+        const stockInfo = readStockMeta(match.meta);
+        const track = stockInfo.trackInventory ?? options?.trackInventory;
+        const stock = stockInfo.stockQty ?? options?.stockQty ?? null;
+
+        const desiredTotal = toSafeQty(match.qty + desiredAddQty);
+        const clampedTotal = clampQtyByStock(desiredTotal, track, stock);
+
         return prev.map((x) =>
-          x.lineId === match.lineId ? { ...x, qty: toSafeQty(x.qty + safeQty) } : x
+          x.lineId === match.lineId ? { ...x, qty: clampedTotal } : x
         );
       }
 
@@ -256,8 +299,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         name: pname,
         image: pimage,
         price: pprice,
-        qty: safeQty,
-        meta: meta ? meta : undefined,
+        qty: desiredAddQty,
+        meta: metaWithStock ? metaWithStock : undefined,
       };
 
       return [...prev, nextItem];
@@ -276,7 +319,17 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
     const safeQty = toSafeQty(qty);
 
-    setItems((prev) => prev.map((p) => (p.lineId === lid ? { ...p, qty: safeQty } : p)));
+    setItems((prev) =>
+      prev.map((p) => {
+        if (p.lineId !== lid) return p;
+
+        // clamp SOLO se abbiamo info salvate nella meta (non rompiamo nulla se manca)
+        const stockInfo = readStockMeta(p.meta);
+        const nextQty = clampQtyByStock(safeQty, stockInfo.trackInventory, stockInfo.stockQty);
+
+        return { ...p, qty: nextQty };
+      })
+    );
   };
 
   const clear = () => {

@@ -58,6 +58,32 @@ function toPrice(p: any): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
+function toStockQty(p: any): number | null {
+  const n = Number(p?.stockQty);
+  return Number.isFinite(n) ? n : null; // null => unknown
+}
+
+function toTrackInventory(p: any): boolean | undefined {
+  return typeof p?.trackInventory === "boolean" ? p.trackInventory : undefined; // undefined => default true nel button
+}
+
+function getStockBadge(trackInventory?: boolean, stockQty?: number | null) {
+  // trackInventory === false => sempre disponibile
+  if (trackInventory === false) {
+    return { text: "Disponibile", cls: "border-border text-text" };
+  }
+
+  if (typeof stockQty !== "number") {
+    return { text: "Disponibilità da verificare", cls: "border-border text-text/70" };
+  }
+
+  if (stockQty > 0) {
+    return { text: "Disponibile", cls: "border-border text-text" };
+  }
+
+  return { text: "Esaurito", cls: "border-red-200 text-red-600" };
+}
+
 export default function SectionFeaturedProducts(props: Props) {
   const limit = props.limit ?? 8;
 
@@ -133,24 +159,38 @@ export default function SectionFeaturedProducts(props: Props) {
         {/* MOBILE */}
         <div className="mt-6 md:hidden">
           <div className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-2 no-scrollbar [scroll-snap-type:x_mandatory]">
-            {featured.map((p) => (
-              <div key={toId(p) || toSlug(p)} className="w-[240px] flex-none [scroll-snap-align:start] h-full">
-                <ProductCard
-                  product={p}
-                  footer={
-                    <AddToCartButton
-                      id={toId(p)}
-                      slug={toSlug(p)}
-                      name={toName(p)}
-                      image={toImage(p)}
-                      price={toPrice(p)}
-                      stockQty={p?.stockQty ?? null}
-                      trackInventory={p?.trackInventory}
-                    />
-                  }
-                />
-              </div>
-            ))}
+            {featured.map((p) => {
+              const stockQty = toStockQty(p);
+              const trackInventory = toTrackInventory(p);
+              const badge = getStockBadge(trackInventory, stockQty);
+
+              return (
+                <div key={toId(p) || toSlug(p)} className="w-[240px] flex-none [scroll-snap-align:start] h-full">
+                  <ProductCard
+                    product={p}
+                    footer={
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badge.cls}`}>
+                            {badge.text}
+                          </span>
+                        </div>
+
+                        <AddToCartButton
+                          id={toId(p)}
+                          slug={toSlug(p)}
+                          name={toName(p)}
+                          image={toImage(p)}
+                          price={toPrice(p)}
+                          stockQty={stockQty}
+                          trackInventory={trackInventory}
+                        />
+                      </div>
+                    }
+                  />
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -190,24 +230,38 @@ export default function SectionFeaturedProducts(props: Props) {
               className={`-mx-2 flex gap-4 overflow-x-auto px-2 pb-2 no-scrollbar [scroll-snap-type:x_mandatory]
                 ${canScroll ? "scroll-smooth" : ""}`}
             >
-              {featured.map((p) => (
-                <div key={toId(p) || toSlug(p)} className="w-[260px] lg:w-[280px] flex-none [scroll-snap-align:start] h-full">
-                  <ProductCard
-                    product={p}
-                    footer={
-                      <AddToCartButton
-                        id={toId(p)}
-                        slug={toSlug(p)}
-                        name={toName(p)}
-                        image={toImage(p)}
-                        price={toPrice(p)}
-                        stockQty={p?.stockQty ?? null}
-                        trackInventory={p?.trackInventory}
-                      />
-                    }
-                  />
-                </div>
-              ))}
+              {featured.map((p) => {
+                const stockQty = toStockQty(p);
+                const trackInventory = toTrackInventory(p);
+                const badge = getStockBadge(trackInventory, stockQty);
+
+                return (
+                  <div key={toId(p) || toSlug(p)} className="w-[260px] lg:w-[280px] flex-none [scroll-snap-align:start] h-full">
+                    <ProductCard
+                      product={p}
+                      footer={
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badge.cls}`}>
+                              {badge.text}
+                            </span>
+                          </div>
+
+                          <AddToCartButton
+                            id={toId(p)}
+                            slug={toSlug(p)}
+                            name={toName(p)}
+                            image={toImage(p)}
+                            price={toPrice(p)}
+                            stockQty={stockQty}
+                            trackInventory={trackInventory}
+                          />
+                        </div>
+                      }
+                    />
+                  </div>
+                );
+              })}
             </div>
 
             {canScroll ? (

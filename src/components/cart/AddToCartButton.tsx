@@ -148,7 +148,13 @@ export default function AddToCartButton({
       };
 
       // addItem(...) può essere sincrona o async: gestiamo entrambi i casi
-      await Promise.resolve(addItem(item, normalized.qty, meta, { inStock: computedInStock }));
+      await Promise.resolve(
+        addItem(item, normalized.qty, meta, {
+          inStock: computedInStock,
+          stockQty: stockNumber,
+          trackInventory: track,
+        })
+      );
 
       onAdded?.();
     } catch (err) {
