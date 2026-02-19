@@ -21,7 +21,11 @@ const STRAPI_TOKEN =
 const BASE_URL = String(STRAPI_URL || "").replace(/\/+$/, "");
 
 const DEFAULT_REVALIDATE = 60;
+
+// ⚠️ in produzione Strapi spesso impone un max pageSize.
+// lasciamo 200 come target, ma faremo retry più basso se Strapi rifiuta.
 const MAX_PAGE_SIZE = 200;
+
 const FETCH_TIMEOUT_MS = Number(process.env.CATALOG_STRAPI_TIMEOUT_MS ?? 6500);
 
 // -------- utils
@@ -233,7 +237,14 @@ function normalizeProduct(row: AnyObj): Product {
     seoTitle: (a as any)?.seoTitle ?? null,
     seoDescription: (a as any)?.seoDescription ?? null,
     seoImage: extractMediaUrls(BASE_URL, (a as any)?.seoImage)?.[0] ?? null,
-  };
+
+    // ✅ stock fields (arrivano da Strapi flat, quindi qui li includiamo se esistono)
+    stockQty: typeof (a as any)?.stockQty === "number" ? (a as any).stockQty : null,
+    trackInventory: typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
+    aziendaDiscountEligible:
+      typeof (a as any)?.aziendaDiscountEligible === "boolean" ? (a as any).aziendaDiscountEligible : undefined,
+    priceAziende: toNumber((a as any)?.priceAziende),
+  } as any;
 }
 
 // -------- fetch helpers (robusti)
@@ -315,6 +326,28 @@ async function fetchStrapi(
   }
 }
 
+/**
+ * ✅ Helper: recupera 1 singolo prodotto via filters (evita di scaricare tutto il catalogo)
+ */
+async function fetchFirstProductByFilter(
+  buildFilters: (qs: URLSearchParams) => void,
+  revalidate = 10
+): Promise<Product | null> {
+  const qs = new URLSearchParams();
+  buildProductsPopulate(qs);
+  buildFilters(qs);
+  qs.set("pagination[pageSize]", "1");
+
+  const res = await fetchStrapi("/api/products", qs, revalidate);
+  if (!res.ok) return null;
+
+  const rows = unwrapCollection(res.json);
+  const first = rows?.[0];
+  if (!first) return null;
+
+  return normalizeProduct(first);
+}
+
 async function fetchCategoriesAll(): Promise<MacroCategory[]> {
   const qs = new URLSearchParams();
   qs.set("populate", "*");
@@ -344,17 +377,32 @@ async function fetchSubcategoriesAll(): Promise<NavSub[]> {
 }
 
 async function fetchProductsAll(): Promise<Product[]> {
-  const qs = new URLSearchParams();
-  buildProductsPopulate(qs);
-  qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
-  qs.set("sort[0]", "createdAt:desc");
+  // ✅ retry su pageSize più basso se Strapi rifiuta il 200
+  const pageSizes = [MAX_PAGE_SIZE, 100, 50];
 
-  const { ok, json } = await fetchStrapi("/api/products", qs, 30);
-  if (!ok) return [];
+  for (const size of pageSizes) {
+    const qs = new URLSearchParams();
+    buildProductsPopulate(qs);
+    qs.set("pagination[pageSize]", String(size));
+    qs.set("sort[0]", "createdAt:desc");
 
-  return unwrapCollection(json)
-    .map((row: any) => normalizeProduct(row))
-    .filter((p: Product | null): p is Product => Boolean(p?.slug));
+    const res = await fetchStrapi("/api/products", qs, 30);
+
+    if (res.ok) {
+      return unwrapCollection(res.json)
+        .map((row: any) => normalizeProduct(row))
+        .filter((p: Product | null): p is Product => Boolean(p?.slug));
+    }
+
+    if (res.status === 400 && isValidationErrorPayload(res.json)) {
+      // prova con pageSize più basso
+      continue;
+    }
+
+    return [];
+  }
+
+  return [];
 }
 
 async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
@@ -542,23 +590,43 @@ export async function getAllProducts(): Promise<Product[]> {
   return fetchProductsAll();
 }
 
+/**
+ * ✅ FIX: query diretta su Strapi (non più fetch di tutto il catalogo)
+ */
 export async function getProductBySlug(slugInput: string): Promise<Product | null> {
   const slug = String(slugInput ?? "").trim();
   if (!slug) return null;
-  const products = await fetchProductsAll();
-  return products.find((p) => p?.slug === slug) ?? null;
+
+  return fetchFirstProductByFilter((qs) => {
+    qs.set("filters[slug][$eq]", slug);
+  }, 10);
 }
 
+/**
+ * ✅ FIX: supporto documentId (Strapi 5) + fallback id numerico + fallback slug
+ */
 export async function getProductById(idInput: string): Promise<Product | null> {
   const id = String(idInput ?? "").trim();
   if (!id) return null;
 
-  const products = await fetchProductsAll();
-  return (
-    products.find((p) => String(p?.documentId ?? p?.id) === id) ??
-    products.find((p) => p?.slug === id) ??
-    null
-  );
+  // 1) prova documentId (Strapi 5)
+  const byDocId = await fetchFirstProductByFilter((qs) => {
+    qs.set("filters[documentId][$eq]", id);
+  }, 10);
+
+  if (byDocId) return byDocId;
+
+  // 2) prova id numerico (se qualcuno passa "18")
+  const maybeNum = Number(id);
+  if (Number.isFinite(maybeNum)) {
+    const byId = await fetchFirstProductByFilter((qs) => {
+      qs.set("filters[id][$eq]", String(maybeNum));
+    }, 10);
+    if (byId) return byId;
+  }
+
+  // 3) fallback: se arriva uno slug per errore
+  return getProductBySlug(id);
 }
 
 export async function getProductsByMacro(macroSlug: string): Promise<Product[]> {
