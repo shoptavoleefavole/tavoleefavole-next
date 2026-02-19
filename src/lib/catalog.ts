@@ -15,7 +15,7 @@ const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL ||
   "http://localhost:1337";
 
-// ✅ include anche STRAPI_TOKEN (nel tuo screen esiste)
+// ✅ include anche STRAPI_TOKEN (nel tuo Vercel c’è)
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
@@ -167,10 +167,23 @@ function normalizeCategoryRef(x: any): TaxonomyRef | null {
 function normalizeProduct(row: AnyObj): Product {
   const a = pickAttrs(row);
 
-  // ✅ nel tuo schema esiste "images" (Multiple Media) e "seoImage" (Media)
+  // ✅ prova vari nomi possibili (non rompe nulla se non esistono)
   const imagesFromImages = extractMediaUrls(BASE_URL, (a as any)?.images);
+  const imagesFromImage = extractMediaUrls(BASE_URL, (a as any)?.image);
+  const imagesFromCover = extractMediaUrls(BASE_URL, (a as any)?.cover);
+  const imagesFromThumb = extractMediaUrls(BASE_URL, (a as any)?.thumbnail);
   const imagesFromSeo = extractMediaUrls(BASE_URL, (a as any)?.seoImage);
-  const images = imagesFromImages.length ? imagesFromImages : imagesFromSeo;
+
+  const images =
+    imagesFromImages.length
+      ? imagesFromImages
+      : imagesFromImage.length
+        ? imagesFromImage
+        : imagesFromCover.length
+          ? imagesFromCover
+          : imagesFromThumb.length
+            ? imagesFromThumb
+            : imagesFromSeo;
 
   const variantsData = (a as any)?.variants?.data ?? (a as any)?.variants ?? [];
   const variants: ProductVariant[] = Array.isArray(variantsData)
@@ -183,8 +196,14 @@ function normalizeProduct(row: AnyObj): Product {
         .filter(isNonNull)
     : [];
 
-  const category = normalizeCategoryRef((a as any)?.category);
+  let category = normalizeCategoryRef((a as any)?.category);
   const subcategory = normalizeCategoryRef((a as any)?.subcategory);
+
+  if (!category) {
+    const subRaw = (a as any)?.subcategory;
+    const subAttrs = pickAttrs(subRaw?.data ?? subRaw);
+    if (subAttrs?.category) category = normalizeCategoryRef(subAttrs.category);
+  }
 
   const idRaw =
     (row as any)?.documentId ??
@@ -202,7 +221,6 @@ function normalizeProduct(row: AnyObj): Product {
   const legacySub = String((a as any)?.subSlug ?? "").trim();
   const subSlug = subcategory?.slug ?? (legacySub ? legacySub : undefined);
 
-  // 👇 nota: aggiungo stockQty/trackInventory ecc. senza “rompere” Product
   const out: any = {
     id,
     documentId: (row as any)?.documentId ?? (a as any)?.documentId ?? null,
@@ -246,6 +264,7 @@ function normalizeProduct(row: AnyObj): Product {
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const controller = new AbortController();
   const { timeoutMs, ...rest } = init;
+
   const t = setTimeout(() => controller.abort(), timeoutMs ?? FETCH_TIMEOUT_MS);
 
   try {
@@ -259,23 +278,21 @@ function isValidationErrorPayload(json: any) {
   return json?.error?.name === "ValidationError";
 }
 
-// ✅ POPULATE “pulito”: solo campi che esistono nel tuo schema Product
+/**
+ * ✅ POPULATE ultra-safe:
+ * - prima prova populate=*
+ * - se Strapi risponde 400 ValidationError, faremo retry senza populate (vedi fetchStrapi)
+ */
 function buildProductsPopulate(qs: URLSearchParams) {
-  qs.set("populate[images][fields][0]", "url");
-  qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate", "*");
+}
 
-  qs.set("populate[seoImage][fields][0]", "url");
-  qs.set("populate[seoImage][fields][1]", "formats");
-
-  qs.set("populate[category][fields][0]", "slug");
-  qs.set("populate[category][fields][1]", "label");
-
-  qs.set("populate[subcategory][fields][0]", "slug");
-  qs.set("populate[subcategory][fields][1]", "label");
-
-  // opzionale ma coerente con schema (offers c’è)
-  qs.set("populate[offers][fields][0]", "slug");
-  qs.set("populate[offers][fields][1]", "label");
+function stripPopulate(qs: URLSearchParams) {
+  const next = new URLSearchParams(qs);
+  for (const k of Array.from(next.keys())) {
+    if (k === "populate" || k.startsWith("populate[")) next.delete(k);
+  }
+  return next;
 }
 
 async function fetchStrapi(
@@ -284,10 +301,12 @@ async function fetchStrapi(
   revalidate = DEFAULT_REVALIDATE,
   opts?: { auth?: boolean }
 ): Promise<{ ok: boolean; status: number; json: any; text: string; url: string }> {
-  const url = `${BASE_URL}${path}${qs ? `?${qs.toString()}` : ""}`;
-
-  // ✅ di default: se ho token, uso auth (più affidabile in prod)
   const useAuth = opts?.auth ?? Boolean(STRAPI_TOKEN);
+
+  const makeUrl = (params?: URLSearchParams) =>
+    `${BASE_URL}${path}${params ? `?${params.toString()}` : ""}`;
+
+  const url = makeUrl(qs);
 
   try {
     const res = await fetchWithTimeout(url, {
@@ -297,6 +316,30 @@ async function fetchStrapi(
 
     const text = await res.text().catch(() => "");
     const json = safeJsonParse(text);
+
+    // ✅ retry automatico se populate causa ValidationError
+    if (!res.ok && res.status === 400 && isValidationErrorPayload(json) && qs) {
+      const qsNoPopulate = stripPopulate(qs);
+      const url2 = makeUrl(qsNoPopulate);
+
+      const res2 = await fetchWithTimeout(url2, {
+        next: { revalidate },
+        headers: useAuth ? headersWithToken() : publicHeaders(),
+      });
+
+      const text2 = await res2.text().catch(() => "");
+      const json2 = safeJsonParse(text2);
+
+      if (!res2.ok) {
+        console.error("[catalog] Strapi fetch failed (after retry no-populate)", {
+          status: res2.status,
+          url: url2,
+          hint: json2?.error?.name ?? json2?.error?.message ?? text2.slice(0, 180),
+        });
+      }
+
+      return { ok: res2.ok, status: res2.status, json: json2, text: text2, url: url2 };
+    }
 
     if (!res.ok) {
       console.error("[catalog] Strapi fetch failed", {
@@ -322,7 +365,7 @@ async function fetchStrapi(
 }
 
 /**
- * ✅ Helper: recupera 1 singolo prodotto via filters (no download catalogo)
+ * ✅ Helper: 1 singolo prodotto via filters
  */
 async function fetchFirstProductByFilter(
   buildFilters: (qs: URLSearchParams) => void,
@@ -334,8 +377,8 @@ async function fetchFirstProductByFilter(
   qs.set("pagination[pageSize]", "1");
 
   const res = await fetchStrapi("/api/products", qs, revalidate, { auth: Boolean(STRAPI_TOKEN) });
-
   if (!res.ok) return null;
+
   const rows = unwrapCollection(res.json);
   const first = rows?.[0];
   if (!first) return null;
@@ -513,11 +556,11 @@ export async function getMacroBySlug(macroSlug: string): Promise<MacroCategory |
   if (found) return found;
 
   const products = await fetchProductsAll();
-  const p = products.find((x) => x?.category?.slug === slug);
+  const p = products.find((x) => (x as any)?.category?.slug === slug);
   if (p) {
     return {
       slug,
-      label: String(p.category?.label ?? titleFromSlug(slug)),
+      label: String((p as any)?.category?.label ?? titleFromSlug(slug)),
       icon: null,
       subcategories: [],
     };
@@ -562,13 +605,11 @@ export async function getProductById(idInput: string): Promise<Product | null> {
   const id = String(idInput ?? "").trim();
   if (!id) return null;
 
-  // 1) documentId (Strapi 5)
   const byDocId = await fetchFirstProductByFilter((qs) => {
     qs.set("filters[documentId][$eq]", id);
   }, 10);
   if (byDocId) return byDocId;
 
-  // 2) id numerico
   const maybeNum = Number(id);
   if (Number.isFinite(maybeNum)) {
     const byId = await fetchFirstProductByFilter((qs) => {
@@ -577,7 +618,6 @@ export async function getProductById(idInput: string): Promise<Product | null> {
     if (byId) return byId;
   }
 
-  // 3) fallback slug
   return getProductBySlug(id);
 }
 
