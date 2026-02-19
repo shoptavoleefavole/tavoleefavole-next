@@ -12,6 +12,10 @@ function safeJsonParse(text: string) {
   }
 }
 
+function normalizeBaseUrl(u: string) {
+  return String(u || "").replace(/\/+$/, "");
+}
+
 function pickPaymentIntentId(input: Stripe.Checkout.Session["payment_intent"]) {
   if (!input) return null;
   if (typeof input === "string") return input;
@@ -27,7 +31,7 @@ async function updateOrderById(opts: {
 }) {
   const { strapiUrl, token, id, data } = opts;
 
-  const r = await fetch(`${strapiUrl}/api/orders/${encodeURIComponent(String(id))}`, {
+  const r = await fetch(`${normalizeBaseUrl(strapiUrl)}/api/orders/${encodeURIComponent(String(id))}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -47,7 +51,7 @@ async function findOrderIdByFilter(opts: {
 }) {
   const { strapiUrl, token, filter } = opts;
 
-  const res = await fetch(`${strapiUrl}/api/orders?${filter}&pagination[pageSize]=1`, {
+  const res = await fetch(`${normalizeBaseUrl(strapiUrl)}/api/orders?${filter}&pagination[pageSize]=1`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -69,8 +73,8 @@ async function updateOrder(opts: {
 }) {
   const { strapiUrl, token, ref, data } = opts;
 
-  // 1) tentativo diretto (Strapi 5 spesso accetta documentId qui)
-  const direct = await fetch(`${strapiUrl}/api/orders/${encodeURIComponent(ref)}`, {
+  // 1) tentativo diretto (Strapi 5 talvolta accetta documentId qui)
+  const direct = await fetch(`${normalizeBaseUrl(strapiUrl)}/api/orders/${encodeURIComponent(ref)}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -138,10 +142,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing STRIPE_SECRET_KEY" }, { status: 500 });
   }
   if (!STRAPI_URL || !STRAPI_API_TOKEN) {
-    return NextResponse.json(
-      { error: "Missing STRAPI_URL / STRAPI_API_TOKEN" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Missing STRAPI_URL / STRAPI_API_TOKEN" }, { status: 500 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -153,13 +154,15 @@ export async function GET(req: Request) {
   const stripe = new Stripe(STRIPE_SECRET_KEY);
 
   try {
-    // Recupero sessione
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    const paid = session.payment_status === "paid";
+    // ✅ più robusto
+    const paid =
+      session.payment_status === "paid" || session.payment_status === "no_payment_required";
+    const complete = session.status === "complete";
+
     const paymentIntentId = pickPaymentIntentId(session.payment_intent);
 
-    // prova ref da metadata, altrimenti da stripeSessionId salvato su Strapi
     let orderRef = pickOrderRefFromMetadata(session.metadata);
     if (!orderRef) {
       orderRef = await pickOrderRefFallbackBySessionId({
@@ -169,9 +172,8 @@ export async function GET(req: Request) {
       });
     }
 
-    // update (best effort) se pagato
     let updated = false;
-    if (paid && orderRef) {
+    if (paid && complete && orderRef) {
       updated = await updateOrder({
         strapiUrl: STRAPI_URL,
         token: STRAPI_API_TOKEN,
@@ -188,6 +190,7 @@ export async function GET(req: Request) {
       {
         ok: true,
         paid,
+        complete,
         updated,
         orderRef: orderRef ? String(orderRef) : null,
         stripeSessionId: session.id,

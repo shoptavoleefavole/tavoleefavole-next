@@ -20,7 +20,10 @@ function requireEnv(name: string) {
 }
 
 function strapiBaseUrl() {
-  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(/\/+$/, "");
+  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(
+    /\/+$/,
+    ""
+  );
 }
 
 function safeJsonParse(text: string) {
@@ -58,6 +61,26 @@ async function strapiFetch(path: string, init?: RequestInit) {
   const text = await res.text().catch(() => "");
   const data = text ? safeJsonParse(text) : null;
   return { res, data, text };
+}
+
+function pickAttrs(row: any) {
+  return row?.attributes ?? row ?? {};
+}
+
+function pickOrderIds(row: any): { numericId: number | null; documentId: string | null } {
+  const a = pickAttrs(row);
+
+  // Strapi v4: id è su row.id; Strapi v5: spesso è flat ma comunque row.id
+  const numericId = typeof row?.id === "number" ? row.id : typeof a?.id === "number" ? a.id : null;
+
+  const documentId =
+    typeof row?.documentId === "string"
+      ? row.documentId
+      : typeof a?.documentId === "string"
+        ? a.documentId
+        : null;
+
+  return { numericId, documentId };
 }
 
 async function findFirstOrderByFilter(qs: URLSearchParams) {
@@ -98,12 +121,27 @@ async function findOrder(params: { sessionId: string; orderRef?: string | null; 
   return null;
 }
 
-async function updateOrderByNumericId(orderId: number, payload: any) {
-  const r = await strapiFetch(`/api/orders/${encodeURIComponent(String(orderId))}`, {
-    method: "PUT",
-    body: JSON.stringify({ data: payload }),
-  });
-  return r;
+async function updateOrderSmart(orderRow: any, payload: any) {
+  const { numericId, documentId } = pickOrderIds(orderRow);
+
+  const tries: Array<{ label: string; path: string }> = [];
+  if (documentId) tries.push({ label: "documentId", path: `/api/orders/${encodeURIComponent(documentId)}` });
+  if (typeof numericId === "number") tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
+
+  let last: any = null;
+
+  for (const t of tries) {
+    const r = await strapiFetch(t.path, {
+      method: "PUT",
+      body: JSON.stringify({ data: payload }),
+    });
+
+    if (r.res.ok) return { ok: true as const, used: t.label };
+
+    last = { used: t.label, status: r.res.status, details: r.data ?? r.text };
+  }
+
+  return { ok: false as const, last };
 }
 
 function sleep(ms: number) {
@@ -112,7 +150,6 @@ function sleep(ms: number) {
 
 export async function POST(req: Request) {
   try {
-    // ✅ log per capire subito se arrivano webhook
     console.log("[stripe/webhook] HIT", new Date().toISOString());
 
     const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
@@ -122,7 +159,9 @@ export async function POST(req: Request) {
     if (!sig) return json({ ok: false, error: "Missing stripe-signature header" }, 400);
 
     const rawBuf = Buffer.from(await req.arrayBuffer());
-    const stripe = new Stripe(STRIPE_SECRET_KEY);
+
+    // ✅ usa la tua API version attuale (coerente con dashboard)
+    const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2025-12-15.clover" });
 
     let event: Stripe.Event;
     try {
@@ -167,12 +206,6 @@ export async function POST(req: Request) {
       );
     }
 
-    const numericId = typeof orderRow?.id === "number" ? orderRow.id : null;
-    if (!numericId) {
-      console.error("[stripe/webhook] missing numeric id on orderRow", orderRow);
-      return json({ ok: false, error: "Order row missing numeric id (will retry)" }, 500);
-    }
-
     const stripePaymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
     const customerEmail =
       session.customer_details?.email ?? session.customer_email ?? session.metadata?.customerEmail ?? null;
@@ -184,18 +217,18 @@ export async function POST(req: Request) {
       customerEmail,
     };
 
-    const upd = await updateOrderByNumericId(numericId, payload);
+    const upd = await updateOrderSmart(orderRow, payload);
 
-    if (!upd.res.ok) {
-      console.error("[stripe/webhook] Strapi update failed", upd.res.status, upd.data ?? upd.text);
+    if (!upd.ok) {
+      console.error("[stripe/webhook] Strapi update failed", upd.last);
       return json(
-        { ok: false, error: "Failed updating order on Strapi", status: upd.res.status, details: upd.data ?? upd.text },
+        { ok: false, error: "Failed updating order on Strapi", ...upd.last },
         500
       );
     }
 
-    console.log("[stripe/webhook] updated order", numericId, "=> PAID");
-    return json({ ok: true, updated: true, orderId: numericId, sessionId }, 200);
+    console.log("[stripe/webhook] updated order => PAID (via", upd.used, ")");
+    return json({ ok: true, updated: true, via: upd.used, sessionId }, 200);
   } catch (e: any) {
     console.error("[stripe/webhook] error:", e);
     return json({ ok: false, error: "Webhook error", details: e?.message || String(e) }, 500);
