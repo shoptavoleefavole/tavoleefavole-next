@@ -1,230 +1,286 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+// src/app/checkout/success/successclient.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { clearCartOnPaid } from "./ClearCartOnPaid";
 import { useCart } from "@/components/cart/CartProvider";
 
-type ConfirmResp = {
-  ok?: boolean;
+type VerifyResponse = {
+  ok: boolean;
   paid?: boolean;
   updated?: boolean;
-  orderRef?: string;
-  orderId?: string | number;
-  payment_status?: string; // es: "paid"
-  status?: string; // es: "complete"
+  orderRef?: string | null;
+  orderId?: number | null;
+  message?: string;
   error?: string;
+  details?: any;
+
+  // opzionali (se li aggiungi lato API, non rompe)
+  payment_status?: string;
+  status?: string;
 };
 
-function isPaidResponse(data: ConfirmResp) {
-  return (
-    data?.paid === true ||
-    data?.payment_status === "paid" ||
-    data?.status === "complete"
-  );
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-// fetch con timeout (così non resta appeso)
-async function fetchJsonWithTimeout(url: string, ms: number) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      headers: { "x-checkout-confirm": "1" },
-      signal: ctrl.signal,
-    });
-
-    const data = (await res.json().catch(() => ({}))) as ConfirmResp;
-    return { ok: res.ok, status: res.status, data };
-  } finally {
-    clearTimeout(t);
-  }
+function isPaid(data: VerifyResponse | null) {
+  if (!data) return false;
+  return data.paid === true || data.payment_status === "paid" || data.status === "complete";
 }
 
-export default function SuccessClient() {
+export default function SuccessClient({ sessionId }: { sessionId: string }) {
   const router = useRouter();
-  const sp = useSearchParams();
-
-  // string | null -> string (safe)
-  const sid = sp.get("session_id") ?? "";
-
   const { clear } = useCart();
 
-  const [ui, setUi] = useState<"checking" | "paid" | "failed">("checking");
-  const [message, setMessage] = useState("Checkout: verifico il pagamento…");
-  const [orderInfo, setOrderInfo] = useState<{
-    orderRef?: string;
-    orderId?: string | number;
-  }>({});
+  const sid = useMemo(() => String(sessionId || "").trim(), [sessionId]);
 
-  // evita doppi loop (StrictMode) + evita polling multipli
+  const [status, setStatus] = useState<"checking" | "paid" | "timeout" | "error">("checking");
+  const [info, setInfo] = useState<VerifyResponse | null>(null);
+
+  // anti doppio start (StrictMode)
   const startedRef = useRef(false);
 
-  // per pulire timer su unmount
-  const timeoutRef = useRef<number | null>(null);
-
   useEffect(() => {
-    const clearTimer = () => {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-    };
-
-    // guard definitivo: senza session_id non ha senso continuare
     if (!sid) {
-      setUi("failed");
-      setMessage("Sessione di pagamento mancante.");
+      setStatus("error");
+      setInfo({ ok: false, error: "Missing session_id" });
       return;
     }
 
-    const key = `checkout_confirmed_${sid}`;
-
-    // anti-refresh: se già confermato una volta, non ripollare
-    if (typeof window !== "undefined" && window.sessionStorage.getItem(key) === "1") {
-      setUi("paid");
-      setMessage("Pagamento confermato ✅");
+    // se già confermato una volta in questa sessione browser → mostra subito paid
+    const confirmedKey = `checkout_paid_once:${sid}`;
+    if (typeof window !== "undefined" && sessionStorage.getItem(confirmedKey) === "1") {
+      setStatus("paid");
       return;
     }
 
     if (startedRef.current) return;
     startedRef.current = true;
 
-    let cancelled = false;
-    let attempts = 0;
+    let alive = true;
 
-    const MAX_ATTEMPTS = 18;       // numero tentativi
-    const BASE_DELAY_MS = 650;     // base backoff
-    const FETCH_TIMEOUT_MS = 6000; // timeout fetch singola chiamata
+    (async () => {
+      const start = Date.now();
+      const maxMs = 22_000;
 
-    async function poll() {
-      if (cancelled) return;
-      attempts += 1;
+      let last: VerifyResponse | null = null;
 
-      try {
-        const url = `/api/checkout/confirm?session_id=${encodeURIComponent(sid)}`;
-        const { ok, data } = await fetchJsonWithTimeout(url, FETCH_TIMEOUT_MS);
+      while (Date.now() - start < maxMs) {
+        try {
+          const res = await fetch(`/api/checkout/verify?session_id=${encodeURIComponent(sid)}`, {
+            cache: "no-store",
+          });
 
-        // salva info ordine se presenti (utile per UI)
-        if (data?.orderRef || data?.orderId) {
-          setOrderInfo({ orderRef: data.orderRef, orderId: data.orderId });
+          // se API momentaneamente instabile → ritenta
+          if (!res.ok) {
+            last = {
+              ok: false,
+              error: `HTTP ${res.status}`,
+              details: await res.text().catch(() => null),
+            };
+            if (!alive) return;
+            await sleep(1100);
+            continue;
+          }
+
+          const data = (await res.json().catch(() => null)) as VerifyResponse | null;
+
+          if (!alive) return;
+
+          if (!data) {
+            last = { ok: false, error: "Empty JSON response" };
+            await sleep(1100);
+            continue;
+          }
+
+          setInfo(data);
+          last = data;
+
+          if (data.ok && isPaid(data)) {
+            setStatus("paid");
+
+            try {
+              sessionStorage.setItem(confirmedKey, "1");
+            } catch {}
+
+            // ✅ svuota carrello UNA VOLTA sola e senza reload
+            clearCartOnPaid({ sessionId: sid, clearProvider: clear });
+
+            return;
+          }
+
+          // non pagato ancora: ritenta
+          await sleep(1100);
+        } catch (e: any) {
+          last = { ok: false, error: "Network error", details: String(e?.message ?? e) };
+          if (!alive) return;
+          await sleep(1100);
         }
-
-        // se API dice pagato → stop definitivo
-        if (ok && isPaidResponse(data)) {
-          if (cancelled) return;
-
-          setUi("paid");
-          setMessage("Pagamento confermato ✅");
-
-          // anti refresh
-          window.sessionStorage.setItem(key, "1");
-
-          // clear carrello 1 volta sola (in try/catch per sicurezza)
-          try {
-            clear();
-          } catch {}
-
-          clearTimer();
-          return;
-        }
-
-        // se API risponde ma non è pagato ancora → riprova fino a MAX_ATTEMPTS
-        if (attempts >= MAX_ATTEMPTS) {
-          setUi("failed");
-          setMessage(
-            data?.error ||
-              "Non riesco a confermare il pagamento. Se hai pagato, attendi 1 minuto e riprova."
-          );
-          clearTimer();
-          return;
-        }
-
-        // backoff leggero
-        const delay = BASE_DELAY_MS + attempts * 250;
-        clearTimer();
-        timeoutRef.current = window.setTimeout(poll, delay);
-      } catch {
-        // abort/errore rete
-        if (attempts >= MAX_ATTEMPTS) {
-          setUi("failed");
-          setMessage("Errore di rete nel controllo pagamento. Riprova tra poco.");
-          clearTimer();
-          return;
-        }
-
-        const delay = BASE_DELAY_MS + attempts * 300;
-        clearTimer();
-        timeoutRef.current = window.setTimeout(poll, delay);
       }
-    }
 
-    poll();
+      if (!alive) return;
+
+      setInfo((prev) => prev ?? last);
+      setStatus("timeout");
+    })();
 
     return () => {
-      cancelled = true;
-      clearTimer();
+      alive = false;
     };
   }, [sid, clear]);
 
+  // ===== UI =====
+
+  const orderRef = info?.orderRef ?? null;
+  const orderId = typeof info?.orderId === "number" ? info?.orderId : null;
+
   return (
-    <div className="mx-auto max-w-xl px-4 py-10">
-      {ui === "checking" && (
-        <>
-          <h1 className="text-2xl font-semibold">Grazie!</h1>
-          <p className="mt-3">{message}</p>
-          {(orderInfo.orderRef || orderInfo.orderId) && (
-            <p className="mt-2 text-sm opacity-70">
-              {orderInfo.orderRef ? `Rif. ordine: ${orderInfo.orderRef}` : null}
-              {orderInfo.orderId ? ` (ID: ${orderInfo.orderId})` : null}
-            </p>
-          )}
-        </>
-      )}
+    <main className="relative overflow-hidden">
+      {/* sfondo decorativo */}
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full bg-primary/20 blur-3xl" />
+        <div className="absolute -bottom-40 left-10 h-[420px] w-[420px] rounded-full bg-pink-400/20 blur-3xl" />
+        <div className="absolute right-10 top-24 h-[360px] w-[360px] rounded-full bg-indigo-400/15 blur-3xl" />
+      </div>
 
-      {ui === "paid" && (
-        <>
-          <h1 className="text-2xl font-semibold">Ordine confermato 🎉</h1>
-          <p className="mt-3">{message}</p>
-          {(orderInfo.orderRef || orderInfo.orderId) && (
-            <p className="mt-2 text-sm opacity-70">
-              {orderInfo.orderRef ? `Rif. ordine: ${orderInfo.orderRef}` : null}
-              {orderInfo.orderId ? ` (ID: ${orderInfo.orderId})` : null}
-            </p>
-          )}
+      <div className="mx-auto max-w-3xl px-4 py-10">
+        <div className="rounded-3xl border border-border bg-background/80 p-6 shadow-sm backdrop-blur md:p-8">
+          <div className="flex items-start gap-4">
+            <div className="mt-1 inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-green-500/10">
+              <svg width="22" height="22" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="M6.5 10.2l2.1 2.2 5-5.6"
+                  stroke="currentColor"
+                  className="text-green-600"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
 
-          <button
-            className="mt-6 rounded-md bg-black px-4 py-2 text-white"
-            onClick={() => router.push("/")}
-          >
-            Torna alla home
-          </button>
-        </>
-      )}
+            <div className="flex-1">
+              <h1 className="text-2xl font-extrabold md:text-3xl">Grazie per il tuo ordine!</h1>
+              <p className="mt-2 text-sm text-text/70 md:text-base">
+                {status === "checking" && "Stiamo verificando il pagamento in modo sicuro…"}
+                {status === "paid" &&
+                  "Pagamento confermato ✅ Abbiamo ricevuto il tuo ordine e lo stiamo preparando."}
+                {status === "timeout" &&
+                  "Stiamo ancora aspettando la conferma automatica. Se hai pagato, torna tra qualche secondo e ricarica la pagina."}
+                {status === "error" && "C’è stato un problema nel controllo del pagamento."}
+              </p>
+            </div>
+          </div>
 
-      {ui === "failed" && (
-        <>
-          <h1 className="text-2xl font-semibold">Controllo pagamento</h1>
-          <p className="mt-3">{message}</p>
+          {/* box info ordine */}
+          <div className="mt-6 grid gap-3 rounded-2xl border border-border bg-surface/60 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-extrabold">Dettagli ordine</div>
+              <span
+                className={[
+                  "rounded-full border px-3 py-1 text-xs font-semibold",
+                  status === "paid"
+                    ? "border-green-200 text-green-700"
+                    : status === "error"
+                      ? "border-red-200 text-red-600"
+                      : "border-border text-text/70",
+                ].join(" ")}
+              >
+                {status === "paid" ? "PAGATO" : status === "error" ? "ERRORE" : "IN VERIFICA"}
+              </span>
+            </div>
 
-          <div className="mt-6 flex gap-3">
+            <div className="grid gap-2 text-sm">
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="text-text/70">Riferimento ordine</span>
+                <span className="font-semibold">{orderRef ?? "—"}</span>
+              </div>
+
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="text-text/70">ID ordine</span>
+                <span className="font-semibold">{orderId ?? "—"}</span>
+              </div>
+
+              <div className="flex flex-wrap justify-between gap-2">
+                <span className="text-text/70">Sessione Stripe</span>
+                <span className="font-mono text-xs text-text/70 break-all">{sid || "—"}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* messaggio “wow” */}
+          {status === "paid" ? (
+            <div className="mt-6 rounded-2xl border border-border bg-background p-4">
+              <div className="text-sm font-extrabold">Cosa succede adesso?</div>
+              <ul className="mt-3 grid gap-2 text-sm text-text/70">
+                <li className="flex gap-2">
+                  <span className="mt-0.5">•</span>
+                  <span>
+                    Prepariamo il pacco con cura (imballo protetto per prodotti da pasticceria).
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-0.5">•</span>
+                  <span>
+                    Se hai bisogno di modifiche o assistenza, scrivici: rispondiamo velocemente.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-0.5">•</span>
+                  <span>
+                    Vuoi continuare a fare scorta? Dai un’occhiata alle categorie più amate.
+                  </span>
+                </li>
+              </ul>
+            </div>
+          ) : null}
+
+          {/* CTA */}
+          <div className="mt-7 flex flex-wrap gap-3">
             <button
-              className="rounded-md border px-4 py-2"
-              onClick={() => window.location.reload()}
+              type="button"
+              onClick={() => router.push("/catalogo")}
+              className="rounded-xl bg-primary px-5 py-3 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
             >
-              Riprova
+              Continua lo shopping
             </button>
-            <button
-              className="rounded-md bg-black px-4 py-2 text-white"
-              onClick={() => router.push("/")}
+
+            <Link
+              href="/"
+              className="rounded-xl border border-border px-5 py-3 text-sm font-extrabold hover:bg-surface-2"
             >
               Torna alla home
-            </button>
+            </Link>
+
+            {status !== "paid" ? (
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="rounded-xl border border-border px-5 py-3 text-sm font-extrabold hover:bg-surface-2"
+              >
+                Ricarica
+              </button>
+            ) : null}
           </div>
-        </>
-      )}
-    </div>
+
+          {/* debug solo in non-prod */}
+          {process.env.NODE_ENV !== "production" && status !== "paid" && info ? (
+            <pre className="mt-6 overflow-auto rounded-2xl bg-black/5 p-3 text-[11px]">
+              {JSON.stringify(info, null, 2)}
+            </pre>
+          ) : null}
+
+          <div className="mt-6 text-xs text-text/60">
+            Hai bisogno di aiuto?{" "}
+            <Link className="font-semibold text-link hover:text-link-hover" href="/supporto">
+              Contatta l’assistenza
+            </Link>
+          </div>
+        </div>
+      </div>
+    </main>
   );
 }

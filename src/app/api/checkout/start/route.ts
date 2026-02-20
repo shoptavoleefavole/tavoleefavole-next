@@ -13,6 +13,12 @@ export const dynamic = "force-dynamic";
  * - Cialde: prezzo server-side
  * - Inventory check (SKU, warehouse MAIN) con FAIL-SOFT in dev/preview
  *
+ * ✅ Shipping robusto (NUOVO):
+ * - Spedizione calcolata SOLO server-side in base al peso totale (weight_grams)
+ * - Fasce lette da Strapi ShippingRate (IT_MAINLAND / IT_ISLANDS)
+ * - Ignora body.shippingTotal (non fidarsi del client)
+ * - Se manca weight_grams o non esiste fascia -> errore controllato
+ *
  * ✅ Hardening:
  * - no secrets in response
  * - no throw/import-time env checks (build-safe)
@@ -38,11 +44,19 @@ type CartItem = {
 };
 
 type BillingType = "PRIVATE" | "AZIENDE";
+type ShippingZone = "IT_MAINLAND" | "IT_ISLANDS";
 
 type ApiBody = {
   items?: any;
   currency?: string;
+
+  // ⚠️ Non usato (non fidarsi del client)
   shippingTotal?: number;
+
+  // ✅ nuovo: zona spedizione (client deve mandare questo)
+  zone?: string;
+  shippingZone?: string;
+
   billingType?: BillingType | string;
   billingSnapshot?: any;
   customerEmail?: string;
@@ -414,6 +428,9 @@ const CIALDE_PRICE_MAJOR = {
 
 type CialdaMaterial = keyof typeof CIALDE_PRICE_MAJOR;
 
+// ✅ Peso fisso server-side per le cialde (robusto: non ci fidiamo del client)
+const CIALDA_WEIGHT_GRAMS = 200;
+
 function isCialdaMaterial(x: any): x is CialdaMaterial {
   return x === "ostia" || x === "pasta_di_zucchero";
 }
@@ -468,11 +485,21 @@ type StrapiProduct = {
 
   aziendaDiscountEligible: boolean;
   sku: string | null;
+
+  // ✅ NUOVO: peso in grammi per calcolo spedizione
+  weight_grams: number | null;
 };
 
 function toNumOrNull(v: any): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
   return Number.isFinite(n) ? n : null;
+}
+
+function toIntOrNull(v: any): number | null {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (!Number.isFinite(n)) return null;
+  const i = Math.trunc(n);
+  return i >= 0 ? i : null;
 }
 
 function pickSkuFromStrapiRow(row: any): string | null {
@@ -530,6 +557,9 @@ function extractProduct(row: any): StrapiProduct {
 
   const sku = pickSkuFromStrapiRow(row);
 
+  // ✅ NUOVO: weight_grams
+  const weight_grams = toIntOrNull(a?.weight_grams ?? row?.weight_grams);
+
   return {
     id,
     documentId,
@@ -544,6 +574,7 @@ function extractProduct(row: any): StrapiProduct {
     priceB2B,
     aziendaDiscountEligible: Boolean(eligibleRaw),
     sku,
+    weight_grams,
   };
 }
 
@@ -580,6 +611,8 @@ async function fetchProductsByIdsOrSlugs(args: {
     "price_company",
     "price_b2b",
     "sku",
+    // ✅ NUOVO: peso
+    "weight_grams",
   ];
   fields.forEach((f, i) => qs1.append(`fields[${i}]`, f));
 
@@ -742,6 +775,63 @@ async function checkInventoryFailSoft(args: {
   }
 }
 
+/* ---------------- ✅ Shipping by weight (SERVER) ---------------- */
+
+function normalizeShippingZone(body: ApiBody | null): ShippingZone {
+  const z = String(body?.zone ?? body?.shippingZone ?? "").trim().toUpperCase();
+  return z === "IT_ISLANDS" ? "IT_ISLANDS" : "IT_MAINLAND";
+}
+
+type ShippingRateRow = { min: number; max: number; priceMajor: number };
+
+function extractShippingRate(row: any): ShippingRateRow | null {
+  const a = row?.attributes ?? row ?? {};
+  const min = Number(a?.min_weight_grams);
+  const max = Number(a?.max_weight_grams);
+  const priceMajor = Number(a?.price_eur);
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max < 0 || max < min) return null;
+  if (!Number.isFinite(priceMajor) || priceMajor <= 0) return null;
+
+  return { min: Math.trunc(min), max: Math.trunc(max), priceMajor };
+}
+
+async function getShippingPriceMajor(args: {
+  STRAPI_URL: string;
+  STRAPI_API_TOKEN: string;
+  zone: ShippingZone;
+  weightTotalGrams: number;
+}) {
+  const { STRAPI_URL, STRAPI_API_TOKEN, zone, weightTotalGrams } = args;
+
+  const qs = new URLSearchParams();
+  qs.set("pagination[pageSize]", "200");
+  qs.set("filters[zone][$eq]", zone);
+  qs.set("filters[active][$eq]", "true");
+
+  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/shipping-rates?${qs.toString()}`, {
+    method: "GET",
+  });
+
+  if (!r.res.ok) {
+    const e: any = new Error("Shipping rates unavailable");
+    e.code = "SHIPPING_RATES_FETCH_FAILED";
+    throw e;
+  }
+
+  const arr = Array.isArray(r.data?.data) ? r.data.data : [];
+  const bands = arr.map(extractShippingRate).filter(Boolean) as ShippingRateRow[];
+
+  const hit = bands.find((b) => weightTotalGrams >= b.min && weightTotalGrams <= b.max);
+  if (!hit) {
+    const e: any = new Error("No shipping rate for weight");
+    e.code = "SHIPPING_RATE_NOT_FOUND";
+    throw e;
+  }
+
+  return hit.priceMajor;
+}
+
 // ---------- POST ----------
 export async function POST(request: Request) {
   try {
@@ -791,9 +881,11 @@ export async function POST(request: Request) {
 
     if (userJwt) {
       try {
-        const meRes = await fetchWithRetry(`${strapiBaseUrl(STRAPI_URL)}/api/users/me`, {
-          headers: { Authorization: `Bearer ${userJwt}`, Accept: "application/json" },
-        }, 15_000);
+        const meRes = await fetchWithRetry(
+          `${strapiBaseUrl(STRAPI_URL)}/api/users/me`,
+          { headers: { Authorization: `Bearer ${userJwt}`, Accept: "application/json" } },
+          15_000
+        );
 
         if (meRes.ok) {
           const me = safeJsonParse(await meRes.text().catch(() => ""));
@@ -866,6 +958,10 @@ export async function POST(request: Request) {
     let baseSubtotalMinor = 0;
     let finalSubtotalMinor = 0;
 
+    // ✅ shipping weight
+    let weightTotalGrams = 0;
+    const missingWeightRefs: Array<string> = [];
+
     const pricedItems: Array<{
       productId: number | null;
       slug: string | null;
@@ -884,7 +980,7 @@ export async function POST(request: Request) {
     }> = [];
 
     for (const it of strapiItems) {
-      const p =
+      const p: StrapiProduct | null =
         (typeof it.productId === "number" ? (prodRes as any).byId.get(it.productId) : undefined) ||
         (typeof it.id === "number" ? (prodRes as any).byId.get(it.id) : undefined) ||
         (it.slug ? (prodRes as any).bySlug.get(it.slug) : undefined) ||
@@ -894,6 +990,15 @@ export async function POST(request: Request) {
         throw new Error(
           `Product not found or invalid price (id=${String(it.productId ?? it.id)} slug=${String(it.slug)})`
         );
+      }
+
+      // ✅ shipping: peso prodotto
+      const w = typeof p.weight_grams === "number" ? p.weight_grams : null;
+      if (!w || w <= 0) {
+        const ref = p.slug ? `slug:${p.slug}` : p.id ? `id:${p.id}` : `unknown`;
+        missingWeightRefs.push(ref);
+      } else {
+        weightTotalGrams += Math.trunc(w) * it.qty;
       }
 
       const publicPriceMajor = p.price;
@@ -964,6 +1069,9 @@ export async function POST(request: Request) {
       baseSubtotalMinor += unitMinor * it.qty;
       finalSubtotalMinor += unitMinor * it.qty;
 
+      // ✅ shipping: peso cialda (fisso server-side)
+      weightTotalGrams += CIALDA_WEIGHT_GRAMS * it.qty;
+
       const safeMeta = sanitizeMeta(it.meta) ?? undefined;
 
       pricedItems.push({
@@ -983,10 +1091,55 @@ export async function POST(request: Request) {
       });
     }
 
+    // ✅ se mancano pesi, blocchiamo (robusto)
+    if (missingWeightRefs.length) {
+      return jsonNoStore(
+        {
+          ok: false,
+          error: "SHIPPING_WEIGHT_MISSING",
+          message:
+            process.env.NODE_ENV === "development"
+              ? `Manca weight_grams per: ${missingWeightRefs.join(", ")}`
+              : "Spedizione non disponibile per alcuni articoli.",
+        },
+        400
+      );
+    }
+
     const discountMinor = Math.max(0, baseSubtotalMinor - finalSubtotalMinor);
 
-    const shippingMajorIn = Math.max(0, clampNumber(body?.shippingTotal, 0));
-    const shippingMinor = shippingMajorIn > 0 ? toStripeUnitAmount(shippingMajorIn, currency) ?? 0 : 0;
+    // ✅ SHIPPING: calcolo server-side da Strapi fasce peso
+    const zone: ShippingZone = normalizeShippingZone(body);
+
+    let shippingMinor = 0;
+    try {
+      const shippingPriceMajor = await getShippingPriceMajor({
+        STRAPI_URL,
+        STRAPI_API_TOKEN,
+        zone,
+        weightTotalGrams,
+      });
+      const m = toStripeUnitAmount(shippingPriceMajor, currency);
+      shippingMinor = m ?? 0;
+      if (!shippingMinor || shippingMinor < 1) {
+        const e: any = new Error("Invalid shipping price");
+        e.code = "SHIPPING_INVALID_PRICE";
+        throw e;
+      }
+    } catch (e: any) {
+      const code = e?.code || "SHIPPING_UNAVAILABLE";
+      return jsonNoStore(
+        {
+          ok: false,
+          error: code,
+          message:
+            process.env.NODE_ENV === "development"
+              ? `Errore spedizione: ${e?.message ?? String(e)} (zone=${zone}, weight=${weightTotalGrams}g)`
+              : "Spedizione non disponibile. Contattaci per assistenza.",
+        },
+        400
+      );
+    }
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
     if (!Number.isFinite(totalMinor) || totalMinor <= 0)
@@ -1025,16 +1178,15 @@ export async function POST(request: Request) {
       };
     });
 
-    if (shippingMinor > 0) {
-      line_items.push({
-        quantity: 1,
-        price_data: {
-          currency: currency.toLowerCase(),
-          unit_amount: shippingMinor,
-          product_data: { name: "Spedizione" },
-        },
-      });
-    }
+    // ✅ SHIPPING line item sempre server-side
+    line_items.push({
+      quantity: 1,
+      price_data: {
+        currency: currency.toLowerCase(),
+        unit_amount: shippingMinor,
+        product_data: { name: "Spedizione (24/48h)" },
+      },
+    });
 
     const orderPayload = {
       data: {
@@ -1097,6 +1249,8 @@ export async function POST(request: Request) {
           userId: userId ? String(userId) : "",
           billingType,
           isCompanyUser: isCompanyUser ? "1" : "0",
+          shippingZone: zone,
+          weightTotalGrams: String(Math.max(0, Math.trunc(weightTotalGrams))),
           ...(hasCialda
             ? (() => {
                 const first = pricedItems.find(

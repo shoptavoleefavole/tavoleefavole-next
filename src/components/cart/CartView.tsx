@@ -8,8 +8,6 @@ import ButtonLink from "@/components/ui/ButtonLink";
 import { useCart } from "@/components/cart/CartProvider";
 import { formatEUR } from "@/lib/format";
 
-const FREE_SHIPPING_THRESHOLD = 79;
-
 // Client-safe: Next inlines NEXT_PUBLIC_*
 const STRAPI_PUBLIC_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
 
@@ -39,12 +37,7 @@ function normalizeImageUrl(raw: unknown): string {
   if (!s) return "";
 
   // già assoluta / data / blob
-  if (
-    s.startsWith("http://") ||
-    s.startsWith("https://") ||
-    s.startsWith("data:") ||
-    s.startsWith("blob:")
-  ) {
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("blob:")) {
     return s;
   }
 
@@ -232,6 +225,12 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   }
 }
 
+type ShippingZone = "IT_MAINLAND" | "IT_ISLANDS";
+function normalizeZone(v: unknown): ShippingZone {
+  const s = String(v ?? "").trim().toUpperCase();
+  return s === "IT_ISLANDS" ? "IT_ISLANDS" : "IT_MAINLAND";
+}
+
 export default function CartView() {
   const { items, summary, removeItem, setQty, clear } = useCart();
 
@@ -241,6 +240,10 @@ export default function CartView() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const quoteAbortRef = useRef<AbortController | null>(null);
+
+  // ✅ NUOVO: zona spedizione selezionata dall’utente (Penisola / Isole)
+  // Default sicuro: Penisola
+  const [shippingZone, setShippingZone] = useState<ShippingZone>("IT_MAINLAND");
 
   // ---- QUOTE: calcola prezzi server-side (pubblico / azienda / cialde)
   useEffect(() => {
@@ -316,14 +319,7 @@ export default function CartView() {
   }, [quote]);
 
   const subtotal =
-    typeof quote?.totals?.subtotal === "number"
-      ? quote!.totals!.subtotal
-      : safeNumber(summary.total, 0);
-
-  const remaining = Math.max(0, FREE_SHIPPING_THRESHOLD - subtotal);
-  const hasFreeShipping = subtotal >= FREE_SHIPPING_THRESHOLD;
-  const progress =
-    FREE_SHIPPING_THRESHOLD > 0 ? Math.max(0, Math.min(1, subtotal / FREE_SHIPPING_THRESHOLD)) : 0;
+    typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
 
   const canCheckout = items.length > 0 && !checkoutBusy;
 
@@ -354,8 +350,12 @@ export default function CartView() {
         billingType: "PRIVATE",
         billingSnapshot: {},
         currency: "EUR",
+        // ⚠️ non usati lato server per la spedizione (il server calcola da peso)
         shippingTotal: 0,
         discountTotal: 0,
+
+        // ✅ NUOVO: zona spedizione usata dal server per calcolare la fascia peso corretta
+        zone: shippingZone,
       };
 
       const res = await fetchWithTimeout("/api/checkout/start", {
@@ -462,39 +462,35 @@ export default function CartView() {
                 </div>
               ) : null}
 
-              {/* Banner spedizione gratuita */}
+              {/* Box spedizione (peso) + consegna */}
               <div className="rounded-2xl border border-border bg-surface p-4">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
                     <TruckIcon />
                   </span>
 
-                  <div className="min-w-0">
-                    <div className="text-sm font-extrabold text-text">
-                      {hasFreeShipping ? "Spedizione gratuita attiva ✅" : "Spedizione gratuita sopra 79€"}
-                    </div>
-
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
                     <div className="mt-1 text-sm text-text/70">
-                      {hasFreeShipping ? (
-                        "Hai raggiunto la soglia: la spedizione è gratuita."
-                      ) : (
-                        <>
-                          Ti mancano <b className="text-text">{formatEUR(remaining)}</b> per ottenere la spedizione gratuita.
-                        </>
-                      )}
+                      La spedizione viene calcolata <b>in base al peso totale</b> e alla zona selezionata.
                     </div>
 
-                    <div className="mt-3">
-                      <div className="h-2 w-full overflow-hidden rounded-full border border-border bg-background">
-                        <div
-                          className="h-full bg-primary"
-                          style={{ width: `${Math.round(progress * 100)}%` }}
-                          aria-hidden="true"
-                        />
-                      </div>
-                      <div className="mt-1 text-xs text-muted-text">
-                        {formatEUR(Math.min(subtotal, FREE_SHIPPING_THRESHOLD))} / {formatEUR(FREE_SHIPPING_THRESHOLD)}
-                      </div>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="text-xs font-semibold text-muted-text">Zona spedizione</div>
+
+                      <select
+                        className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-semibold text-text focus:outline-none focus:ring-2 focus:ring-primary"
+                        value={shippingZone}
+                        onChange={(e) => setShippingZone(normalizeZone(e.target.value))}
+                        aria-label="Zona spedizione"
+                      >
+                        <option value="IT_MAINLAND">Italia - Penisola</option>
+                        <option value="IT_ISLANDS">Italia - Isole (+2€)</option>
+                      </select>
+                    </div>
+
+                    <div className="mt-2 text-xs text-muted-text">
+                      Il costo finale verrà mostrato nel checkout Stripe prima del pagamento.
                     </div>
                   </div>
                 </div>
@@ -536,9 +532,7 @@ export default function CartView() {
 
                           <div className="mt-1 flex items-baseline gap-2">
                             <div className="text-sm font-extrabold text-text">{formatEUR(unit)}</div>
-                            {hasStrike ? (
-                              <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div>
-                            ) : null}
+                            {hasStrike ? <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div> : null}
                           </div>
 
                           <MetaBadges meta={it.meta as any} />
@@ -623,15 +617,20 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text">{formatEUR(0)}</span>
+                  <span className="text-text text-xs font-semibold">
+                    calcolata al checkout ({shippingZone === "IT_ISLANDS" ? "Isole" : "Penisola"})
+                  </span>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
                   <span className="text-sm font-extrabold text-text">Totale</span>
                   <span className="text-base font-extrabold text-text">
+                    {/* qui mostriamo il totale stimato (senza spedizione) */}
                     {formatEUR(typeof quote?.totals?.total === "number" ? quote.totals.total : subtotal)}
                   </span>
                 </div>
+
+                <div className="mt-2 text-xs text-muted-text">Consegna: <b>24/48h</b></div>
               </div>
 
               <div className="mt-4">
