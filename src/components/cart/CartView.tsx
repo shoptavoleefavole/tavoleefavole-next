@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import Container from "@/components/Container";
 import Button from "@/components/ui/Button";
 import ButtonLink from "@/components/ui/ButtonLink";
@@ -46,7 +45,6 @@ function sanitizeSlug(v: unknown): string | null {
   return s;
 }
 
-// Se arriva "/uploads/..." dal carrello, rendila assoluta con STRAPI_PUBLIC_URL
 function normalizeImageUrl(raw: unknown): string {
   const s = safeString(raw, "");
   if (!s) return "";
@@ -155,6 +153,14 @@ type Quote = {
   error?: string;
 };
 
+type Address = {
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string;
+};
+
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const timeoutMs = init.timeoutMs ?? 12_000;
   const ctrl = new AbortController();
@@ -167,46 +173,124 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   }
 }
 
-type ShippingAddress = { country: string; postalCode: string; province: string };
+function capOk(cap: string) {
+  const c = String(cap || "").replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
+}
 
-function loadShippingAddress(): ShippingAddress | null {
-  try {
-    const raw = localStorage.getItem("tf_shipping_address_v1");
-    if (!raw) return null;
-    const j = JSON.parse(raw);
-    const country = String(j?.country ?? "IT").trim();
-    const postalCode = String(j?.postalCode ?? "").trim();
-    const province = String(j?.province ?? "").trim();
-    if (!postalCode && !province) return null;
-    return { country, postalCode, province };
-  } catch {
-    return null;
-  }
+function validateAddress(a: Address) {
+  if (!a.address.trim() || a.address.trim().length < 3) return "Inserisci un indirizzo valido.";
+  if (!a.city.trim() || a.city.trim().length < 2) return "Inserisci una città valida.";
+  if (!capOk(a.postalCode)) return "Inserisci un CAP valido (5 cifre).";
+  if (!a.province.trim() || a.province.trim().length < 2) return "Inserisci una provincia valida.";
+  return null;
+}
+
+function formatAddressLine(a: Address) {
+  const parts = [
+    a.address?.trim(),
+    `${a.postalCode?.trim()} ${a.city?.trim()}`.trim(),
+    a.province?.trim(),
+    (a.country || "IT").trim().toUpperCase(),
+  ].filter(Boolean);
+  return parts.join(" • ");
 }
 
 export default function CartView() {
-  const router = useRouter();
   const { items, summary, removeItem, setQty, clear } = useCart();
+
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // indirizzo salvato (per stima spedizione nel carrello)
-  const [shippingAddress, setShippingAddress] = useState<ShippingAddress | null>(null);
+  // ---- Address from profile
+  const [addrLoading, setAddrLoading] = useState(true);
+  const [addrError, setAddrError] = useState<string | null>(null);
+  const [address, setAddress] = useState<Address | null>(null);
 
-  // stima spedizione
+  const [editingAddr, setEditingAddr] = useState(false);
+  const [draftAddr, setDraftAddr] = useState<Address>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
+  });
+  const [addrSaving, setAddrSaving] = useState(false);
+
+  // checkbox obbligatoria
+  const [confirmAddress, setConfirmAddress] = useState(false);
+
+  // shipping quote
   const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
   const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
 
-  // carica indirizzo da localStorage (se presente)
+  // 1) carica indirizzo dal profilo
   useEffect(() => {
-    setShippingAddress(loadShippingAddress());
+    let cancelled = false;
+
+    async function run() {
+      setAddrLoading(true);
+      setAddrError(null);
+
+      try {
+        const res = await fetchWithTimeout("/api/profile/shipping-address", {
+          method: "GET",
+          credentials: "include",
+          timeoutMs: 12_000,
+        });
+
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+
+        if (res.status === 401) {
+          setAddrError("Devi accedere per continuare.");
+          setAddress(null);
+          setDraftAddr({ address: "", city: "", postalCode: "", province: "", country: "IT" });
+          return;
+        }
+
+        if (!res.ok || !data?.ok) {
+          setAddrError("Impossibile caricare l’indirizzo di spedizione.");
+          setAddress(null);
+          return;
+        }
+
+        const a = data?.address;
+        if (a && typeof a === "object") {
+          const normalized: Address = {
+            address: String(a.address ?? "").trim(),
+            city: String(a.city ?? "").trim(),
+            postalCode: String(a.postalCode ?? "").trim(),
+            province: String(a.province ?? "").trim(),
+            country: String(a.country ?? "IT").trim() || "IT",
+          };
+          setAddress(normalized);
+          setDraftAddr(normalized);
+        } else {
+          setAddress(null);
+          setDraftAddr({ address: "", city: "", postalCode: "", province: "", country: "IT" });
+        }
+      } catch {
+        if (!cancelled) setAddrError("Impossibile caricare l’indirizzo di spedizione.");
+      } finally {
+        if (!cancelled) setAddrLoading(false);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // ---- QUOTE: calcola prezzi server-side (pubblico / azienda / cialde)
+  // 2) quote prezzi
   useEffect(() => {
     quoteAbortRef.current?.abort();
+    setCheckoutError(null);
 
     if (!items.length) {
       setQuote(null);
@@ -260,11 +344,15 @@ export default function CartView() {
     };
 
     run();
-
     return () => controller.abort();
   }, [items]);
 
-  // ---- SHIPPING QUOTE: SOLO se ho indirizzo salvato
+  // 3) se cambia indirizzo, l’utente deve riconfermare
+  useEffect(() => {
+    setConfirmAddress(false);
+  }, [address?.address, address?.city, address?.postalCode, address?.province]);
+
+  // 4) calcolo spedizione SOLO se indirizzo valido
   useEffect(() => {
     let cancelled = false;
 
@@ -275,10 +363,17 @@ export default function CartView() {
       return;
     }
 
-    // se non ho indirizzo, non calcolo
-    if (!shippingAddress) {
+    if (!address) {
       setShippingQuoteBusy(false);
-      setShippingQuoteError(null);
+      setShippingQuoteError("Inserisci l’indirizzo di spedizione.");
+      setShippingEur(null);
+      return;
+    }
+
+    const err = validateAddress(address);
+    if (err) {
+      setShippingQuoteBusy(false);
+      setShippingQuoteError("Completa l’indirizzo di spedizione per calcolare la spedizione.");
       setShippingEur(null);
       return;
     }
@@ -291,7 +386,7 @@ export default function CartView() {
         setShippingQuoteBusy(true);
 
         const payload = {
-          shippingAddress,
+          shippingAddress: address,
           items: items.map((it: any) => ({
             productId: toIntOrNull(it?.productId) ?? toIntOrNull(it?.id) ?? undefined,
             id: toIntOrNull(it?.id) ?? undefined,
@@ -312,19 +407,19 @@ export default function CartView() {
         if (cancelled) return;
 
         if (!res.ok || !data?.ok) {
-          setShippingQuoteError("Spedizione non disponibile");
+          setShippingQuoteError("Spedizione non disponibile per questo indirizzo.");
           return;
         }
 
         const eur = Number(data.shippingEur);
         if (!Number.isFinite(eur) || eur < 0) {
-          setShippingQuoteError("Spedizione non disponibile");
+          setShippingQuoteError("Spedizione non disponibile.");
           return;
         }
 
         setShippingEur(eur);
       } catch {
-        if (!cancelled) setShippingQuoteError("Spedizione non disponibile");
+        if (!cancelled) setShippingQuoteError("Spedizione non disponibile.");
       } finally {
         if (!cancelled) setShippingQuoteBusy(false);
       }
@@ -334,7 +429,7 @@ export default function CartView() {
     return () => {
       cancelled = true;
     };
-  }, [items, shippingAddress]);
+  }, [items, address]);
 
   const quoteMap = useMemo(() => {
     const map = new Map<string, NonNullable<Quote["pricedItems"]>[number]>();
@@ -348,7 +443,123 @@ export default function CartView() {
   const baseTotal = typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
   const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
 
-  const canGoCheckout = items.length > 0;
+  const isAuthenticated = quote?.auth?.authenticated !== false; // best effort
+  const addressValid = !!(address && !validateAddress(address));
+
+  const canCheckout =
+    items.length > 0 &&
+    isAuthenticated &&
+    addressValid &&
+    confirmAddress &&
+    !checkoutBusy &&
+    !shippingQuoteBusy &&
+    !shippingQuoteError &&
+    shippingEur !== null;
+
+  async function saveProfileAddress() {
+    if (addrSaving) return;
+    setAddrError(null);
+
+    const err = validateAddress(draftAddr);
+    if (err) {
+      setAddrError(err);
+      return;
+    }
+
+    try {
+      setAddrSaving(true);
+
+      const res = await fetchWithTimeout("/api/profile/shipping-address", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(draftAddr),
+        timeoutMs: 12_000,
+      });
+
+      const data = await res.json().catch(() => null);
+      if (res.status === 401) {
+        setAddrError("Devi accedere per continuare.");
+        return;
+      }
+      if (!res.ok || !data?.ok) {
+        setAddrError("Salvataggio indirizzo non riuscito.");
+        return;
+      }
+
+      setAddress({ ...draftAddr, postalCode: draftAddr.postalCode.replace(/\s+/g, "") });
+      setEditingAddr(false);
+    } catch {
+      setAddrError("Salvataggio indirizzo non riuscito.");
+    } finally {
+      setAddrSaving(false);
+    }
+  }
+
+  async function startCheckout() {
+    if (!canCheckout) return;
+    setCheckoutError(null);
+
+    try {
+      setCheckoutBusy(true);
+
+      const payload = {
+        items: items.map((it: any) => ({
+          id: it.id,
+          productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
+          slug: it.slug,
+          name: it.name,
+          price: safeNumber(it.price, 0), // ignorato server-side
+          qty: clampQty(it.qty),
+          imageUrl: it.image,
+          meta: it.meta ?? undefined,
+          lineId: it.lineId,
+        })),
+        billingType: "PRIVATE",
+        billingSnapshot: {
+          address: address!.address,
+          city: address!.city,
+          postalCode: address!.postalCode.replace(/\s+/g, ""),
+          province: address!.province,
+          country: address!.country || "IT",
+        },
+        shippingAddress: {
+          address: address!.address,
+          city: address!.city,
+          postalCode: address!.postalCode.replace(/\s+/g, ""),
+          province: address!.province,
+          country: address!.country || "IT",
+        },
+        currency: "EUR",
+      };
+
+      const res = await fetchWithTimeout("/api/checkout/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+        timeoutMs: 20_000,
+      });
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setCheckoutError(data?.message || data?.error || "Checkout non riuscito.");
+        return;
+      }
+
+      const url = data?.url;
+      if (!url || typeof url !== "string") {
+        setCheckoutError("Checkout non riuscito: URL Stripe mancante.");
+        return;
+      }
+
+      window.location.href = url;
+    } catch (e: any) {
+      setCheckoutError(e?.message ? String(e.message) : "Errore durante il checkout.");
+    } finally {
+      setTimeout(() => setCheckoutBusy(false), 250);
+    }
+  }
 
   return (
     <Container>
@@ -381,6 +592,7 @@ export default function CartView() {
         ) : (
           <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
             <section aria-label="Articoli" className="space-y-4">
+              {/* BOX SPEDIZIONE PRO */}
               <div className="rounded-2xl border border-border bg-surface p-4">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
@@ -388,39 +600,150 @@ export default function CartView() {
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
-                    <div className="mt-1 text-sm text-text/70">
-                      La spedizione viene calcolata <b>automaticamente</b> in base all’indirizzo (CAP/Provincia) al checkout.
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
+                        <div className="mt-1 text-sm text-text/70">
+                          Spedizione calcolata automaticamente in base al <b>peso totale</b> e all’<b>indirizzo di spedizione</b>.
+                        </div>
+                      </div>
+
+                      {!editingAddr ? (
+                        <button
+                          type="button"
+                          onClick={() => setEditingAddr(true)}
+                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        >
+                          Modifica
+                        </button>
+                      ) : null}
                     </div>
 
-                    <div className="mt-2 text-xs text-muted-text">
-                      {shippingAddress ? (
-                        shippingQuoteBusy ? (
-                          "Calcolo spedizione in corso…"
-                        ) : shippingQuoteError ? (
-                          "Spedizione non disponibile (verifica indirizzo al checkout)."
-                        ) : shippingEur != null ? (
-                          `Spedizione stimata: ${formatEUR(shippingEur)}`
-                        ) : (
-                          "—"
-                        )
+                    <div className="mt-3">
+                      {addrLoading ? (
+                        <div className="text-xs text-muted-text">Carico indirizzo…</div>
+                      ) : addrError ? (
+                        <div className="text-xs font-semibold text-red-600">{addrError}</div>
+                      ) : editingAddr ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block sm:col-span-2">
+                            <div className="text-xs font-semibold text-muted-text">Indirizzo</div>
+                            <input
+                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                              value={draftAddr.address}
+                              onChange={(e) => setDraftAddr((s) => ({ ...s, address: e.target.value }))}
+                              placeholder="Via/Piazza e numero civico"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs font-semibold text-muted-text">Città</div>
+                            <input
+                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                              value={draftAddr.city}
+                              onChange={(e) => setDraftAddr((s) => ({ ...s, city: e.target.value }))}
+                              placeholder="Città"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs font-semibold text-muted-text">Provincia</div>
+                            <input
+                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                              value={draftAddr.province}
+                              onChange={(e) => setDraftAddr((s) => ({ ...s, province: e.target.value }))}
+                              placeholder="Es. CA oppure Cagliari"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs font-semibold text-muted-text">CAP</div>
+                            <input
+                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                              value={draftAddr.postalCode}
+                              onChange={(e) => setDraftAddr((s) => ({ ...s, postalCode: e.target.value }))}
+                              placeholder="00000"
+                              inputMode="numeric"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs font-semibold text-muted-text">Paese</div>
+                            <input
+                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                              value="Italia"
+                              readOnly
+                            />
+                          </label>
+
+                          <div className="sm:col-span-2 flex flex-wrap gap-2">
+                            <Button onClick={saveProfileAddress} disabled={addrSaving} className="min-w-[140px]">
+                              {addrSaving ? "Salvo…" : "Salva indirizzo"}
+                            </Button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingAddr(false);
+                                setAddrError(null);
+                                if (address) setDraftAddr(address);
+                              }}
+                              className="rounded-xl px-4 py-2 text-sm font-semibold text-text hover:bg-surface-2"
+                            >
+                              Annulla
+                            </button>
+                          </div>
+                        </div>
+                      ) : address ? (
+                        <div className="text-sm text-text">
+                          <div className="font-semibold">Indirizzo di spedizione</div>
+                          <div className="mt-1 text-sm text-text/70">{formatAddressLine(address)}</div>
+                        </div>
                       ) : (
-                        "Inserisci l’indirizzo al checkout per vedere il costo di spedizione."
+                        <div className="text-sm text-text/70">
+                          Nessun indirizzo salvato. Clicca <b>Modifica</b> per inserirlo.
+                        </div>
                       )}
+                    </div>
+
+                    <div className="mt-3 text-xs text-muted-text">
+                      {shippingQuoteBusy
+                        ? "Calcolo spedizione…"
+                        : shippingQuoteError
+                        ? shippingQuoteError
+                        : shippingEur != null
+                        ? `Spedizione: ${formatEUR(shippingEur)}`
+                        : "—"}
+                    </div>
+
+                    {/* Checkbox obbligatoria */}
+                    <div className="mt-3">
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4"
+                          checked={confirmAddress}
+                          onChange={(e) => setConfirmAddress(e.target.checked)}
+                          disabled={!addressValid}
+                        />
+                        <span className="text-text/80">
+                          Confermo che l’indirizzo di spedizione è corretto.
+                        </span>
+                      </label>
+                      {!addressValid ? (
+                        <div className="mt-1 text-xs text-red-600">Completa l’indirizzo per poter confermare.</div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
               </div>
 
+              {/* ITEMS */}
               {items.map((it: any) => {
                 const slug = safeString(it.slug);
                 const isLinkable = !!slug;
 
                 const qi = it.lineId ? quoteMap.get(it.lineId) : undefined;
                 const unit = typeof qi?.unitPrice === "number" ? qi.unitPrice : safeNumber(it.price, 0);
-                const base = typeof qi?.baseUnitPrice === "number" ? qi.baseUnitPrice : null;
-                const hasStrike = typeof base === "number" && base > unit;
-
                 const img = normalizeImageUrl(it.image) || "/brand/tavoleefavole-logo.svg";
 
                 return (
@@ -446,10 +769,7 @@ export default function CartView() {
                             <div className="text-sm font-semibold text-text line-clamp-2">{it.name}</div>
                           )}
 
-                          <div className="mt-1 flex items-baseline gap-2">
-                            <div className="text-sm font-extrabold text-text">{formatEUR(unit)}</div>
-                            {hasStrike ? <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div> : null}
-                          </div>
+                          <div className="mt-1 text-sm font-extrabold text-text">{formatEUR(unit)}</div>
                         </div>
 
                         <button
@@ -505,8 +825,9 @@ export default function CartView() {
               })}
             </section>
 
+            {/* RIEPILOGO */}
             <aside className="h-fit rounded-2xl border border-border bg-surface p-5">
-              <div className="text-sm font-extrabold text-text">Riepilogo</div>
+              <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
 
               <div className="mt-4 space-y-2 text-sm">
                 <div className="flex items-center justify-between">
@@ -521,7 +842,9 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text">{shippingEur != null ? formatEUR(shippingEur) : "al checkout"}</span>
+                  <span className="text-text">
+                    {shippingEur != null && !shippingQuoteError ? formatEUR(shippingEur) : "—"}
+                  </span>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
@@ -530,19 +853,25 @@ export default function CartView() {
                 </div>
 
                 <div className="mt-2 text-xs text-muted-text">
-                  Consegna: <b>24/48h</b> • Totale stimato (verifica finale su Stripe)
+                  Consegna: <b>24/48h</b>
                 </div>
               </div>
 
               <div className="mt-4">
-                <Button className="w-full" onClick={() => router.push("/checkout/indirizzo")} disabled={!canGoCheckout}>
-                  Vai al checkout
+                <Button className="w-full" onClick={startCheckout} disabled={!canCheckout}>
+                  {checkoutBusy ? "Apro Stripe…" : "Vai al checkout"}
                 </Button>
               </div>
 
-              <p className="mt-3 text-xs text-muted-text">
-                Inserirai l’indirizzo e vedrai spedizione e totale finali prima del pagamento.
-              </p>
+              {checkoutError ? (
+                <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
+              ) : !confirmAddress ? (
+                <p className="mt-3 text-xs text-muted-text">Per continuare, conferma l’indirizzo di spedizione.</p>
+              ) : shippingQuoteError ? (
+                <p className="mt-3 text-xs font-semibold text-red-600">{shippingQuoteError}</p>
+              ) : (
+                <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
+              )}
             </aside>
           </div>
         )}
