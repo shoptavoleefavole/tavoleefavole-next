@@ -189,7 +189,6 @@ export default function CartView() {
   const { items, summary, removeItem, setQty, clear } = useCart();
 
   const [quote, setQuote] = useState<Quote | null>(null);
-  const [quoteBusy, setQuoteBusy] = useState(false);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
   // indirizzo salvato (per stima spedizione nel carrello)
@@ -219,8 +218,6 @@ export default function CartView() {
 
     const run = async () => {
       try {
-        setQuoteBusy(true);
-
         const payload = {
           currency: "EUR",
           shippingTotal: 0,
@@ -259,8 +256,6 @@ export default function CartView() {
           return;
         }
         setQuote({ ok: false, error: e?.message ? String(e.message) : "Errore quote" });
-      } finally {
-        setQuoteBusy(false);
       }
     };
 
@@ -526,9 +521,7 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text">
-                    {shippingEur != null ? formatEUR(shippingEur) : "al checkout"}
-                  </span>
+                  <span className="text-text">{shippingEur != null ? formatEUR(shippingEur) : "al checkout"}</span>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">

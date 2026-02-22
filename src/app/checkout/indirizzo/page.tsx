@@ -1,131 +1,284 @@
-// src/lib/shipping.server.ts
-export type ShippingZone = "IT_MAINLAND" | "IT_ISLANDS";
+"use client";
 
-type CartItem = { productId: number; qty: number };
+import { useEffect, useMemo, useState } from "react";
+import Container from "@/components/Container";
+import Button from "@/components/ui/Button";
+import ButtonLink from "@/components/ui/ButtonLink";
+import { useCart } from "@/components/cart/CartProvider";
+import { formatEUR } from "@/lib/format";
 
-const STRAPI_URL = (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
-const STRAPI_TOKEN = process.env.STRAPI_API_TOKEN || "";
+type ShippingAddress = {
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string; // sigla o nome (server normalizza)
+  country: string; // IT
+};
 
-function requireEnv(name: string, value: string) {
-  if (!value) throw new Error(`Missing env: ${name}`);
-  return value;
+function loadAddress(): ShippingAddress | null {
+  try {
+    const raw = localStorage.getItem("tf_shipping_address_v1");
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    return {
+      address: String(j?.address ?? "").trim(),
+      city: String(j?.city ?? "").trim(),
+      postalCode: String(j?.postalCode ?? "").trim(),
+      province: String(j?.province ?? "").trim(),
+      country: String(j?.country ?? "IT").trim() || "IT",
+    };
+  } catch {
+    return null;
+  }
 }
 
-async function fetchStrapi(path: string) {
-  requireEnv("STRAPI_URL", STRAPI_URL);
-  requireEnv("STRAPI_API_TOKEN", STRAPI_TOKEN);
+function saveAddress(a: ShippingAddress) {
+  localStorage.setItem("tf_shipping_address_v1", JSON.stringify(a));
+}
 
-  const res = await fetch(`${STRAPI_URL}${path}`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${STRAPI_TOKEN}`,
-    },
-    cache: "no-store",
+function capOk(cap: string) {
+  const c = cap.replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
+}
+
+function clampQty(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.max(1, Math.min(999, Math.floor(n)));
+}
+
+function toIntOrNull(v: any): number | null {
+  const n = typeof v === "string" ? Number(v.trim()) : Number(v);
+  if (!Number.isFinite(n)) return null;
+  const i = Math.trunc(n);
+  return i > 0 ? i : null;
+}
+
+export default function CheckoutIndirizzoPage() {
+  const { items, summary } = useCart();
+
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [addr, setAddr] = useState<ShippingAddress>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
   });
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Strapi error ${res.status} on ${path}: ${text}`);
+  useEffect(() => {
+    const saved = loadAddress();
+    if (saved) setAddr(saved);
+  }, []);
+
+  const canSubmit = useMemo(() => {
+    return (
+      items.length > 0 &&
+      addr.address.trim().length >= 3 &&
+      addr.city.trim().length >= 2 &&
+      capOk(addr.postalCode) &&
+      addr.province.trim().length >= 2
+    );
+  }, [items.length, addr]);
+
+  async function goStripe() {
+    if (busy) return;
+    setErr(null);
+
+    if (!items.length) {
+      setErr("Il carrello è vuoto.");
+      return;
+    }
+    if (!canSubmit) {
+      setErr("Compila indirizzo, città, CAP e provincia.");
+      return;
+    }
+
+    try {
+      setBusy(true);
+
+      const clean: ShippingAddress = {
+        ...addr,
+        postalCode: addr.postalCode.replace(/\s+/g, ""),
+        province: addr.province.trim(), // può essere CA o Cagliari
+        country: "IT",
+      };
+
+      saveAddress(clean);
+
+      const payload = {
+        items: items.map((it: any) => ({
+          id: it.id,
+          productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
+          slug: it.slug,
+          name: it.name,
+          price: it.price, // ignorato server-side
+          qty: clampQty(it.qty),
+          imageUrl: it.image,
+          meta: it.meta ?? undefined,
+          lineId: it.lineId,
+        })),
+        billingType: "PRIVATE",
+        billingSnapshot: {
+          address: clean.address,
+          city: clean.city,
+          postalCode: clean.postalCode,
+          province: clean.province,
+          country: clean.country,
+        },
+        shippingAddress: {
+          address: clean.address,
+          city: clean.city,
+          postalCode: clean.postalCode,
+          province: clean.province,
+          country: clean.country,
+        },
+        currency: "EUR",
+      };
+
+      const res = await fetch("/api/checkout/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.ok) {
+        setErr(data?.message || data?.error || "Checkout non riuscito.");
+        return;
+      }
+
+      const url = data?.url;
+      if (!url) {
+        setErr("URL Stripe mancante.");
+        return;
+      }
+
+      window.location.href = url;
+    } catch (e: any) {
+      setErr(e?.message ? String(e.message) : "Errore inatteso.");
+    } finally {
+      setBusy(false);
+    }
   }
-  return res.json();
-}
 
-function asInt(v: any): number | null {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  return Math.trunc(n);
-}
+  return (
+    <Container>
+      <div className="py-10">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-extrabold text-text">Checkout</h1>
+            <p className="mt-1 text-sm text-muted-text">
+              Inserisci l’indirizzo: calcoliamo spedizione e totale finali.
+            </p>
+          </div>
+          <ButtonLink href="/carrello">Torna al carrello</ButtonLink>
+        </div>
 
-function normalizePriceEur(v: any): number | null {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) return null;
+        {items.length === 0 ? (
+          <div className="mt-6 rounded-2xl border border-border bg-background p-8 text-center">
+            <div className="text-base font-semibold text-text">Il carrello è vuoto</div>
+            <p className="mt-1 text-sm text-muted-text">Aggiungi un prodotto dal catalogo.</p>
+            <div className="mt-6">
+              <ButtonLink href="/catalogo">Vai al catalogo</ButtonLink>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
+            <section className="rounded-2xl border border-border bg-surface p-5 space-y-4">
+              <div className="text-sm font-extrabold text-text">Indirizzo di spedizione</div>
 
-  // Se qualcuno ha salvato in "centesimi" (770, 1290, 2000)
-  if (Number.isInteger(n) && n >= 100) return n / 100;
+              <label className="block">
+                <div className="text-xs font-semibold text-muted-text">Indirizzo</div>
+                <input
+                  className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                  value={addr.address}
+                  onChange={(e) => setAddr((s) => ({ ...s, address: e.target.value }))}
+                  placeholder="Via/Piazza e numero civico"
+                  autoComplete="street-address"
+                />
+              </label>
 
-  return n;
-}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="text-xs font-semibold text-muted-text">Città</div>
+                  <input
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                    value={addr.city}
+                    onChange={(e) => setAddr((s) => ({ ...s, city: e.target.value }))}
+                    placeholder="Città"
+                    autoComplete="address-level2"
+                  />
+                </label>
 
-export async function calculateShippingQuote(args: { items: CartItem[]; zone: ShippingZone }) {
-  const { items, zone } = args;
+                <label className="block">
+                  <div className="text-xs font-semibold text-muted-text">Provincia</div>
+                  <input
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                    value={addr.province}
+                    onChange={(e) => setAddr((s) => ({ ...s, province: e.target.value }))}
+                    placeholder="Es. CA oppure Cagliari"
+                    maxLength={24}
+                    autoComplete="address-level1"
+                  />
+                </label>
+              </div>
 
-  if (!items?.length) return { zone, weightTotalGrams: 0, shippingEur: 0 };
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <div className="text-xs font-semibold text-muted-text">CAP</div>
+                  <input
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                    value={addr.postalCode}
+                    onChange={(e) => setAddr((s) => ({ ...s, postalCode: e.target.value }))}
+                    placeholder="00000"
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                  />
+                </label>
 
-  // 1) Prendo i pesi prodotto da Strapi (server-side)
-  const ids = Array.from(new Set(items.map((i) => i.productId))).filter((x) => Number.isFinite(x) && x > 0);
+                <label className="block">
+                  <div className="text-xs font-semibold text-muted-text">Paese</div>
+                  <input className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm" value="Italia" readOnly />
+                </label>
+              </div>
 
-  const qs = new URLSearchParams();
-  qs.set("pagination[pageSize]", "100");
-  ids.forEach((id, i) => qs.append(`filters[id][$in][${i}]`, String(id)));
-  qs.append("fields[0]", "weight_grams");
+              <div className="text-xs text-muted-text">
+                Consegna: <b>24/48h</b>.
+              </div>
 
-  const productsResp: any = await fetchStrapi(`/api/products?${qs.toString()}`);
-  const list: any[] = Array.isArray(productsResp?.data) ? productsResp.data : [];
+              {err ? <div className="text-sm font-semibold text-red-600">{err}</div> : null}
 
-  const weightById = new Map<number, number>();
-  for (const row of list) {
-    const id = typeof row?.id === "number" ? row.id : null;
-    const w = row?.attributes?.weight_grams ?? row?.weight_grams;
-    const wi = asInt(w);
-    if (id && wi && wi > 0) weightById.set(id, wi);
-  }
+              <div className="pt-2">
+                <Button className="w-full" onClick={goStripe} disabled={!canSubmit || busy}>
+                  {busy ? "Apro Stripe…" : "Prosegui al pagamento"}
+                </Button>
+              </div>
+            </section>
 
-  let weightTotalGrams = 0;
-  const missing: number[] = [];
-
-  for (const it of items) {
-    const w = weightById.get(it.productId);
-    if (!w) missing.push(it.productId);
-    weightTotalGrams += (w ?? 0) * Math.max(1, Math.floor(it.qty));
-  }
-
-  if (missing.length) {
-    throw new Error(`Missing weight_grams for productId(s): ${missing.join(", ")}`);
-  }
-
-  // 2) Prendo le fasce (accetto IT_ISLAND oltre IT_ISLANDS)
-  const qs2 = new URLSearchParams();
-  qs2.set("pagination[pageSize]", "200");
-  qs2.set("filters[active][$eq]", "true");
-
-  if (zone === "IT_ISLANDS") {
-    qs2.append("filters[zone][$in][0]", "IT_ISLANDS");
-    qs2.append("filters[zone][$in][1]", "IT_ISLAND");
-  } else {
-    qs2.set("filters[zone][$eq]", "IT_MAINLAND");
-  }
-
-  // ordinamento aiuta, ma non ci fidiamo e gestiamo overlap
-  qs2.append("sort[0]", "min_weight_grams:asc");
-
-  const ratesResp: any = await fetchStrapi(`/api/shipping-rates?${qs2.toString()}`);
-  const rates: any[] = Array.isArray(ratesResp?.data) ? ratesResp.data : [];
-
-  const bands = rates
-    .map((r) => r?.attributes ?? r)
-    .map((r) => ({
-      min: asInt(r.min_weight_grams),
-      max: asInt(r.max_weight_grams),
-      price: normalizePriceEur(r.price_eur),
-    }))
-    .filter((b) => b.min != null && b.max != null && b.price != null && b.max >= b.min) as Array<{
-    min: number;
-    max: number;
-    price: number;
-  }>;
-
-  // 3) Match robusto: se ci sono overlap, prendo la fascia col MIN più alto (la più specifica)
-  const matches = bands.filter((b) => weightTotalGrams >= b.min && weightTotalGrams <= b.max);
-  if (!matches.length) {
-    throw new Error(`No shipping rate for zone=${zone} weight=${weightTotalGrams}g`);
-  }
-
-  matches.sort((a, b) => b.min - a.min);
-  const band = matches[0];
-
-  return {
-    zone,
-    weightTotalGrams,
-    shippingEur: band.price,
-  };
+            <aside className="h-fit rounded-2xl border border-border bg-surface p-5">
+              <div className="text-sm font-extrabold text-text">Riepilogo</div>
+              <div className="mt-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-text">Articoli</span>
+                  <span className="text-text">{summary.count}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-text">Totale prodotti</span>
+                  <span className="text-text">{formatEUR(summary.total)}</span>
+                </div>
+                <div className="text-xs text-muted-text mt-2">
+                  Spedizione e totale finale verranno mostrati su Stripe prima del pagamento.
+                </div>
+              </div>
+            </aside>
+          </div>
+        )}
+      </div>
+    </Container>
+  );
 }
