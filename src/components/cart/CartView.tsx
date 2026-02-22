@@ -14,7 +14,8 @@ const STRAPI_PUBLIC_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/
 function clampQty(v: unknown): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return 1;
-  return Math.max(1, Math.floor(n));
+  // safety: evita qty enormi
+  return Math.max(1, Math.min(999, Math.floor(n)));
 }
 
 function safeNumber(v: unknown, fallback = 0) {
@@ -228,7 +229,9 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
 type ShippingZone = "IT_MAINLAND" | "IT_ISLANDS";
 function normalizeZone(v: unknown): ShippingZone {
   const s = String(v ?? "").trim().toUpperCase();
-  return s === "IT_ISLANDS" ? "IT_ISLANDS" : "IT_MAINLAND";
+  // accetta anche IT_ISLAND (se mai arriva)
+  if (s === "IT_ISLANDS" || s === "IT_ISLAND") return "IT_ISLANDS";
+  return "IT_MAINLAND";
 }
 
 export default function CartView() {
@@ -241,9 +244,13 @@ export default function CartView() {
   const [quoteBusy, setQuoteBusy] = useState(false);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // ✅ NUOVO: zona spedizione selezionata dall’utente (Penisola / Isole)
-  // Default sicuro: Penisola
+  // ✅ Zona spedizione selezionata dall’utente
   const [shippingZone, setShippingZone] = useState<ShippingZone>("IT_MAINLAND");
+
+  // ✅ Quote spedizione (stima) server-side
+  const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
+  const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
+  const [shippingEur, setShippingEur] = useState<number | null>(null);
 
   // ---- QUOTE: calcola prezzi server-side (pubblico / azienda / cialde)
   useEffect(() => {
@@ -310,6 +317,70 @@ export default function CartView() {
     return () => controller.abort();
   }, [items]);
 
+  // ---- SHIPPING QUOTE: calcola spedizione server-side (peso + fascia)
+  useEffect(() => {
+    let cancelled = false;
+
+    // reset quando il carrello è vuoto
+    if (!items.length) {
+      setShippingQuoteBusy(false);
+      setShippingQuoteError(null);
+      setShippingEur(null);
+      return;
+    }
+
+    async function run() {
+      setShippingQuoteError(null);
+      setShippingEur(null);
+
+      try {
+        setShippingQuoteBusy(true);
+
+        const payload = {
+          zone: shippingZone,
+          items: items.map((it) => ({
+            productId: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
+            qty: clampQty(it.qty),
+          })),
+        };
+
+        const res = await fetchWithTimeout("/api/shipping/quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+          timeoutMs: 12_000,
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (cancelled) return;
+
+        if (!res.ok || !data?.ok) {
+          setShippingQuoteError(data?.error || "Errore spedizione");
+          return;
+        }
+
+        const eur = Number(data.shippingEur);
+        if (!Number.isFinite(eur) || eur < 0) {
+          setShippingQuoteError("Errore spedizione");
+          return;
+        }
+
+        setShippingEur(eur);
+      } catch (e: any) {
+        if (!cancelled) setShippingQuoteError("Errore calcolo spedizione");
+      } finally {
+        if (!cancelled) setShippingQuoteBusy(false);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [items, shippingZone]);
+
   const quoteMap = useMemo(() => {
     const map = new Map<string, NonNullable<Quote["pricedItems"]>[number]>();
     for (const qi of quote?.pricedItems ?? []) {
@@ -321,7 +392,19 @@ export default function CartView() {
   const subtotal =
     typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
 
-  const canCheckout = items.length > 0 && !checkoutBusy;
+  const baseTotal =
+    typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
+
+  const estimatedTotal =
+    typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
+
+  // ✅ blocca checkout se la spedizione non è calcolabile
+  const canCheckout =
+    items.length > 0 &&
+    !checkoutBusy &&
+    !shippingQuoteBusy &&
+    !shippingQuoteError &&
+    shippingEur !== null;
 
   async function startCheckout() {
     if (checkoutBusy) return;
@@ -329,6 +412,16 @@ export default function CartView() {
 
     if (!items.length) {
       setCheckoutError("Il carrello è vuoto.");
+      return;
+    }
+
+    // ulteriore safety: se spedizione non pronta, non partire
+    if (shippingQuoteBusy) {
+      setCheckoutError("Calcolo spedizione in corso…");
+      return;
+    }
+    if (shippingQuoteError) {
+      setCheckoutError("Spedizione non disponibile. Controlla la zona o riprova.");
       return;
     }
 
@@ -354,7 +447,7 @@ export default function CartView() {
         shippingTotal: 0,
         discountTotal: 0,
 
-        // ✅ NUOVO: zona spedizione usata dal server per calcolare la fascia peso corretta
+        // ✅ zona spedizione
         zone: shippingZone,
       };
 
@@ -490,7 +583,13 @@ export default function CartView() {
                     </div>
 
                     <div className="mt-2 text-xs text-muted-text">
-                      Il costo finale verrà mostrato nel checkout Stripe prima del pagamento.
+                      {shippingQuoteBusy
+                        ? "Calcolo spedizione in corso…"
+                        : shippingQuoteError
+                        ? "Spedizione non disponibile per questi articoli/zona."
+                        : shippingEur != null
+                        ? `Spedizione stimata: ${formatEUR(shippingEur)}`
+                        : "—"}
                     </div>
                   </div>
                 </div>
@@ -617,20 +716,27 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text text-xs font-semibold">
-                    calcolata al checkout ({shippingZone === "IT_ISLANDS" ? "Isole" : "Penisola"})
+                  <span className="text-text">
+                    {shippingQuoteBusy
+                      ? "Calcolo…"
+                      : shippingQuoteError
+                      ? shippingQuoteError
+                      : shippingEur != null
+                      ? formatEUR(shippingEur)
+                      : "—"}
                   </span>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
                   <span className="text-sm font-extrabold text-text">Totale</span>
                   <span className="text-base font-extrabold text-text">
-                    {/* qui mostriamo il totale stimato (senza spedizione) */}
-                    {formatEUR(typeof quote?.totals?.total === "number" ? quote.totals.total : subtotal)}
+                    {formatEUR(estimatedTotal)}
                   </span>
                 </div>
 
-                <div className="mt-2 text-xs text-muted-text">Consegna: <b>24/48h</b></div>
+                <div className="mt-2 text-xs text-muted-text">
+                  Consegna: <b>24/48h</b> • Totale stimato (verifica finale su Stripe)
+                </div>
               </div>
 
               <div className="mt-4">
@@ -641,6 +747,8 @@ export default function CartView() {
 
               {checkoutError ? (
                 <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
+              ) : shippingQuoteError ? (
+                <p className="mt-3 text-xs font-semibold text-red-600">Spedizione non disponibile: controlla pesi e fasce.</p>
               ) : (
                 <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
               )}
