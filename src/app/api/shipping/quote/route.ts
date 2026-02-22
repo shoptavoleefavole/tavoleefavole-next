@@ -52,7 +52,9 @@ function sanitizeSlug(v: any) {
 }
 
 function sanitizeItems(input: any) {
-  if (!Array.isArray(input)) return { byId: [] as Array<{ productId: number; qty: number }>, bySlugQty: new Map<string, number>() };
+  if (!Array.isArray(input)) {
+    return { byId: [] as Array<{ productId: number; qty: number }>, bySlugQty: new Map<string, number>() };
+  }
 
   const byId: Array<{ productId: number; qty: number }> = [];
   const bySlugQty = new Map<string, number>();
@@ -88,6 +90,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 12_000
 async function resolveIdsBySlugs(slugs: string[]) {
   const STRAPI_URL = pickStrapiBaseUrl();
   const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN || "";
+
   if (!STRAPI_URL) throw new Error("Missing env: STRAPI_URL");
   if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) throw new Error("Missing env: STRAPI_API_TOKEN");
 
@@ -110,7 +113,12 @@ async function resolveIdsBySlugs(slugs: string[]) {
   const map = new Map<string, number>();
   for (const row of arr) {
     const id = typeof row?.id === "number" ? row.id : null;
-    const slug = typeof row?.attributes?.slug === "string" ? row.attributes.slug : typeof row?.slug === "string" ? row.slug : null;
+    const slug =
+      typeof row?.attributes?.slug === "string"
+        ? row.attributes.slug
+        : typeof row?.slug === "string"
+        ? row.slug
+        : null;
     if (id && slug) map.set(String(slug), id);
   }
   return map;
@@ -140,7 +148,6 @@ export async function POST(req: Request) {
     if (!body) return jsonNoStore({ ok: false, error: "INVALID_JSON" }, 400);
 
     const shippingAddress = normalizeShippingAddress(body?.shippingAddress);
-    // Se non c’è address, non stimiamo (carrello pro: chiediamo indirizzo in checkout)
     if (!shippingAddress.postalCode && !shippingAddress.province) {
       return jsonNoStore({ ok: false, error: "ADDRESS_REQUIRED" }, 400);
     }
@@ -148,7 +155,7 @@ export async function POST(req: Request) {
     const zone = computeShippingZoneFromAddress(shippingAddress);
 
     const { byId, bySlugQty } = sanitizeItems(body?.items);
-    let items = [...byId];
+    const items: Array<{ productId: number; qty: number }> = [...byId];
 
     if (bySlugQty.size) {
       const slugs = Array.from(bySlugQty.keys());

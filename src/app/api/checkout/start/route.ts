@@ -778,23 +778,39 @@ async function checkInventoryFailSoft(args: {
 
 /* ---------------- ✅ Shipping by weight (SERVER) ---------------- */
 
-function normalizeShippingZone(body: ApiBody | null): ShippingZone {
-  const z = String(body?.zone ?? body?.shippingZone ?? "").trim().toUpperCase();
-  return z === "IT_ISLANDS" ? "IT_ISLANDS" : "IT_MAINLAND";
+type ShippingRateRow = { min: number; max: number; priceMajor: number };
+
+function normalizeWeightGramsMaybeKg(n: number) {
+  // Se uno inserisce 0–30 (kg) o 10.001 (kg), convertiamo a grammi
+  // Heuristica sicura: i range "giusti" in grammi arrivano fino a ~30000
+  if (n > 0 && n <= 300) return Math.round(n * 1000);
+  return Math.trunc(n);
 }
 
-type ShippingRateRow = { min: number; max: number; priceMajor: number };
+function normalizePriceMajorMaybeCents(n: number) {
+  // Se uno inserisce 770 invece di 7.70
+  if (Number.isInteger(n) && n >= 100) return n / 100;
+  return n;
+}
 
 function extractShippingRate(row: any): ShippingRateRow | null {
   const a = row?.attributes ?? row ?? {};
-  const min = Number(a?.min_weight_grams);
-  const max = Number(a?.max_weight_grams);
-  const priceMajor = Number(a?.price_eur);
 
-  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0 || max < 0 || max < min) return null;
+  const minRaw = Number(a?.min_weight_grams);
+  const maxRaw = Number(a?.max_weight_grams);
+  const priceRaw = Number(a?.price_eur);
+
+  if (!Number.isFinite(minRaw) || !Number.isFinite(maxRaw)) return null;
+  if (!Number.isFinite(priceRaw) || priceRaw <= 0) return null;
+
+  const min = normalizeWeightGramsMaybeKg(minRaw);
+  const max = normalizeWeightGramsMaybeKg(maxRaw);
+  const priceMajor = normalizePriceMajorMaybeCents(priceRaw);
+
+  if (min < 0 || max < 0 || max < min) return null;
   if (!Number.isFinite(priceMajor) || priceMajor <= 0) return null;
 
-  return { min: Math.trunc(min), max: Math.trunc(max), priceMajor };
+  return { min, max, priceMajor };
 }
 
 async function getShippingPriceMajor(args: {
@@ -807,8 +823,18 @@ async function getShippingPriceMajor(args: {
 
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "200");
-  qs.set("filters[zone][$eq]", zone);
   qs.set("filters[active][$eq]", "true");
+
+  if (zone === "IT_ISLANDS") {
+    // accetta entrambe le zone
+    qs.append("filters[zone][$in][0]", "IT_ISLANDS");
+    qs.append("filters[zone][$in][1]", "IT_ISLAND");
+  } else {
+    qs.set("filters[zone][$eq]", "IT_MAINLAND");
+  }
+
+  // Ordina per min crescente (poi scegliamo la più specifica)
+  qs.append("sort[0]", "min_weight_grams:asc");
 
   const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/shipping-rates?${qs.toString()}`, {
     method: "GET",
@@ -823,14 +849,16 @@ async function getShippingPriceMajor(args: {
   const arr = Array.isArray(r.data?.data) ? r.data.data : [];
   const bands = arr.map(extractShippingRate).filter(Boolean) as ShippingRateRow[];
 
-  const hit = bands.find((b) => weightTotalGrams >= b.min && weightTotalGrams <= b.max);
-  if (!hit) {
+  // Match robusto: se ci sono overlap, prendi la fascia col MIN più alto
+  const matches = bands.filter((b) => weightTotalGrams >= b.min && weightTotalGrams <= b.max);
+  if (!matches.length) {
     const e: any = new Error("No shipping rate for weight");
     e.code = "SHIPPING_RATE_NOT_FOUND";
     throw e;
   }
 
-  return hit.priceMajor;
+  matches.sort((a, b) => b.min - a.min);
+  return matches[0].priceMajor;
 }
 
 // ---------- POST ----------
