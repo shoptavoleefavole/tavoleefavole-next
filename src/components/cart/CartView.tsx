@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Container from "@/components/Container";
 import Button from "@/components/ui/Button";
 import ButtonLink from "@/components/ui/ButtonLink";
@@ -14,7 +15,6 @@ const STRAPI_PUBLIC_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/
 function clampQty(v: unknown): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return 1;
-  // safety: evita qty enormi
   return Math.max(1, Math.min(999, Math.floor(n)));
 }
 
@@ -42,7 +42,6 @@ function toIntOrNull(v: unknown): number | null {
 function sanitizeSlug(v: unknown): string | null {
   const s = safeString(v, "");
   if (!s) return null;
-  // slug safe (evita payload strani)
   if (!/^[a-z0-9-]{2,120}$/i.test(s)) return null;
   return s;
 }
@@ -52,30 +51,12 @@ function normalizeImageUrl(raw: unknown): string {
   const s = safeString(raw, "");
   if (!s) return "";
 
-  // già assoluta / data / blob
-  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("blob:")) {
-    return s;
-  }
-
-  // assets locali del frontend
-  if (s.startsWith("/brand/") || s.startsWith("/placeholder") || s.startsWith("/images/")) {
-    return s;
-  }
-
-  // classico caso Strapi: /uploads/...
-  if (s.startsWith("/uploads/") && STRAPI_PUBLIC_URL) {
-    return `${STRAPI_PUBLIC_URL}${s}`;
-  }
-
-  // fallback: lascia com’è
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("blob:")) return s;
+  if (s.startsWith("/brand/") || s.startsWith("/placeholder") || s.startsWith("/images/")) return s;
+  if (s.startsWith("/uploads/") && STRAPI_PUBLIC_URL) return `${STRAPI_PUBLIC_URL}${s}`;
   return s;
 }
 
-/** Immagine super-robusta:
- * - timeout -> fallback
- * - onError -> fallback
- * - evita hang lunghi quando origin è lento/down
- */
 function SafeImg({
   src,
   alt,
@@ -128,7 +109,6 @@ function SafeImg({
         loadedRef.current = true;
         if (timerRef.current) window.clearTimeout(timerRef.current);
         timerRef.current = null;
-
         if (currentSrc !== fallbackSrc) setCurrentSrc(fallbackSrc);
       }}
     />
@@ -150,60 +130,6 @@ function TruckIcon() {
         fill="currentColor"
       />
     </svg>
-  );
-}
-
-function MetaBadges({ meta }: { meta?: Record<string, any> }) {
-  if (!meta || typeof meta !== "object") return null;
-
-  const shapeLabel = (() => {
-    const shape = safeString(meta.shape);
-    if (!shape) return "";
-    if (shape === "tonda") return "Formato: Tonda";
-    if (shape === "rettangolare") return "Formato: Rettangolare";
-    if (shape === "personalizzato") return "Formato: Personalizzato";
-    return `Formato: ${shape}`;
-  })();
-
-  const materialLabel = (() => {
-    const material = safeString(meta.material);
-    if (!material) return "";
-    if (material === "ostia") return "Materiale: Ostia";
-    if (material === "pasta_di_zucchero") return "Materiale: Pasta di zucchero";
-    return `Materiale: ${material}`;
-  })();
-
-  const textLabel = (() => {
-    const t = safeString(meta.text);
-    if (!t) return "";
-    return `Dedica: “${t}”`;
-  })();
-
-  const noteLabel = (() => {
-    const n = safeString(meta.notes);
-    if (!n) return "";
-    return `Note: ${n}`;
-  })();
-
-  const badges = [materialLabel, shapeLabel, textLabel].filter(Boolean);
-
-  return (
-    <div className="mt-2">
-      {badges.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {badges.map((b) => (
-            <span
-              key={b}
-              className="rounded-full border border-border bg-surface px-3 py-1 text-[11px] font-extrabold text-text/80"
-            >
-              {b}
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {noteLabel ? <div className="mt-2 text-xs text-muted-text">{noteLabel}</div> : null}
-    </div>
   );
 }
 
@@ -241,50 +167,47 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   }
 }
 
-type ShippingZone = "IT_MAINLAND" | "IT_ISLANDS";
-function normalizeZone(v: unknown): ShippingZone {
-  const s = String(v ?? "").trim().toUpperCase();
-  // accetta anche IT_ISLAND (se mai arriva)
-  if (s === "IT_ISLANDS" || s === "IT_ISLAND") return "IT_ISLANDS";
-  return "IT_MAINLAND";
-}
+type ShippingAddress = { country: string; postalCode: string; province: string };
 
-function shippingErrorLabel(code: string | null) {
-  const c = String(code || "").trim().toUpperCase();
-
-  if (!c) return null;
-  if (c === "EMPTY_CART") return "Spedizione non disponibile per il carrello attuale.";
-  if (c === "SHIPPING_RATE_NOT_FOUND") return "Spedizione non disponibile per questo peso/zona.";
-  if (c === "SHIPPING_WEIGHT_MISSING") return "Spedizione non disponibile per alcuni articoli.";
-  if (c === "STRAPI_LOOKUP_FAILED" || c === "SERVER_MISCONFIGURED") return "Servizio spedizione temporaneamente non disponibile.";
-
-  // fallback generico (non spaventare l’utente con codici)
-  return "Spedizione non disponibile. Riprova tra poco.";
+function loadShippingAddress(): ShippingAddress | null {
+  try {
+    const raw = localStorage.getItem("tf_shipping_address_v1");
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    const country = String(j?.country ?? "IT").trim();
+    const postalCode = String(j?.postalCode ?? "").trim();
+    const province = String(j?.province ?? "").trim();
+    if (!postalCode && !province) return null;
+    return { country, postalCode, province };
+  } catch {
+    return null;
+  }
 }
 
 export default function CartView() {
+  const router = useRouter();
   const { items, summary, removeItem, setQty, clear } = useCart();
-
-  const [checkoutBusy, setCheckoutBusy] = useState(false);
-  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // ✅ Zona spedizione selezionata dall’utente (per ora resta; la toglieremo quando facciamo checkout indirizzo)
-  const [shippingZone, setShippingZone] = useState<ShippingZone>("IT_MAINLAND");
+  // indirizzo salvato (per stima spedizione nel carrello)
+  const [shippingAddress, setShippingAddress] = useState<ShippingAddress | null>(null);
 
-  // ✅ Quote spedizione (stima) server-side
+  // stima spedizione
   const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
-  const [shippingQuoteErrorCode, setShippingQuoteErrorCode] = useState<string | null>(null);
+  const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
-  const shippingAbortRef = useRef<AbortController | null>(null);
+
+  // carica indirizzo da localStorage (se presente)
+  useEffect(() => {
+    setShippingAddress(loadShippingAddress());
+  }, []);
 
   // ---- QUOTE: calcola prezzi server-side (pubblico / azienda / cialde)
   useEffect(() => {
     quoteAbortRef.current?.abort();
-    setCheckoutError(null);
 
     if (!items.length) {
       setQuote(null);
@@ -304,8 +227,8 @@ export default function CartView() {
           items: items.map((it: any) => ({
             lineId: it.lineId,
             qty: clampQty(it.qty),
-            id: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
-            productId: Number.isFinite(Number(it.productId)) ? Number(it.productId) : Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
+            id: toIntOrNull(it.id) ?? undefined,
+            productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
             slug: it.slug,
             imageUrl: it.image,
             meta: it.meta ?? undefined,
@@ -346,42 +269,40 @@ export default function CartView() {
     return () => controller.abort();
   }, [items]);
 
-  // ---- SHIPPING QUOTE: calcola spedizione server-side (peso + fascia)
+  // ---- SHIPPING QUOTE: SOLO se ho indirizzo salvato
   useEffect(() => {
-    // cancella richieste precedenti
-    shippingAbortRef.current?.abort();
+    let cancelled = false;
 
-    // reset quando il carrello è vuoto
     if (!items.length) {
       setShippingQuoteBusy(false);
-      setShippingQuoteErrorCode(null);
+      setShippingQuoteError(null);
       setShippingEur(null);
       return;
     }
 
-    const controller = new AbortController();
-    shippingAbortRef.current = controller;
+    // se non ho indirizzo, non calcolo
+    if (!shippingAddress) {
+      setShippingQuoteBusy(false);
+      setShippingQuoteError(null);
+      setShippingEur(null);
+      return;
+    }
 
     async function run() {
-      setShippingQuoteErrorCode(null);
+      setShippingQuoteError(null);
       setShippingEur(null);
 
       try {
         setShippingQuoteBusy(true);
 
         const payload = {
-          zone: shippingZone,
-          items: items.map((it: any) => {
-            const productId = toIntOrNull(it?.productId) ?? toIntOrNull(it?.id);
-            const slug = sanitizeSlug(it?.slug);
-
-            return {
-              productId: productId ?? undefined,
-              id: toIntOrNull(it?.id) ?? undefined,
-              slug: slug ?? undefined,
-              qty: clampQty(it?.qty),
-            };
-          }),
+          shippingAddress,
+          items: items.map((it: any) => ({
+            productId: toIntOrNull(it?.productId) ?? toIntOrNull(it?.id) ?? undefined,
+            id: toIntOrNull(it?.id) ?? undefined,
+            slug: sanitizeSlug(it?.slug) ?? undefined,
+            qty: clampQty(it?.qty),
+          })),
         };
 
         const res = await fetchWithTimeout("/api/shipping/quote", {
@@ -389,38 +310,36 @@ export default function CartView() {
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify(payload),
-          signal: controller.signal,
           timeoutMs: 12_000,
         });
 
         const data = await res.json().catch(() => null);
-
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
 
         if (!res.ok || !data?.ok) {
-          // salva il codice errore ma mostra messaggio user-friendly
-          const code = typeof data?.error === "string" ? data.error : "SHIPPING_QUOTE_FAILED";
-          setShippingQuoteErrorCode(code);
+          setShippingQuoteError("Spedizione non disponibile");
           return;
         }
 
         const eur = Number(data.shippingEur);
         if (!Number.isFinite(eur) || eur < 0) {
-          setShippingQuoteErrorCode("SHIPPING_QUOTE_FAILED");
+          setShippingQuoteError("Spedizione non disponibile");
           return;
         }
 
         setShippingEur(eur);
-      } catch (e: any) {
-        if (!controller.signal.aborted) setShippingQuoteErrorCode("SHIPPING_QUOTE_FAILED");
+      } catch {
+        if (!cancelled) setShippingQuoteError("Spedizione non disponibile");
       } finally {
-        if (!controller.signal.aborted) setShippingQuoteBusy(false);
+        if (!cancelled) setShippingQuoteBusy(false);
       }
     }
 
     run();
-    return () => controller.abort();
-  }, [items, shippingZone]);
+    return () => {
+      cancelled = true;
+    };
+  }, [items, shippingAddress]);
 
   const quoteMap = useMemo(() => {
     const map = new Map<string, NonNullable<Quote["pricedItems"]>[number]>();
@@ -432,133 +351,29 @@ export default function CartView() {
 
   const subtotal = typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
   const baseTotal = typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
-
   const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
 
-  const shippingUserMessage = shippingErrorLabel(shippingQuoteErrorCode);
-
-  // ✅ blocca checkout se la spedizione non è calcolabile
-  const canCheckout =
-    items.length > 0 &&
-    !checkoutBusy &&
-    !shippingQuoteBusy &&
-    !shippingQuoteErrorCode &&
-    shippingEur !== null;
-
-  async function startCheckout() {
-    if (checkoutBusy) return;
-    setCheckoutError(null);
-
-    if (!items.length) {
-      setCheckoutError("Il carrello è vuoto.");
-      return;
-    }
-
-    if (shippingQuoteBusy) {
-      setCheckoutError("Calcolo spedizione in corso…");
-      return;
-    }
-    if (shippingQuoteErrorCode) {
-      setCheckoutError(shippingUserMessage || "Spedizione non disponibile.");
-      return;
-    }
-
-    try {
-      setCheckoutBusy(true);
-
-      const payload = {
-        items: items.map((it: any) => ({
-          id: it.id,
-          productId: toIntOrNull(it?.productId) ?? toIntOrNull(it?.id) ?? undefined,
-          slug: it.slug,
-          name: it.name,
-          price: safeNumber(it.price, 0), // ignorato server-side
-          qty: clampQty(it.qty),
-          imageUrl: it.image,
-          meta: it.meta ?? undefined,
-          lineId: it.lineId,
-        })),
-        billingType: "PRIVATE",
-        billingSnapshot: {},
-        currency: "EUR",
-        // ⚠️ non usati lato server per la spedizione (il server calcola da peso)
-        shippingTotal: 0,
-        discountTotal: 0,
-
-        // ✅ zona spedizione (temporaneo: in futuro la calcoliamo da indirizzo)
-        zone: shippingZone,
-      };
-
-      const res = await fetchWithTimeout("/api/checkout/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(payload),
-        timeoutMs: 20_000,
-      });
-
-      const text = await res.text().catch(() => "");
-      const data = (() => {
-        try {
-          return JSON.parse(text);
-        } catch {
-          return null;
-        }
-      })();
-
-      if (!res.ok) {
-        const msg = data?.error || data?.message || `Checkout fallito (HTTP ${res.status})`;
-        setCheckoutError(typeof msg === "string" ? msg : "Checkout fallito.");
-        return;
-      }
-
-      const url = data?.url;
-      if (!url || typeof url !== "string") {
-        setCheckoutError("Checkout fallito: URL Stripe mancante.");
-        return;
-      }
-
-      window.location.href = url;
-    } catch (e: any) {
-      if (e?.name === "AbortError") {
-        setCheckoutError("Timeout: checkout troppo lento. Riprova tra poco.");
-      } else {
-        setCheckoutError(e?.message ? String(e.message) : "Errore imprevisto durante il checkout.");
-      }
-    } finally {
-      setTimeout(() => setCheckoutBusy(false), 250);
-    }
-  }
-
-  const header = useMemo(
-    () => (
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-extrabold text-text">Carrello</h1>
-          <p className="mt-1 text-sm text-muted-text">Rivedi i prodotti e completa l’ordine in pochi passaggi.</p>
-        </div>
-
-        {items.length > 0 ? (
-          <button
-            type="button"
-            onClick={clear}
-            className="text-sm font-semibold text-link hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            Svuota carrello
-          </button>
-        ) : null}
-      </div>
-    ),
-    [items.length, clear]
-  );
-
-  const auth = quote?.auth;
-  const showAuthHint = items.length > 0;
+  const canGoCheckout = items.length > 0;
 
   return (
     <Container>
       <div className="py-10">
-        {header}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-extrabold text-text">Carrello</h1>
+            <p className="mt-1 text-sm text-muted-text">Rivedi i prodotti e completa l’ordine in pochi passaggi.</p>
+          </div>
+
+          {items.length > 0 ? (
+            <button
+              type="button"
+              onClick={clear}
+              className="text-sm font-semibold text-link hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              Svuota carrello
+            </button>
+          ) : null}
+        </div>
 
         {items.length === 0 ? (
           <div className="mt-6 rounded-2xl border border-border bg-background p-8 text-center">
@@ -571,29 +386,6 @@ export default function CartView() {
         ) : (
           <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
             <section aria-label="Articoli" className="space-y-4">
-              {/* Hint login / azienda */}
-              {showAuthHint ? (
-                <div className="rounded-2xl border border-border bg-surface p-4">
-                  <div className="text-sm font-extrabold text-text">
-                    {auth?.authenticated
-                      ? auth?.isCompanyUser
-                        ? "Sei loggato come AZIENDA: prezzi riservati applicati ✅"
-                        : "Sei loggato ✅"
-                      : "Hai un account? Accedi per velocizzare l’acquisto (e prezzi aziende se disponibili)."}
-                  </div>
-                  {!auth?.authenticated ? (
-                    <div className="mt-3">
-                      <ButtonLink href="/account?next=/carrello">Accedi / Registrati</ButtonLink>
-                    </div>
-                  ) : null}
-                  {quoteBusy ? <div className="mt-2 text-xs text-muted-text">Aggiorno i prezzi…</div> : null}
-                  {quote?.ok === false && quote?.error ? (
-                    <div className="mt-2 text-xs font-semibold text-red-600">{quote.error}</div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {/* Box spedizione (peso) + consegna */}
               <div className="rounded-2xl border border-border bg-surface p-4">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
@@ -603,34 +395,23 @@ export default function CartView() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
                     <div className="mt-1 text-sm text-text/70">
-                      La spedizione viene calcolata <b>in base al peso totale</b> e alla zona selezionata.
-                    </div>
-
-                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="text-xs font-semibold text-muted-text">Zona spedizione</div>
-
-                      <select
-                        className="h-10 rounded-xl border border-border bg-background px-3 text-sm font-semibold text-text focus:outline-none focus:ring-2 focus:ring-primary"
-                        value={shippingZone}
-                        onChange={(e) => setShippingZone(normalizeZone(e.target.value))}
-                        aria-label="Zona spedizione"
-                      >
-                        <option value="IT_MAINLAND">Italia - Penisola</option>
-                        <option value="IT_ISLANDS">Italia - Isole (+2€)</option>
-                      </select>
+                      La spedizione viene calcolata <b>automaticamente</b> in base all’indirizzo (CAP/Provincia) al checkout.
                     </div>
 
                     <div className="mt-2 text-xs text-muted-text">
-                      {shippingQuoteBusy
-                        ? "Calcolo spedizione in corso…"
-                        : shippingUserMessage
-                        ? shippingUserMessage
-                        : shippingEur != null
-                        ? `Spedizione stimata: ${formatEUR(shippingEur)}`
-                        : "—"}
-                      {process.env.NODE_ENV === "development" && shippingQuoteErrorCode ? (
-                        <span className="ml-2 opacity-60">({shippingQuoteErrorCode})</span>
-                      ) : null}
+                      {shippingAddress ? (
+                        shippingQuoteBusy ? (
+                          "Calcolo spedizione in corso…"
+                        ) : shippingQuoteError ? (
+                          "Spedizione non disponibile (verifica indirizzo al checkout)."
+                        ) : shippingEur != null ? (
+                          `Spedizione stimata: ${formatEUR(shippingEur)}`
+                        ) : (
+                          "—"
+                        )
+                      ) : (
+                        "Inserisci l’indirizzo al checkout per vedere il costo di spedizione."
+                      )}
                     </div>
                   </div>
                 </div>
@@ -672,12 +453,8 @@ export default function CartView() {
 
                           <div className="mt-1 flex items-baseline gap-2">
                             <div className="text-sm font-extrabold text-text">{formatEUR(unit)}</div>
-                            {hasStrike ? (
-                              <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div>
-                            ) : null}
+                            {hasStrike ? <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div> : null}
                           </div>
-
-                          <MetaBadges meta={it.meta as any} />
                         </div>
 
                         <button
@@ -691,7 +468,6 @@ export default function CartView() {
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-3">
-                        {/* Quantità */}
                         <div className="flex items-center gap-2">
                           <div className="text-sm text-muted-text">Quantità</div>
 
@@ -745,26 +521,13 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Subtotale</span>
-                  <span className="text-text">
-                    {formatEUR(typeof quote?.totals?.subtotal === "number" ? quote.totals.subtotal : subtotal)}
-                  </span>
+                  <span className="text-text">{formatEUR(subtotal)}</span>
                 </div>
-
-                {typeof quote?.totals?.discountTotal === "number" && quote.totals.discountTotal > 0 ? (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-text">Risparmio</span>
-                    <span className="text-text">- {formatEUR(quote.totals.discountTotal)}</span>
-                  </div>
-                ) : null}
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
                   <span className="text-text">
-                    {shippingQuoteBusy
-                      ? "Calcolo…"
-                      : shippingEur != null && !shippingQuoteErrorCode
-                      ? formatEUR(shippingEur)
-                      : "—"}
+                    {shippingEur != null ? formatEUR(shippingEur) : "al checkout"}
                   </span>
                 </div>
 
@@ -779,18 +542,14 @@ export default function CartView() {
               </div>
 
               <div className="mt-4">
-                <Button className="w-full" onClick={startCheckout} disabled={!canCheckout}>
-                  {checkoutBusy ? "Reindirizzo a Stripe..." : "Vai al checkout"}
+                <Button className="w-full" onClick={() => router.push("/checkout/indirizzo")} disabled={!canGoCheckout}>
+                  Vai al checkout
                 </Button>
               </div>
 
-              {checkoutError ? (
-                <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
-              ) : shippingQuoteErrorCode ? (
-                <p className="mt-3 text-xs font-semibold text-red-600">{shippingUserMessage}</p>
-              ) : (
-                <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
-              )}
+              <p className="mt-3 text-xs text-muted-text">
+                Inserirai l’indirizzo e vedrai spedizione e totale finali prima del pagamento.
+              </p>
             </aside>
           </div>
         )}

@@ -1,6 +1,7 @@
 // src/app/api/checkout/start/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
+import { computeShippingZoneFromAddress } from "@/lib/shipping-zone";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -1109,7 +1110,13 @@ export async function POST(request: Request) {
     const discountMinor = Math.max(0, baseSubtotalMinor - finalSubtotalMinor);
 
     // ✅ SHIPPING: calcolo server-side da Strapi fasce peso
-    const zone: ShippingZone = normalizeShippingZone(body);
+    const addrSrc = (body as any)?.shippingAddress ?? (body as any)?.billingSnapshot ?? {};
+const shippingAddress = {
+  country: pickStr(addrSrc.country, addrSrc.paese, "IT"),
+  postalCode: pickStr(addrSrc.postalCode, addrSrc.cap),
+  province: pickStr(addrSrc.province, addrSrc.provincia),
+};
+const zone: ShippingZone = computeShippingZoneFromAddress(shippingAddress);
 
     let shippingMinor = 0;
     try {
