@@ -32,6 +32,21 @@ function safeString(v: unknown, fallback = "") {
   return s || fallback;
 }
 
+function toIntOrNull(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v.trim()) : Number(v);
+  if (!Number.isFinite(n)) return null;
+  const i = Math.trunc(n);
+  return i > 0 ? i : null;
+}
+
+function sanitizeSlug(v: unknown): string | null {
+  const s = safeString(v, "");
+  if (!s) return null;
+  // slug safe (evita payload strani)
+  if (!/^[a-z0-9-]{2,120}$/i.test(s)) return null;
+  return s;
+}
+
 // Se arriva "/uploads/..." dal carrello, rendila assoluta con STRAPI_PUBLIC_URL
 function normalizeImageUrl(raw: unknown): string {
   const s = safeString(raw, "");
@@ -234,6 +249,19 @@ function normalizeZone(v: unknown): ShippingZone {
   return "IT_MAINLAND";
 }
 
+function shippingErrorLabel(code: string | null) {
+  const c = String(code || "").trim().toUpperCase();
+
+  if (!c) return null;
+  if (c === "EMPTY_CART") return "Spedizione non disponibile per il carrello attuale.";
+  if (c === "SHIPPING_RATE_NOT_FOUND") return "Spedizione non disponibile per questo peso/zona.";
+  if (c === "SHIPPING_WEIGHT_MISSING") return "Spedizione non disponibile per alcuni articoli.";
+  if (c === "STRAPI_LOOKUP_FAILED" || c === "SERVER_MISCONFIGURED") return "Servizio spedizione temporaneamente non disponibile.";
+
+  // fallback generico (non spaventare l’utente con codici)
+  return "Spedizione non disponibile. Riprova tra poco.";
+}
+
 export default function CartView() {
   const { items, summary, removeItem, setQty, clear } = useCart();
 
@@ -244,13 +272,14 @@ export default function CartView() {
   const [quoteBusy, setQuoteBusy] = useState(false);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // ✅ Zona spedizione selezionata dall’utente
+  // ✅ Zona spedizione selezionata dall’utente (per ora resta; la toglieremo quando facciamo checkout indirizzo)
   const [shippingZone, setShippingZone] = useState<ShippingZone>("IT_MAINLAND");
 
   // ✅ Quote spedizione (stima) server-side
   const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
-  const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
+  const [shippingQuoteErrorCode, setShippingQuoteErrorCode] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
+  const shippingAbortRef = useRef<AbortController | null>(null);
 
   // ---- QUOTE: calcola prezzi server-side (pubblico / azienda / cialde)
   useEffect(() => {
@@ -272,11 +301,11 @@ export default function CartView() {
         const payload = {
           currency: "EUR",
           shippingTotal: 0,
-          items: items.map((it) => ({
+          items: items.map((it: any) => ({
             lineId: it.lineId,
             qty: clampQty(it.qty),
             id: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
-            productId: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
+            productId: Number.isFinite(Number(it.productId)) ? Number(it.productId) : Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
             slug: it.slug,
             imageUrl: it.image,
             meta: it.meta ?? undefined,
@@ -319,18 +348,22 @@ export default function CartView() {
 
   // ---- SHIPPING QUOTE: calcola spedizione server-side (peso + fascia)
   useEffect(() => {
-    let cancelled = false;
+    // cancella richieste precedenti
+    shippingAbortRef.current?.abort();
 
     // reset quando il carrello è vuoto
     if (!items.length) {
       setShippingQuoteBusy(false);
-      setShippingQuoteError(null);
+      setShippingQuoteErrorCode(null);
       setShippingEur(null);
       return;
     }
 
+    const controller = new AbortController();
+    shippingAbortRef.current = controller;
+
     async function run() {
-      setShippingQuoteError(null);
+      setShippingQuoteErrorCode(null);
       setShippingEur(null);
 
       try {
@@ -338,10 +371,17 @@ export default function CartView() {
 
         const payload = {
           zone: shippingZone,
-          items: items.map((it) => ({
-            productId: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
-            qty: clampQty(it.qty),
-          })),
+          items: items.map((it: any) => {
+            const productId = toIntOrNull(it?.productId) ?? toIntOrNull(it?.id);
+            const slug = sanitizeSlug(it?.slug);
+
+            return {
+              productId: productId ?? undefined,
+              id: toIntOrNull(it?.id) ?? undefined,
+              slug: slug ?? undefined,
+              qty: clampQty(it?.qty),
+            };
+          }),
         };
 
         const res = await fetchWithTimeout("/api/shipping/quote", {
@@ -349,36 +389,37 @@ export default function CartView() {
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify(payload),
+          signal: controller.signal,
           timeoutMs: 12_000,
         });
 
         const data = await res.json().catch(() => null);
 
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
 
         if (!res.ok || !data?.ok) {
-          setShippingQuoteError(data?.error || "Errore spedizione");
+          // salva il codice errore ma mostra messaggio user-friendly
+          const code = typeof data?.error === "string" ? data.error : "SHIPPING_QUOTE_FAILED";
+          setShippingQuoteErrorCode(code);
           return;
         }
 
         const eur = Number(data.shippingEur);
         if (!Number.isFinite(eur) || eur < 0) {
-          setShippingQuoteError("Errore spedizione");
+          setShippingQuoteErrorCode("SHIPPING_QUOTE_FAILED");
           return;
         }
 
         setShippingEur(eur);
       } catch (e: any) {
-        if (!cancelled) setShippingQuoteError("Errore calcolo spedizione");
+        if (!controller.signal.aborted) setShippingQuoteErrorCode("SHIPPING_QUOTE_FAILED");
       } finally {
-        if (!cancelled) setShippingQuoteBusy(false);
+        if (!controller.signal.aborted) setShippingQuoteBusy(false);
       }
     }
 
     run();
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [items, shippingZone]);
 
   const quoteMap = useMemo(() => {
@@ -389,21 +430,19 @@ export default function CartView() {
     return map;
   }, [quote]);
 
-  const subtotal =
-    typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
+  const subtotal = typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
+  const baseTotal = typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
 
-  const baseTotal =
-    typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
+  const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
 
-  const estimatedTotal =
-    typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
+  const shippingUserMessage = shippingErrorLabel(shippingQuoteErrorCode);
 
   // ✅ blocca checkout se la spedizione non è calcolabile
   const canCheckout =
     items.length > 0 &&
     !checkoutBusy &&
     !shippingQuoteBusy &&
-    !shippingQuoteError &&
+    !shippingQuoteErrorCode &&
     shippingEur !== null;
 
   async function startCheckout() {
@@ -415,13 +454,12 @@ export default function CartView() {
       return;
     }
 
-    // ulteriore safety: se spedizione non pronta, non partire
     if (shippingQuoteBusy) {
       setCheckoutError("Calcolo spedizione in corso…");
       return;
     }
-    if (shippingQuoteError) {
-      setCheckoutError("Spedizione non disponibile. Controlla la zona o riprova.");
+    if (shippingQuoteErrorCode) {
+      setCheckoutError(shippingUserMessage || "Spedizione non disponibile.");
       return;
     }
 
@@ -429,15 +467,15 @@ export default function CartView() {
       setCheckoutBusy(true);
 
       const payload = {
-        items: items.map((it) => ({
+        items: items.map((it: any) => ({
           id: it.id,
+          productId: toIntOrNull(it?.productId) ?? toIntOrNull(it?.id) ?? undefined,
           slug: it.slug,
           name: it.name,
           price: safeNumber(it.price, 0), // ignorato server-side
           qty: clampQty(it.qty),
           imageUrl: it.image,
           meta: it.meta ?? undefined,
-          productId: Number.isFinite(Number(it.id)) ? Number(it.id) : undefined,
           lineId: it.lineId,
         })),
         billingType: "PRIVATE",
@@ -447,7 +485,7 @@ export default function CartView() {
         shippingTotal: 0,
         discountTotal: 0,
 
-        // ✅ zona spedizione
+        // ✅ zona spedizione (temporaneo: in futuro la calcoliamo da indirizzo)
         zone: shippingZone,
       };
 
@@ -585,17 +623,20 @@ export default function CartView() {
                     <div className="mt-2 text-xs text-muted-text">
                       {shippingQuoteBusy
                         ? "Calcolo spedizione in corso…"
-                        : shippingQuoteError
-                        ? "Spedizione non disponibile per questi articoli/zona."
+                        : shippingUserMessage
+                        ? shippingUserMessage
                         : shippingEur != null
                         ? `Spedizione stimata: ${formatEUR(shippingEur)}`
                         : "—"}
+                      {process.env.NODE_ENV === "development" && shippingQuoteErrorCode ? (
+                        <span className="ml-2 opacity-60">({shippingQuoteErrorCode})</span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
               </div>
 
-              {items.map((it) => {
+              {items.map((it: any) => {
                 const slug = safeString(it.slug);
                 const isLinkable = !!slug;
 
@@ -631,7 +672,9 @@ export default function CartView() {
 
                           <div className="mt-1 flex items-baseline gap-2">
                             <div className="text-sm font-extrabold text-text">{formatEUR(unit)}</div>
-                            {hasStrike ? <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div> : null}
+                            {hasStrike ? (
+                              <div className="text-xs line-through text-text/50">{formatEUR(base!)}</div>
+                            ) : null}
                           </div>
 
                           <MetaBadges meta={it.meta as any} />
@@ -719,9 +762,7 @@ export default function CartView() {
                   <span className="text-text">
                     {shippingQuoteBusy
                       ? "Calcolo…"
-                      : shippingQuoteError
-                      ? shippingQuoteError
-                      : shippingEur != null
+                      : shippingEur != null && !shippingQuoteErrorCode
                       ? formatEUR(shippingEur)
                       : "—"}
                   </span>
@@ -729,9 +770,7 @@ export default function CartView() {
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
                   <span className="text-sm font-extrabold text-text">Totale</span>
-                  <span className="text-base font-extrabold text-text">
-                    {formatEUR(estimatedTotal)}
-                  </span>
+                  <span className="text-base font-extrabold text-text">{formatEUR(estimatedTotal)}</span>
                 </div>
 
                 <div className="mt-2 text-xs text-muted-text">
@@ -747,8 +786,8 @@ export default function CartView() {
 
               {checkoutError ? (
                 <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
-              ) : shippingQuoteError ? (
-                <p className="mt-3 text-xs font-semibold text-red-600">Spedizione non disponibile: controlla pesi e fasce.</p>
+              ) : shippingQuoteErrorCode ? (
+                <p className="mt-3 text-xs font-semibold text-red-600">{shippingUserMessage}</p>
               ) : (
                 <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
               )}

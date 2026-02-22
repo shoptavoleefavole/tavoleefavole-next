@@ -227,7 +227,7 @@ export default function AccountDashboardClient({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-2xl font-extrabold">
-              Benvenuto, <span className="text-primary">{display}</span>
+              Ciao, <span className="text-primary">{display}</span>
             </h1>
             <p className="mt-2 text-sm text-text/70">Da qui puoi gestire ordini, profilo e preferiti in modo semplice e veloce.</p>
             <p className="mt-1 text-xs text-text/60">

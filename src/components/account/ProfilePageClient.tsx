@@ -417,7 +417,7 @@ export default function ProfilePageClient() {
           {!nameOk ? <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p> : null}
 
           <p className="mt-3 text-sm text-muted-text">
-            Anteprima header: <span className="font-semibold">Benvenuto,</span> {firstToken(firstName) || "Account"}
+            Anteprima header: <span className="font-semibold">Ciao,</span> {firstToken(firstName) || "Account"}
           </p>
         </section>
 

@@ -6,7 +6,7 @@ export default async function AdminPage() {
   return (
     <main style={{ padding: 24 }}>
       <h1>Area Admin</h1>
-      <p>Benvenuto {me.username} (ruolo: {me.role?.name})</p>
+      <p>Ciao {me.username} (ruolo: {me.role?.name})</p>
     </main>
   );
 }

@@ -50,25 +50,95 @@ function clampQty(v: any) {
 
 function normalizeZone(input: any): ShippingZone {
   const z = String(input ?? "").trim().toUpperCase();
-  // accetta anche il vecchio IT_ISLAND (se per errore arriva così)
+  // accetta anche IT_ISLAND per compatibilità
   if (z === "IT_ISLANDS" || z === "IT_ISLAND") return "IT_ISLANDS";
   return "IT_MAINLAND";
 }
 
+function sanitizeSlug(v: any) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  // slug safe (evita payload strani)
+  if (!/^[a-z0-9-]{2,120}$/i.test(s)) return null;
+  return s;
+}
+
 function sanitizeItems(input: any) {
-  if (!Array.isArray(input)) return [];
+  if (!Array.isArray(input)) return { byId: [] as Array<{ productId: number; qty: number }>, slugs: [] as string[] };
 
-  const out: Array<{ productId: number; qty: number }> = [];
+  const byId: Array<{ productId: number; qty: number }> = [];
+  const slugs: string[] = [];
+
   for (const it of input) {
-    const pid = toIntStrict(it?.productId) ?? toIntStrict(it?.id);
-    if (!pid || pid <= 0) continue;
-
     const qty = clampQty(it?.qty);
-    out.push({ productId: pid, qty });
+    const pid = toIntStrict(it?.productId) ?? toIntStrict(it?.id);
+
+    if (pid && pid > 0) {
+      byId.push({ productId: pid, qty });
+      continue;
+    }
+
+    const slug = sanitizeSlug(it?.slug);
+    if (slug) slugs.push(slug);
   }
 
-  // evita payload enormi
-  return out.slice(0, 100);
+  return {
+    byId: byId.slice(0, 100),
+    slugs: Array.from(new Set(slugs)).slice(0, 100),
+  };
+}
+
+function pickStrapiBaseUrl() {
+  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "";
+  return String(raw).replace(/\/+$/, "");
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 12_000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function resolveProductIdsBySlugs(args: { slugs: string[] }) {
+  const STRAPI_URL = pickStrapiBaseUrl();
+  const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN || "";
+
+  if (!STRAPI_URL) throw new Error("Missing env: STRAPI_URL");
+  if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) throw new Error("Missing env: STRAPI_API_TOKEN");
+
+  const qs = new URLSearchParams();
+  qs.set("pagination[pageSize]", "100");
+  args.slugs.forEach((s, i) => qs.append(`filters[slug][$in][${i}]`, s));
+  qs.append("fields[0]", "id");
+  qs.append("fields[1]", "slug");
+
+  const url = `${STRAPI_URL}/api/products?${qs.toString()}`;
+
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${STRAPI_API_TOKEN}`,
+    },
+  });
+
+  if (!res.ok) throw new Error(`Strapi products lookup failed (${res.status})`);
+
+  const data = await res.json().catch(() => null);
+  const arr = Array.isArray(data?.data) ? data.data : [];
+
+  const map = new Map<string, number>();
+  for (const row of arr) {
+    const id = typeof row?.id === "number" ? row.id : null;
+    const slug = typeof row?.attributes?.slug === "string" ? row.attributes.slug : typeof row?.slug === "string" ? row.slug : null;
+    if (id && slug) map.set(String(slug), id);
+  }
+
+  return map;
 }
 
 function mapErrorToCode(message: string) {
@@ -76,6 +146,7 @@ function mapErrorToCode(message: string) {
   if (m.includes("missing weight_grams")) return "SHIPPING_WEIGHT_MISSING";
   if (m.includes("no shipping rate")) return "SHIPPING_RATE_NOT_FOUND";
   if (m.includes("missing env")) return "SERVER_MISCONFIGURED";
+  if (m.includes("lookup failed")) return "STRAPI_LOOKUP_FAILED";
   return "SHIPPING_QUOTE_FAILED";
 }
 
@@ -85,7 +156,31 @@ export async function POST(req: Request) {
     if (!body) return jsonNoStore({ ok: false, error: "INVALID_JSON" }, 400);
 
     const zone = normalizeZone(body?.zone ?? body?.shippingZone);
-    const items = sanitizeItems(body?.items);
+
+    const { byId, slugs } = sanitizeItems(body?.items);
+
+    let items: Array<{ productId: number; qty: number }> = [...byId];
+
+    // fallback professionale: se non ho ID, risolvo via slug su Strapi
+    if (!items.length && slugs.length) {
+      const map = await resolveProductIdsBySlugs({ slugs });
+      items = slugs
+        .map((s) => map.get(s))
+        .filter((id): id is number => typeof id === "number" && id > 0)
+        .map((productId) => {
+          const original = (body.items as any[]).find((x) => String(x?.slug ?? "").trim() === String(productId));
+          const qty = clampQty(original?.qty);
+          return { productId, qty };
+        });
+
+      // se sopra non trova qty (perché original non matcha), facciamo qty=1
+      if (!items.length) {
+        items = slugs
+          .map((s) => map.get(s))
+          .filter((id): id is number => typeof id === "number" && id > 0)
+          .map((productId) => ({ productId, qty: 1 }));
+      }
+    }
 
     if (!items.length) return jsonNoStore({ ok: false, error: "EMPTY_CART" }, 400);
 
