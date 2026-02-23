@@ -375,8 +375,8 @@ export default function ProfilePageClient() {
 
       <p className="mt-2 text-sm text-muted-text">
         {customerType === "BUSINESS"
-          ? "Completa i dati aziendali e gli indirizzi per fatturazione e spedizione."
-          : "Completa i tuoi dati e gli indirizzi per spedizione e fatturazione."}
+          ? "Completa i dati aziendali e gli indirizzi di spedizione e fatturazione."
+          : "Completa i tuoi dati e gli indirizzi di spedizione e fatturazione."}
       </p>
 
       <form onSubmit={onSave} className="mt-6 space-y-6">

@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type ShippingAddress = {
+type Address = {
   address: string;
   city: string;
   postalCode: string;
@@ -53,7 +53,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 12_000
   }
 }
 
-async function strapiApi(path: string, init: RequestInit) {
+async function strapiFetch(path: string, init: RequestInit) {
   const STRAPI_URL = requireEnv("STRAPI_URL", pickStrapiBaseUrl());
   const res = await fetchWithTimeout(`${STRAPI_URL}${path}`, init);
   const text = await res.text().catch(() => "");
@@ -61,34 +61,13 @@ async function strapiApi(path: string, init: RequestInit) {
   return { res, data, text };
 }
 
-async function getUserMe(userJwt: string) {
-  const r = await strapiApi("/api/users/me", {
-    method: "GET",
-    headers: { Accept: "application/json", Authorization: `Bearer ${userJwt}` },
-  });
-  if (!r.res.ok) return null;
-  return r.data;
+function capOk(cap: string) {
+  const c = String(cap || "").replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
 }
 
-async function findCustomerProfileByUserId(apiToken: string, userId: number) {
-  // customer-profiles?filters[user][id][$eq]=...
-  const qs = new URLSearchParams();
-  qs.set("pagination[pageSize]", "1");
-  qs.set("filters[user][id][$eq]", String(userId));
-
-  const r = await strapiApi(`/api/customer-profiles?${qs.toString()}`, {
-    method: "GET",
-    headers: { Accept: "application/json", Authorization: `Bearer ${apiToken}` },
-  });
-
-  if (!r.res.ok) return null;
-  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
-  return first ?? null;
-}
-
-function normalizeAddress(input: any): { ok: true; value: ShippingAddress } | { ok: false; error: string } {
+function normalizeAddress(input: any): { ok: true; value: Address } | { ok: false; error: string } {
   const src = input && typeof input === "object" ? input : {};
-
   const address = String(src.address ?? "").trim().slice(0, 120);
   const city = String(src.city ?? "").trim().slice(0, 80);
   const postalCode = String(src.postalCode ?? "").trim().replace(/\s+/g, "").slice(0, 10);
@@ -97,27 +76,99 @@ function normalizeAddress(input: any): { ok: true; value: ShippingAddress } | { 
 
   if (address.length < 3) return { ok: false, error: "ADDRESS_INVALID" };
   if (city.length < 2) return { ok: false, error: "CITY_INVALID" };
-  if (!/^\d{5}$/.test(postalCode)) return { ok: false, error: "CAP_INVALID" };
+  if (!capOk(postalCode)) return { ok: false, error: "CAP_INVALID" };
   if (province.length < 2) return { ok: false, error: "PROVINCE_INVALID" };
 
   return { ok: true, value: { address, city, postalCode, province, country } };
 }
 
-function pickShippingAddressFromProfile(profileRow: any): ShippingAddress | null {
+function pickShippingAddress(profileRow: any): Address | null {
   const a = profileRow?.attributes ?? profileRow ?? {};
-  const sa = a?.shippingAddress ?? null; // component Address
-
+  const sa = a?.shippingAddress ?? null;
   if (!sa || typeof sa !== "object") return null;
 
-  const address = String(sa.address ?? "").trim();
-  const city = String(sa.city ?? "").trim();
-  const postalCode = String(sa.postalCode ?? "").trim();
-  const province = String(sa.province ?? "").trim();
-  const country = String(sa.country ?? "IT").trim() || "IT";
+  return {
+    address: String(sa.address ?? "").trim(),
+    city: String(sa.city ?? "").trim(),
+    postalCode: String(sa.postalCode ?? "").trim(),
+    province: String(sa.province ?? "").trim(),
+    country: String(sa.country ?? "IT").trim() || "IT",
+  };
+}
 
-  const has = address && city && postalCode && province;
-  if (!has) return { address, city, postalCode, province, country }; // ritorna anche se incompleto
-  return { address, city, postalCode, province, country };
+async function getUserMe(userJwt: string) {
+  const r = await strapiFetch("/api/users/me", {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${userJwt}` },
+  });
+  if (!r.res.ok) return null;
+  return r.data;
+}
+
+async function findCustomerProfile(apiToken: string, userId: number) {
+  const qs = new URLSearchParams();
+  qs.set("pagination[pageSize]", "1");
+  qs.set("filters[user][id][$eq]", String(userId));
+  // utile in caso di Draft&Publish
+  qs.set("publicationState", "preview");
+
+  const r = await strapiFetch(`/api/customer-profiles?${qs.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiToken}` },
+  });
+
+  if (!r.res.ok) return { ok: false as const, status: r.res.status, text: r.text };
+  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
+  return { ok: true as const, row: first };
+}
+
+async function putCustomerProfile(apiToken: string, identifier: string, addr: Address) {
+  const payload = {
+    data: {
+      shippingAddress: {
+        address: addr.address,
+        city: addr.city,
+        postalCode: addr.postalCode,
+        province: addr.province,
+        country: addr.country,
+      },
+    },
+  };
+
+  return await strapiFetch(`/api/customer-profiles/${encodeURIComponent(identifier)}?publicationState=preview`, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function postCustomerProfile(apiToken: string, userId: number, addr: Address) {
+  const payload = {
+    data: {
+      user: userId,
+      shippingAddress: {
+        address: addr.address,
+        city: addr.city,
+        postalCode: addr.postalCode,
+        province: addr.province,
+        country: addr.country,
+      },
+    },
+  };
+
+  return await strapiFetch(`/api/customer-profiles?publicationState=preview`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function GET(req: Request) {
@@ -132,10 +183,13 @@ export async function GET(req: Request) {
     const userId = typeof me?.id === "number" ? me.id : null;
     if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    const profile = await findCustomerProfileByUserId(apiToken, userId);
-    if (!profile?.id) return jsonNoStore({ ok: true, hasAddress: false, address: null }, 200);
+    const prof = await findCustomerProfile(apiToken, userId);
+    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
 
-    const addr = pickShippingAddressFromProfile(profile);
+    const row = prof.row;
+    if (!row?.id) return jsonNoStore({ ok: true, hasAddress: false, address: null }, 200);
+
+    const addr = pickShippingAddress(row);
     const hasAddress = !!(addr?.address && addr?.city && addr?.postalCode && addr?.province);
 
     return jsonNoStore({ ok: true, hasAddress, address: addr }, 200);
@@ -156,37 +210,63 @@ export async function PUT(req: Request) {
     const userId = typeof me?.id === "number" ? me.id : null;
     if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    const profile = await findCustomerProfileByUserId(apiToken, userId);
-    const profileId = typeof profile?.id === "number" ? profile.id : null;
-    if (!profileId) return jsonNoStore({ ok: false, error: "PROFILE_NOT_FOUND" }, 404);
-
     const raw = await req.text().catch(() => "");
     const body = safeJsonParse(raw);
-
     const norm = normalizeAddress(body);
     if (!norm.ok) return jsonNoStore({ ok: false, error: norm.error }, 400);
 
-    const payload = {
-      data: {
-        shippingAddress: {
-          address: norm.value.address,
-          city: norm.value.city,
-          postalCode: norm.value.postalCode,
-          province: norm.value.province,
-          country: norm.value.country,
-        },
-      },
-    };
+    const prof = await findCustomerProfile(apiToken, userId);
+    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
 
-    const r = await strapiApi(`/api/customer-profiles/${encodeURIComponent(String(profileId))}`, {
-      method: "PUT",
-      headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${apiToken}` },
-      body: JSON.stringify(payload),
-    });
+    const row = prof.row;
 
-    if (!r.res.ok) return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED" }, 502);
+    // se non esiste profilo -> crealo
+    if (!row?.id) {
+      const created = await postCustomerProfile(apiToken, userId, norm.value);
+      if (!created.res.ok) {
+        return jsonNoStore(
+          {
+            ok: false,
+            error: "PROFILE_CREATE_FAILED",
+            status: created.res.status,
+          },
+          502
+        );
+      }
+      return jsonNoStore({ ok: true }, 200);
+    }
 
-    return jsonNoStore({ ok: true }, 200);
+    // Strapi v5 spesso vuole documentId. Se c'è, usalo.
+    const documentId =
+      typeof row?.documentId === "string"
+        ? row.documentId
+        : typeof row?.attributes?.documentId === "string"
+        ? row.attributes.documentId
+        : null;
+
+    const id = typeof row?.id === "number" ? String(row.id) : null;
+
+    // 1) tenta con documentId
+    if (documentId) {
+      const r1 = await putCustomerProfile(apiToken, documentId, norm.value);
+      if (r1.res.ok) return jsonNoStore({ ok: true }, 200);
+      // se fallisce, proviamo con id numerico come fallback
+      if (id) {
+        const r2 = await putCustomerProfile(apiToken, id, norm.value);
+        if (r2.res.ok) return jsonNoStore({ ok: true }, 200);
+        return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r2.res.status }, 502);
+      }
+      return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r1.res.status }, 502);
+    }
+
+    // 2) fallback su id numerico
+    if (id) {
+      const r = await putCustomerProfile(apiToken, id, norm.value);
+      if (!r.res.ok) return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r.res.status }, 502);
+      return jsonNoStore({ ok: true }, 200);
+    }
+
+    return jsonNoStore({ ok: false, error: "PROFILE_NOT_FOUND" }, 404);
   } catch {
     return jsonNoStore({ ok: false, error: "PROFILE_ROUTE_FAILED" }, 500);
   }

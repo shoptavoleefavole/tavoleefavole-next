@@ -8,7 +8,6 @@ import ButtonLink from "@/components/ui/ButtonLink";
 import { useCart } from "@/components/cart/CartProvider";
 import { formatEUR } from "@/lib/format";
 
-// Client-safe: Next inlines NEXT_PUBLIC_*
 const STRAPI_PUBLIC_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
 
 function clampQty(v: unknown): number {
@@ -48,7 +47,6 @@ function sanitizeSlug(v: unknown): string | null {
 function normalizeImageUrl(raw: unknown): string {
   const s = safeString(raw, "");
   if (!s) return "";
-
   if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:") || s.startsWith("blob:")) return s;
   if (s.startsWith("/brand/") || s.startsWith("/placeholder") || s.startsWith("/images/")) return s;
   if (s.startsWith("/uploads/") && STRAPI_PUBLIC_URL) return `${STRAPI_PUBLIC_URL}${s}`;
@@ -68,14 +66,12 @@ function SafeImg({
   fallbackSrc?: string;
   timeoutMs?: number;
 }) {
-  const normalized = normalizeImageUrl(src);
-  const [currentSrc, setCurrentSrc] = useState<string>(normalized || fallbackSrc);
+  const [currentSrc, setCurrentSrc] = useState<string>(normalizeImageUrl(src) || fallbackSrc);
   const loadedRef = useRef(false);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadedRef.current = false;
-
     const next = normalizeImageUrl(src);
     setCurrentSrc(next || fallbackSrc);
 
@@ -133,7 +129,6 @@ function TruckIcon() {
 
 type Quote = {
   ok: boolean;
-  auth?: { authenticated: boolean; isCompanyUser: boolean };
   pricedItems?: Array<{
     lineId: string | null;
     qty: number;
@@ -165,7 +160,6 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   const timeoutMs = init.timeoutMs ?? 12_000;
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
-
   try {
     return await fetch(url, { ...init, signal: ctrl.signal });
   } finally {
@@ -187,13 +181,7 @@ function validateAddress(a: Address) {
 }
 
 function formatAddressLine(a: Address) {
-  const parts = [
-    a.address?.trim(),
-    `${a.postalCode?.trim()} ${a.city?.trim()}`.trim(),
-    a.province?.trim(),
-    (a.country || "IT").trim().toUpperCase(),
-  ].filter(Boolean);
-  return parts.join(" • ");
+  return `${a.address} • ${a.postalCode} ${a.city} • ${a.province} • ${(a.country || "IT").toUpperCase()}`;
 }
 
 export default function CartView() {
@@ -205,9 +193,9 @@ export default function CartView() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // ---- Address from profile
+  // address profile
   const [addrLoading, setAddrLoading] = useState(true);
-  const [addrError, setAddrError] = useState<string | null>(null);
+  const [addrMsg, setAddrMsg] = useState<string | null>(null);
   const [address, setAddress] = useState<Address | null>(null);
 
   const [editingAddr, setEditingAddr] = useState(false);
@@ -220,7 +208,6 @@ export default function CartView() {
   });
   const [addrSaving, setAddrSaving] = useState(false);
 
-  // checkbox obbligatoria
   const [confirmAddress, setConfirmAddress] = useState(false);
 
   // shipping quote
@@ -228,13 +215,13 @@ export default function CartView() {
   const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
 
-  // 1) carica indirizzo dal profilo
+  // Load address from profile
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
       setAddrLoading(true);
-      setAddrError(null);
+      setAddrMsg(null);
 
       try {
         const res = await fetchWithTimeout("/api/profile/shipping-address", {
@@ -242,20 +229,13 @@ export default function CartView() {
           credentials: "include",
           timeoutMs: 12_000,
         });
-
         const data = await res.json().catch(() => null);
         if (cancelled) return;
 
-        if (res.status === 401) {
-          setAddrError("Devi accedere per continuare.");
+        if (!res.ok || !data?.ok) {
+          setAddrMsg("Impossibile caricare l’indirizzo di spedizione.");
           setAddress(null);
           setDraftAddr({ address: "", city: "", postalCode: "", province: "", country: "IT" });
-          return;
-        }
-
-        if (!res.ok || !data?.ok) {
-          setAddrError("Impossibile caricare l’indirizzo di spedizione.");
-          setAddress(null);
           return;
         }
 
@@ -272,10 +252,9 @@ export default function CartView() {
           setDraftAddr(normalized);
         } else {
           setAddress(null);
-          setDraftAddr({ address: "", city: "", postalCode: "", province: "", country: "IT" });
         }
       } catch {
-        if (!cancelled) setAddrError("Impossibile caricare l’indirizzo di spedizione.");
+        if (!cancelled) setAddrMsg("Impossibile caricare l’indirizzo di spedizione.");
       } finally {
         if (!cancelled) setAddrLoading(false);
       }
@@ -287,10 +266,14 @@ export default function CartView() {
     };
   }, []);
 
-  // 2) quote prezzi
+  // Reset confirm when address changes
+  useEffect(() => {
+    setConfirmAddress(false);
+  }, [address?.address, address?.city, address?.postalCode, address?.province]);
+
+  // Quote prezzi
   useEffect(() => {
     quoteAbortRef.current?.abort();
-    setCheckoutError(null);
 
     if (!items.length) {
       setQuote(null);
@@ -336,7 +319,7 @@ export default function CartView() {
         setQuote(data);
       } catch (e: any) {
         if (e?.name === "AbortError") {
-          setQuote({ ok: false, error: "Timeout: aggiornamento prezzi troppo lento. Riprova tra poco." });
+          setQuote({ ok: false, error: "Timeout: aggiornamento prezzi troppo lento." });
           return;
         }
         setQuote({ ok: false, error: e?.message ? String(e.message) : "Errore quote" });
@@ -347,12 +330,7 @@ export default function CartView() {
     return () => controller.abort();
   }, [items]);
 
-  // 3) se cambia indirizzo, l’utente deve riconfermare
-  useEffect(() => {
-    setConfirmAddress(false);
-  }, [address?.address, address?.city, address?.postalCode, address?.province]);
-
-  // 4) calcolo spedizione SOLO se indirizzo valido
+  // Shipping quote (requires valid address)
   useEffect(() => {
     let cancelled = false;
 
@@ -439,16 +417,14 @@ export default function CartView() {
     return map;
   }, [quote]);
 
-  const subtotal = typeof quote?.totals?.subtotal === "number" ? quote!.totals!.subtotal : safeNumber(summary.total, 0);
-  const baseTotal = typeof quote?.totals?.total === "number" ? quote!.totals!.total : subtotal;
+  const subtotal = typeof quote?.totals?.subtotal === "number" ? quote.totals.subtotal : safeNumber(summary.total, 0);
+  const baseTotal = typeof quote?.totals?.total === "number" ? quote.totals.total : subtotal;
   const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
 
-  const isAuthenticated = quote?.auth?.authenticated !== false; // best effort
   const addressValid = !!(address && !validateAddress(address));
 
   const canCheckout =
     items.length > 0 &&
-    isAuthenticated &&
     addressValid &&
     confirmAddress &&
     !checkoutBusy &&
@@ -458,11 +434,11 @@ export default function CartView() {
 
   async function saveProfileAddress() {
     if (addrSaving) return;
-    setAddrError(null);
+    setAddrMsg(null);
 
     const err = validateAddress(draftAddr);
     if (err) {
-      setAddrError(err);
+      setAddrMsg(err);
       return;
     }
 
@@ -473,24 +449,24 @@ export default function CartView() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify(draftAddr),
+        body: JSON.stringify({
+          ...draftAddr,
+          postalCode: String(draftAddr.postalCode).replace(/\s+/g, ""),
+          country: "IT",
+        }),
         timeoutMs: 12_000,
       });
 
       const data = await res.json().catch(() => null);
-      if (res.status === 401) {
-        setAddrError("Devi accedere per continuare.");
-        return;
-      }
       if (!res.ok || !data?.ok) {
-        setAddrError("Salvataggio indirizzo non riuscito.");
+        setAddrMsg("Salvataggio indirizzo non riuscito.");
         return;
       }
 
-      setAddress({ ...draftAddr, postalCode: draftAddr.postalCode.replace(/\s+/g, "") });
+      setAddress({ ...draftAddr, postalCode: String(draftAddr.postalCode).replace(/\s+/g, ""), country: "IT" });
       setEditingAddr(false);
     } catch {
-      setAddrError("Salvataggio indirizzo non riuscito.");
+      setAddrMsg("Salvataggio indirizzo non riuscito.");
     } finally {
       setAddrSaving(false);
     }
@@ -519,14 +495,14 @@ export default function CartView() {
         billingSnapshot: {
           address: address!.address,
           city: address!.city,
-          postalCode: address!.postalCode.replace(/\s+/g, ""),
+          postalCode: String(address!.postalCode).replace(/\s+/g, ""),
           province: address!.province,
           country: address!.country || "IT",
         },
         shippingAddress: {
           address: address!.address,
           city: address!.city,
-          postalCode: address!.postalCode.replace(/\s+/g, ""),
+          postalCode: String(address!.postalCode).replace(/\s+/g, ""),
           province: address!.province,
           country: address!.country || "IT",
         },
@@ -592,7 +568,6 @@ export default function CartView() {
         ) : (
           <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
             <section aria-label="Articoli" className="space-y-4">
-              {/* BOX SPEDIZIONE PRO */}
               <div className="rounded-2xl border border-border bg-surface p-4">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
@@ -622,17 +597,26 @@ export default function CartView() {
                     <div className="mt-3">
                       {addrLoading ? (
                         <div className="text-xs text-muted-text">Carico indirizzo…</div>
-                      ) : addrError ? (
-                        <div className="text-xs font-semibold text-red-600">{addrError}</div>
-                      ) : editingAddr ? (
-                        <div className="grid gap-3 sm:grid-cols-2">
+                      ) : addrMsg ? (
+                        <div className="text-xs font-semibold text-red-600">{addrMsg}</div>
+                      ) : null}
+
+                      {!editingAddr ? (
+                        address ? (
+                          <div className="text-sm text-text/70 mt-1">{formatAddressLine(address)}</div>
+                        ) : (
+                          <div className="text-sm text-text/70 mt-1">
+                            Nessun indirizzo salvato. Clicca <b>Modifica</b> per inserirlo.
+                          </div>
+                        )
+                      ) : (
+                        <div className="grid gap-3 sm:grid-cols-2 mt-2">
                           <label className="block sm:col-span-2">
                             <div className="text-xs font-semibold text-muted-text">Indirizzo</div>
                             <input
                               className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
                               value={draftAddr.address}
                               onChange={(e) => setDraftAddr((s) => ({ ...s, address: e.target.value }))}
-                              placeholder="Via/Piazza e numero civico"
                             />
                           </label>
 
@@ -642,7 +626,6 @@ export default function CartView() {
                               className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
                               value={draftAddr.city}
                               onChange={(e) => setDraftAddr((s) => ({ ...s, city: e.target.value }))}
-                              placeholder="Città"
                             />
                           </label>
 
@@ -652,7 +635,6 @@ export default function CartView() {
                               className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
                               value={draftAddr.province}
                               onChange={(e) => setDraftAddr((s) => ({ ...s, province: e.target.value }))}
-                              placeholder="Es. CA oppure Cagliari"
                             />
                           </label>
 
@@ -662,29 +644,24 @@ export default function CartView() {
                               className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
                               value={draftAddr.postalCode}
                               onChange={(e) => setDraftAddr((s) => ({ ...s, postalCode: e.target.value }))}
-                              placeholder="00000"
                               inputMode="numeric"
                             />
                           </label>
 
                           <label className="block">
                             <div className="text-xs font-semibold text-muted-text">Paese</div>
-                            <input
-                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
-                              value="Italia"
-                              readOnly
-                            />
+                            <input className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm" value="Italia" readOnly />
                           </label>
 
-                          <div className="sm:col-span-2 flex flex-wrap gap-2">
-                            <Button onClick={saveProfileAddress} disabled={addrSaving} className="min-w-[140px]">
+                          <div className="sm:col-span-2 flex gap-2">
+                            <Button onClick={saveProfileAddress} disabled={addrSaving}>
                               {addrSaving ? "Salvo…" : "Salva indirizzo"}
                             </Button>
                             <button
                               type="button"
                               onClick={() => {
                                 setEditingAddr(false);
-                                setAddrError(null);
+                                setAddrMsg(null);
                                 if (address) setDraftAddr(address);
                               }}
                               className="rounded-xl px-4 py-2 text-sm font-semibold text-text hover:bg-surface-2"
@@ -692,15 +669,6 @@ export default function CartView() {
                               Annulla
                             </button>
                           </div>
-                        </div>
-                      ) : address ? (
-                        <div className="text-sm text-text">
-                          <div className="font-semibold">Indirizzo di spedizione</div>
-                          <div className="mt-1 text-sm text-text/70">{formatAddressLine(address)}</div>
-                        </div>
-                      ) : (
-                        <div className="text-sm text-text/70">
-                          Nessun indirizzo salvato. Clicca <b>Modifica</b> per inserirlo.
                         </div>
                       )}
                     </div>
@@ -715,7 +683,6 @@ export default function CartView() {
                         : "—"}
                     </div>
 
-                    {/* Checkbox obbligatoria */}
                     <div className="mt-3">
                       <label className="flex items-start gap-2 text-sm">
                         <input
@@ -725,32 +692,25 @@ export default function CartView() {
                           onChange={(e) => setConfirmAddress(e.target.checked)}
                           disabled={!addressValid}
                         />
-                        <span className="text-text/80">
-                          Confermo che l’indirizzo di spedizione è corretto.
-                        </span>
+                        <span className="text-text/80">Confermo che l’indirizzo di spedizione è corretto.</span>
                       </label>
-                      {!addressValid ? (
-                        <div className="mt-1 text-xs text-red-600">Completa l’indirizzo per poter confermare.</div>
-                      ) : null}
+                      {!addressValid ? <div className="mt-1 text-xs text-red-600">Completa l’indirizzo per poter confermare.</div> : null}
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* ITEMS */}
               {items.map((it: any) => {
                 const slug = safeString(it.slug);
                 const isLinkable = !!slug;
 
                 const qi = it.lineId ? quoteMap.get(it.lineId) : undefined;
                 const unit = typeof qi?.unitPrice === "number" ? qi.unitPrice : safeNumber(it.price, 0);
+
                 const img = normalizeImageUrl(it.image) || "/brand/tavoleefavole-logo.svg";
 
                 return (
-                  <div
-                    key={it.lineId}
-                    className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]"
-                  >
+                  <div key={it.lineId} className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]">
                     <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface">
                       <SafeImg src={img} alt={safeString(it.name, "Prodotto")} className="h-full w-full object-cover" />
                     </div>
@@ -759,16 +719,12 @@ export default function CartView() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           {isLinkable ? (
-                            <Link
-                              href={`/prodotto/${encodeURIComponent(slug)}`}
-                              className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2"
-                            >
+                            <Link href={`/prodotto/${encodeURIComponent(slug)}`} className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2">
                               {it.name}
                             </Link>
                           ) : (
                             <div className="text-sm font-semibold text-text line-clamp-2">{it.name}</div>
                           )}
-
                           <div className="mt-1 text-sm font-extrabold text-text">{formatEUR(unit)}</div>
                         </div>
 
@@ -776,7 +732,6 @@ export default function CartView() {
                           type="button"
                           onClick={() => removeItem(it.lineId)}
                           className="shrink-0 rounded-xl px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                          aria-label="Rimuovi articolo"
                         >
                           Rimuovi
                         </button>
@@ -790,8 +745,7 @@ export default function CartView() {
                             <button
                               type="button"
                               onClick={() => setQty(it.lineId, Math.max(1, clampQty(it.qty) - 1))}
-                              className="h-10 w-10 grid place-items-center hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                              aria-label="Diminuisci quantità"
+                              className="h-10 w-10 grid place-items-center hover:bg-surface-2"
                             >
                               <span className="text-lg leading-none">−</span>
                             </button>
@@ -801,17 +755,11 @@ export default function CartView() {
                               min={1}
                               value={clampQty(it.qty)}
                               onChange={(e) => setQty(it.lineId, clampQty(e.target.value))}
-                              className="h-10 w-16 border-x border-border bg-background px-2 text-center text-sm text-text outline-none focus:ring-2 focus:ring-primary"
-                              aria-label="Quantità"
+                              className="h-10 w-16 border-x border-border bg-background px-2 text-center text-sm"
                               inputMode="numeric"
                             />
 
-                            <button
-                              type="button"
-                              onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)}
-                              className="h-10 w-10 grid place-items-center hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                              aria-label="Aumenta quantità"
-                            >
+                            <button type="button" onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)} className="h-10 w-10 grid place-items-center hover:bg-surface-2">
                               <span className="text-lg leading-none">+</span>
                             </button>
                           </div>
@@ -825,7 +773,6 @@ export default function CartView() {
               })}
             </section>
 
-            {/* RIEPILOGO */}
             <aside className="h-fit rounded-2xl border border-border bg-surface p-5">
               <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
 
@@ -842,9 +789,7 @@ export default function CartView() {
 
                 <div className="flex items-center justify-between">
                   <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text">
-                    {shippingEur != null && !shippingQuoteError ? formatEUR(shippingEur) : "—"}
-                  </span>
+                  <span className="text-text">{shippingEur != null && !shippingQuoteError ? formatEUR(shippingEur) : "—"}</span>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
@@ -852,9 +797,7 @@ export default function CartView() {
                   <span className="text-base font-extrabold text-text">{formatEUR(estimatedTotal)}</span>
                 </div>
 
-                <div className="mt-2 text-xs text-muted-text">
-                  Consegna: <b>24/48h</b>
-                </div>
+                <div className="mt-2 text-xs text-muted-text">Consegna: <b>24/48h</b></div>
               </div>
 
               <div className="mt-4">
