@@ -1,3 +1,5 @@
+//src/app/api/auth/register/route.ts
+
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -24,6 +26,8 @@ const STRAPI_SERVICE_TOKEN =
   process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
   process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
+
+const isDev = process.env.NODE_ENV === "development";
 
 function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, {
@@ -82,6 +86,43 @@ function sanitizeEmailMaybe(v: any) {
 
 const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l’accesso.";
+
+/* ------------------ Address (shipping + billing) ------------------ */
+
+type Address = {
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string; // IT
+};
+
+function capOk(cap: string) {
+  const c = String(cap || "").replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
+}
+
+function normAddress(input: any): Address {
+  const a = input && typeof input === "object" ? input : {};
+  return {
+    address: String(a.address ?? "").trim().slice(0, 120),
+    city: String(a.city ?? "").trim().slice(0, 80),
+    postalCode: String(a.postalCode ?? "").trim().replace(/\s+/g, "").slice(0, 10),
+    province: String(a.province ?? "").trim().slice(0, 24),
+    country: (String(a.country ?? "IT").trim().toUpperCase() || "IT").slice(0, 2),
+  };
+}
+
+function validateAddress(a: Address): string | null {
+  if (!a.address || a.address.length < 3) return "ADDRESS_INVALID";
+  if (!a.city || a.city.length < 2) return "CITY_INVALID";
+  if (!capOk(a.postalCode)) return "CAP_INVALID";
+  if (!a.province || a.province.length < 2) return "PROVINCE_INVALID";
+  if (!a.country || a.country.length < 2) return "COUNTRY_INVALID";
+  return null;
+}
+
+/* ------------------ fetch helpers ------------------ */
 
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
@@ -218,26 +259,29 @@ function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
 /**
  * ✅ Upsert CustomerProfile:
  * - prova create
- * - se fallisce per unique/duplicate, prova a trovare il profilo per userId e fare update
+ * - se fallisce per unique/duplicate, trova profilo per userId e fai update
+ * ✅ Ora include anche shippingAddress + billingAddress
  */
 async function ensureCustomerProfile(
   userId: number,
   firstName: string,
   lastName: string,
   type: "PERSON" | "BUSINESS",
-  userJwt?: string
+  userJwt: string | undefined,
+  shippingAddress: Address | null,
+  billingAddress: Address | null
 ) {
   const TIMEOUT = 12_000;
 
-  // patch pulito
-  const patch = {
+  const patch: any = {
     firstName: firstName || undefined,
     lastName: lastName || undefined,
     customerType: toStrapiCustomerType(type),
     user: userId,
+    ...(shippingAddress ? { shippingAddress } : {}),
+    ...(billingAddress ? { billingAddress } : {}),
   };
 
-  // scegliamo il token migliore disponibile
   const tokenToUse = STRAPI_SERVICE_TOKEN || userJwt || "";
   if (!tokenToUse) return false;
 
@@ -247,26 +291,31 @@ async function ensureCustomerProfile(
 
   if (create.res.ok) return true;
 
-  // se non è un errore da “già esiste”, fermati
   if (!looksLikeUniqueViolation(create.res.status, create.data, create.text)) return false;
 
   // 2) trova profilo esistente e fai UPDATE
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "1");
   qs.set("filters[user][id][$eq]", String(userId));
-  qs.set("publicationState", "preview"); // compat v5/v4
+  qs.set("publicationState", "preview");
   const found = await strapiGet(`/api/customer-profiles?${qs.toString()}`, TIMEOUT, tokenToUse);
 
   const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
   const docId = row?.documentId ? String(row.documentId) : null;
   const id = row?.id ? String(row.id) : null;
-  const key = docId || id;
 
+  // ✅ preferisci ID numerico, poi documentId
+  const key = id || docId;
   if (!key) return false;
 
-  const upd = await strapiPut(`/api/customer-profiles/${encodeURIComponent(key)}`, { data: patch }, TIMEOUT, tokenToUse);
-  console.warn("[register] ensureCustomerProfile update", { ok: upd.res.ok, status: upd.res.status });
+  const upd = await strapiPut(
+    `/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
+    { data: patch },
+    TIMEOUT,
+    tokenToUse
+  );
 
+  console.warn("[register] ensureCustomerProfile update", { ok: upd.res.ok, status: upd.res.status });
   return upd.res.ok;
 }
 
@@ -300,12 +349,7 @@ async function createCompanyBestEffort(
   );
   if (r.res.ok) return;
 
-  await strapiPost(
-    "/api/aziendes",
-    { data: { ...baseData, users: [userId] } },
-    TIMEOUT,
-    STRAPI_SERVICE_TOKEN
-  );
+  await strapiPost("/api/aziendes", { data: { ...baseData, users: [userId] } }, TIMEOUT, STRAPI_SERVICE_TOKEN);
 }
 
 export async function GET() {
@@ -314,7 +358,7 @@ export async function GET() {
       ok: true,
       version: REGISTER_VERSION,
       hasServiceToken: Boolean(STRAPI_SERVICE_TOKEN),
-      strapiUrl: strapiBaseUrl(),
+      ...(isDev ? { strapiUrl: strapiBaseUrl() } : {}),
     },
     200
   );
@@ -357,6 +401,26 @@ export async function POST(req: Request) {
       }
     }
 
+    // ✅ Shipping + Billing (obbligatori; billing può essere "uguale a shipping")
+    const billingSameAsShipping = Boolean(body?.billingSameAsShipping);
+
+    const shipIn = body?.shippingAddress;
+    const billIn = body?.billingAddress;
+
+    if (!shipIn) return jsonNoStore({ ok: false, error: "SHIPPING_REQUIRED" }, 400);
+    const ship = normAddress(shipIn);
+    const shipErr = validateAddress(ship);
+    if (shipErr) return jsonNoStore({ ok: false, error: `SHIPPING_${shipErr}` }, 400);
+
+    let bill: Address | null = null;
+    if (billingSameAsShipping) {
+      bill = ship;
+    } else {
+      if (!billIn) return jsonNoStore({ ok: false, error: "BILLING_REQUIRED" }, 400);
+      bill = normAddress(billIn);
+      const billErr = validateAddress(bill);
+      if (billErr) return jsonNoStore({ ok: false, error: `BILLING_${billErr}` }, 400);
+    }
 
     const REG_TIMEOUT = 15_000;
     const FORGOT_TIMEOUT = 6_000;
@@ -372,7 +436,7 @@ export async function POST(req: Request) {
 
       if (userId > 0) {
         try {
-          const createdOrUpdated = await ensureCustomerProfile(userId, firstName, lastName, type, jwt);
+          const createdOrUpdated = await ensureCustomerProfile(userId, firstName, lastName, type, jwt, ship, bill);
           console.warn("[register] ensureCustomerProfile result", { userId, createdOrUpdated });
         } catch {
           // noop
@@ -399,7 +463,6 @@ export async function POST(req: Request) {
       return jsonNoStore({ ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG }, 200);
     }
 
-    const isDev = process.env.NODE_ENV === "development";
     return jsonNoStore(
       { ok: false, error: "REGISTER_FAILED", ...(isDev ? { debug: { status: reg.res.status } } : {}) },
       502

@@ -1,3 +1,5 @@
+//src/components/cart/cartView
+
 "use client";
 
 import Link from "next/link";
@@ -156,6 +158,14 @@ type Address = {
   country: string;
 };
 
+type ProfileAddressesResponse = {
+  ok: boolean;
+  shippingAddress: Address | null;
+  billingAddress: Address | null;
+  hasShipping?: boolean;
+  hasBilling?: boolean;
+};
+
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const timeoutMs = init.timeoutMs ?? 12_000;
   const ctrl = new AbortController();
@@ -172,16 +182,17 @@ function capOk(cap: string) {
   return /^\d{5}$/.test(c);
 }
 
-function validateAddress(a: Address) {
-  if (!a.address.trim() || a.address.trim().length < 3) return "Inserisci un indirizzo valido.";
-  if (!a.city.trim() || a.city.trim().length < 2) return "Inserisci una città valida.";
-  if (!capOk(a.postalCode)) return "Inserisci un CAP valido (5 cifre).";
-  if (!a.province.trim() || a.province.trim().length < 2) return "Inserisci una provincia valida.";
+function validateAddress(a: Address | null): string | null {
+  if (!a) return "Indirizzo mancante.";
+  if (!a.address.trim() || a.address.trim().length < 3) return "Indirizzo non valido.";
+  if (!a.city.trim() || a.city.trim().length < 2) return "Città non valida.";
+  if (!capOk(a.postalCode)) return "CAP non valido.";
+  if (!a.province.trim() || a.province.trim().length < 2) return "Provincia non valida.";
   return null;
 }
 
-function formatAddressLine(a: Address) {
-  return `${a.address} • ${a.postalCode} ${a.city} • ${a.province} • ${(a.country || "IT").toUpperCase()}`;
+function formatAddressBlock(a: Address) {
+  return `${a.address}\n${a.postalCode} ${a.city} (${a.province})\n${(a.country || "IT").toUpperCase()}`;
 }
 
 export default function CartView() {
@@ -190,73 +201,78 @@ export default function CartView() {
   const [checkoutBusy, setCheckoutBusy] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
+  // prezzi server-side
   const [quote, setQuote] = useState<Quote | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // address profile
+  // indirizzi (spedizione + fatturazione)
   const [addrLoading, setAddrLoading] = useState(true);
-  const [addrMsg, setAddrMsg] = useState<string | null>(null);
-  const [address, setAddress] = useState<Address | null>(null);
+  const [addrError, setAddrError] = useState<string | null>(null);
+  const [shippingAddress, setShippingAddress] = useState<Address | null>(null);
+  const [billingAddress, setBillingAddress] = useState<Address | null>(null);
 
-  const [editingAddr, setEditingAddr] = useState(false);
-  const [draftAddr, setDraftAddr] = useState<Address>({
-    address: "",
-    city: "",
-    postalCode: "",
-    province: "",
-    country: "IT",
-  });
-  const [addrSaving, setAddrSaving] = useState(false);
-
-  const [confirmAddress, setConfirmAddress] = useState(false);
-
-  // shipping quote
+  // spedizione stimata
   const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
   const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
 
-  // Load address from profile
+  // ---- LOAD profile addresses (PRO)
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
       setAddrLoading(true);
-      setAddrMsg(null);
+      setAddrError(null);
 
+      // 1) prova endpoint nuovo (spedizione + fatturazione)
       try {
-        const res = await fetchWithTimeout("/api/profile/shipping-address", {
+        const res = await fetchWithTimeout("/api/profile/addresses", {
           method: "GET",
           credentials: "include",
           timeoutMs: 12_000,
         });
-        const data = await res.json().catch(() => null);
+
+        if (res.ok) {
+          const data = (await res.json().catch(() => null)) as ProfileAddressesResponse | null;
+          if (cancelled) return;
+
+          if (data?.ok) {
+            setShippingAddress(data.shippingAddress ?? null);
+            setBillingAddress(data.billingAddress ?? null);
+            setAddrLoading(false);
+            return;
+          }
+        }
+
+        // se 404 o non ok -> fallback a shipping-address (non rompiamo nulla)
+      } catch {
+        // fallback sotto
+      }
+
+      // 2) fallback: vecchio endpoint solo spedizione
+      try {
+        const res2 = await fetchWithTimeout("/api/profile/shipping-address", {
+          method: "GET",
+          credentials: "include",
+          timeoutMs: 12_000,
+        });
+        const data2 = await res2.json().catch(() => null);
         if (cancelled) return;
 
-        if (!res.ok || !data?.ok) {
-          setAddrMsg("Impossibile caricare l’indirizzo di spedizione.");
-          setAddress(null);
-          setDraftAddr({ address: "", city: "", postalCode: "", province: "", country: "IT" });
+        if (res2.ok && data2?.ok && data2?.address) {
+          setShippingAddress(data2.address as Address);
+          setBillingAddress(null);
+          setAddrLoading(false);
           return;
         }
 
-        const a = data?.address;
-        if (a && typeof a === "object") {
-          const normalized: Address = {
-            address: String(a.address ?? "").trim(),
-            city: String(a.city ?? "").trim(),
-            postalCode: String(a.postalCode ?? "").trim(),
-            province: String(a.province ?? "").trim(),
-            country: String(a.country ?? "IT").trim() || "IT",
-          };
-          setAddress(normalized);
-          setDraftAddr(normalized);
-        } else {
-          setAddress(null);
-        }
+        setAddrError("Impossibile caricare gli indirizzi dal profilo.");
+        setAddrLoading(false);
       } catch {
-        if (!cancelled) setAddrMsg("Impossibile caricare l’indirizzo di spedizione.");
-      } finally {
-        if (!cancelled) setAddrLoading(false);
+        if (!cancelled) {
+          setAddrError("Impossibile caricare gli indirizzi dal profilo.");
+          setAddrLoading(false);
+        }
       }
     }
 
@@ -266,12 +282,7 @@ export default function CartView() {
     };
   }, []);
 
-  // Reset confirm when address changes
-  useEffect(() => {
-    setConfirmAddress(false);
-  }, [address?.address, address?.city, address?.postalCode, address?.province]);
-
-  // Quote prezzi
+  // ---- QUOTE prezzi
   useEffect(() => {
     quoteAbortRef.current?.abort();
 
@@ -309,13 +320,10 @@ export default function CartView() {
         });
 
         const data = (await res.json().catch(() => null)) as Quote | null;
-
         if (!res.ok || !data?.ok) {
-          const msg = data?.error || `Quote fallita (HTTP ${res.status})`;
-          setQuote({ ok: false, error: msg });
+          setQuote({ ok: false, error: data?.error || `Quote fallita (HTTP ${res.status})` });
           return;
         }
-
         setQuote(data);
       } catch (e: any) {
         if (e?.name === "AbortError") {
@@ -330,7 +338,7 @@ export default function CartView() {
     return () => controller.abort();
   }, [items]);
 
-  // Shipping quote (requires valid address)
+  // ---- SHIPPING QUOTE (serve shippingAddress valido)
   useEffect(() => {
     let cancelled = false;
 
@@ -341,15 +349,8 @@ export default function CartView() {
       return;
     }
 
-    if (!address) {
-      setShippingQuoteBusy(false);
-      setShippingQuoteError("Inserisci l’indirizzo di spedizione.");
-      setShippingEur(null);
-      return;
-    }
-
-    const err = validateAddress(address);
-    if (err) {
+    const errShip = validateAddress(shippingAddress);
+    if (errShip) {
       setShippingQuoteBusy(false);
       setShippingQuoteError("Completa l’indirizzo di spedizione per calcolare la spedizione.");
       setShippingEur(null);
@@ -364,7 +365,7 @@ export default function CartView() {
         setShippingQuoteBusy(true);
 
         const payload = {
-          shippingAddress: address,
+          shippingAddress,
           items: items.map((it: any) => ({
             productId: toIntOrNull(it?.productId) ?? toIntOrNull(it?.id) ?? undefined,
             id: toIntOrNull(it?.id) ?? undefined,
@@ -407,7 +408,7 @@ export default function CartView() {
     return () => {
       cancelled = true;
     };
-  }, [items, address]);
+  }, [items, shippingAddress]);
 
   const quoteMap = useMemo(() => {
     const map = new Map<string, NonNullable<Quote["pricedItems"]>[number]>();
@@ -421,56 +422,20 @@ export default function CartView() {
   const baseTotal = typeof quote?.totals?.total === "number" ? quote.totals.total : subtotal;
   const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
 
-  const addressValid = !!(address && !validateAddress(address));
+  // ---- VALIDAZIONE indirizzi
+  const shippingInvalid = validateAddress(shippingAddress);
+  const billingInvalid = validateAddress(billingAddress);
 
   const canCheckout =
     items.length > 0 &&
-    addressValid &&
-    confirmAddress &&
     !checkoutBusy &&
+    !addrLoading &&
+    !addrError &&
+    !shippingInvalid &&
+    !billingInvalid &&
     !shippingQuoteBusy &&
     !shippingQuoteError &&
     shippingEur !== null;
-
-  async function saveProfileAddress() {
-    if (addrSaving) return;
-    setAddrMsg(null);
-
-    const err = validateAddress(draftAddr);
-    if (err) {
-      setAddrMsg(err);
-      return;
-    }
-
-    try {
-      setAddrSaving(true);
-
-      const res = await fetchWithTimeout("/api/profile/shipping-address", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          ...draftAddr,
-          postalCode: String(draftAddr.postalCode).replace(/\s+/g, ""),
-          country: "IT",
-        }),
-        timeoutMs: 12_000,
-      });
-
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        setAddrMsg("Salvataggio indirizzo non riuscito.");
-        return;
-      }
-
-      setAddress({ ...draftAddr, postalCode: String(draftAddr.postalCode).replace(/\s+/g, ""), country: "IT" });
-      setEditingAddr(false);
-    } catch {
-      setAddrMsg("Salvataggio indirizzo non riuscito.");
-    } finally {
-      setAddrSaving(false);
-    }
-  }
 
   async function startCheckout() {
     if (!canCheckout) return;
@@ -493,18 +458,18 @@ export default function CartView() {
         })),
         billingType: "PRIVATE",
         billingSnapshot: {
-          address: address!.address,
-          city: address!.city,
-          postalCode: String(address!.postalCode).replace(/\s+/g, ""),
-          province: address!.province,
-          country: address!.country || "IT",
+          address: billingAddress!.address,
+          city: billingAddress!.city,
+          postalCode: String(billingAddress!.postalCode).replace(/\s+/g, ""),
+          province: billingAddress!.province,
+          country: billingAddress!.country || "IT",
         },
         shippingAddress: {
-          address: address!.address,
-          city: address!.city,
-          postalCode: String(address!.postalCode).replace(/\s+/g, ""),
-          province: address!.province,
-          country: address!.country || "IT",
+          address: shippingAddress!.address,
+          city: shippingAddress!.city,
+          postalCode: String(shippingAddress!.postalCode).replace(/\s+/g, ""),
+          province: shippingAddress!.province,
+          country: shippingAddress!.country || "IT",
         },
         currency: "EUR",
       };
@@ -566,140 +531,9 @@ export default function CartView() {
             </div>
           </div>
         ) : (
-          <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px]">
+          <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_420px]">
+            {/* SINISTRA: prodotti */}
             <section aria-label="Articoli" className="space-y-4">
-              <div className="rounded-2xl border border-border bg-surface p-4">
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
-                    <TruckIcon />
-                  </span>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
-                        <div className="mt-1 text-sm text-text/70">
-                          Spedizione calcolata automaticamente in base al <b>peso totale</b> e all’<b>indirizzo di spedizione</b>.
-                        </div>
-                      </div>
-
-                      {!editingAddr ? (
-                        <button
-                          type="button"
-                          onClick={() => setEditingAddr(true)}
-                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                        >
-                          Modifica
-                        </button>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-3">
-                      {addrLoading ? (
-                        <div className="text-xs text-muted-text">Carico indirizzo…</div>
-                      ) : addrMsg ? (
-                        <div className="text-xs font-semibold text-red-600">{addrMsg}</div>
-                      ) : null}
-
-                      {!editingAddr ? (
-                        address ? (
-                          <div className="text-sm text-text/70 mt-1">{formatAddressLine(address)}</div>
-                        ) : (
-                          <div className="text-sm text-text/70 mt-1">
-                            Nessun indirizzo salvato. Clicca <b>Modifica</b> per inserirlo.
-                          </div>
-                        )
-                      ) : (
-                        <div className="grid gap-3 sm:grid-cols-2 mt-2">
-                          <label className="block sm:col-span-2">
-                            <div className="text-xs font-semibold text-muted-text">Indirizzo</div>
-                            <input
-                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
-                              value={draftAddr.address}
-                              onChange={(e) => setDraftAddr((s) => ({ ...s, address: e.target.value }))}
-                            />
-                          </label>
-
-                          <label className="block">
-                            <div className="text-xs font-semibold text-muted-text">Città</div>
-                            <input
-                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
-                              value={draftAddr.city}
-                              onChange={(e) => setDraftAddr((s) => ({ ...s, city: e.target.value }))}
-                            />
-                          </label>
-
-                          <label className="block">
-                            <div className="text-xs font-semibold text-muted-text">Provincia</div>
-                            <input
-                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
-                              value={draftAddr.province}
-                              onChange={(e) => setDraftAddr((s) => ({ ...s, province: e.target.value }))}
-                            />
-                          </label>
-
-                          <label className="block">
-                            <div className="text-xs font-semibold text-muted-text">CAP</div>
-                            <input
-                              className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
-                              value={draftAddr.postalCode}
-                              onChange={(e) => setDraftAddr((s) => ({ ...s, postalCode: e.target.value }))}
-                              inputMode="numeric"
-                            />
-                          </label>
-
-                          <label className="block">
-                            <div className="text-xs font-semibold text-muted-text">Paese</div>
-                            <input className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm" value="Italia" readOnly />
-                          </label>
-
-                          <div className="sm:col-span-2 flex gap-2">
-                            <Button onClick={saveProfileAddress} disabled={addrSaving}>
-                              {addrSaving ? "Salvo…" : "Salva indirizzo"}
-                            </Button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingAddr(false);
-                                setAddrMsg(null);
-                                if (address) setDraftAddr(address);
-                              }}
-                              className="rounded-xl px-4 py-2 text-sm font-semibold text-text hover:bg-surface-2"
-                            >
-                              Annulla
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mt-3 text-xs text-muted-text">
-                      {shippingQuoteBusy
-                        ? "Calcolo spedizione…"
-                        : shippingQuoteError
-                        ? shippingQuoteError
-                        : shippingEur != null
-                        ? `Spedizione: ${formatEUR(shippingEur)}`
-                        : "—"}
-                    </div>
-
-                    <div className="mt-3">
-                      <label className="flex items-start gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          className="mt-1 h-4 w-4"
-                          checked={confirmAddress}
-                          onChange={(e) => setConfirmAddress(e.target.checked)}
-                          disabled={!addressValid}
-                        />
-                        <span className="text-text/80">Confermo che l’indirizzo di spedizione è corretto.</span>
-                      </label>
-                      {!addressValid ? <div className="mt-1 text-xs text-red-600">Completa l’indirizzo per poter confermare.</div> : null}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {items.map((it: any) => {
                 const slug = safeString(it.slug);
                 const isLinkable = !!slug;
@@ -710,7 +544,10 @@ export default function CartView() {
                 const img = normalizeImageUrl(it.image) || "/brand/tavoleefavole-logo.svg";
 
                 return (
-                  <div key={it.lineId} className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]">
+                  <div
+                    key={it.lineId}
+                    className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]"
+                  >
                     <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface">
                       <SafeImg src={img} alt={safeString(it.name, "Prodotto")} className="h-full w-full object-cover" />
                     </div>
@@ -719,7 +556,10 @@ export default function CartView() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           {isLinkable ? (
-                            <Link href={`/prodotto/${encodeURIComponent(slug)}`} className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2">
+                            <Link
+                              href={`/prodotto/${encodeURIComponent(slug)}`}
+                              className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2"
+                            >
                               {it.name}
                             </Link>
                           ) : (
@@ -740,7 +580,6 @@ export default function CartView() {
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <div className="text-sm text-muted-text">Quantità</div>
-
                           <div className="inline-flex items-center overflow-hidden rounded-xl border border-border bg-background">
                             <button
                               type="button"
@@ -759,7 +598,11 @@ export default function CartView() {
                               inputMode="numeric"
                             />
 
-                            <button type="button" onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)} className="h-10 w-10 grid place-items-center hover:bg-surface-2">
+                            <button
+                              type="button"
+                              onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)}
+                              className="h-10 w-10 grid place-items-center hover:bg-surface-2"
+                            >
                               <span className="text-lg leading-none">+</span>
                             </button>
                           </div>
@@ -773,48 +616,131 @@ export default function CartView() {
               })}
             </section>
 
-            <aside className="h-fit rounded-2xl border border-border bg-surface p-5">
-              <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
-
-              <div className="mt-4 space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-text">Articoli</span>
-                  <span className="text-text">{summary.count}</span>
+            {/* DESTRA: spedizione + fatturazione + riepilogo */}
+            <aside className="space-y-4">
+              {/* BOX consegna */}
+              <div className="rounded-2xl border border-border bg-surface p-5">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
+                    <TruckIcon />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
+                    <div className="mt-1 text-sm text-text/70">
+                      Spedizione calcolata automaticamente in base al <b>peso totale</b> e agli indirizzi salvati.
+                    </div>
+                  </div>
                 </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-text">Subtotale</span>
-                  <span className="text-text">{formatEUR(subtotal)}</span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-text">Spedizione</span>
-                  <span className="text-text">{shippingEur != null && !shippingQuoteError ? formatEUR(shippingEur) : "—"}</span>
-                </div>
-
-                <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
-                  <span className="text-sm font-extrabold text-text">Totale</span>
-                  <span className="text-base font-extrabold text-text">{formatEUR(estimatedTotal)}</span>
-                </div>
-
-                <div className="mt-2 text-xs text-muted-text">Consegna: <b>24/48h</b></div>
               </div>
 
-              <div className="mt-4">
-                <Button className="w-full" onClick={startCheckout} disabled={!canCheckout}>
-                  {checkoutBusy ? "Apro Stripe…" : "Vai al checkout"}
-                </Button>
+              {/* DATI SPEDIZIONE */}
+              <div className="rounded-2xl border border-border bg-background p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-sm font-extrabold text-text">Dati di spedizione</div>
+                  <Link href="/account/indirizzi" className="text-sm font-semibold text-link hover:text-link-hover">
+                    Modifica
+                  </Link>
+                </div>
+
+                <div className="mt-3 text-sm text-text/80 whitespace-pre-line">
+                  {addrLoading ? (
+                    <span className="text-xs text-muted-text">Carico…</span>
+                  ) : addrError ? (
+                    <span className="text-xs font-semibold text-red-600">{addrError}</span>
+                  ) : shippingAddress ? (
+                    formatAddressBlock(shippingAddress)
+                  ) : (
+                    <span className="text-xs text-muted-text">Nessun indirizzo di spedizione salvato.</span>
+                  )}
+                </div>
+
+                {!addrLoading && !addrError && shippingInvalid ? (
+                  <div className="mt-2 text-xs font-semibold text-red-600">
+                    Spedizione: completa l’indirizzo in “Indirizzi”.
+                  </div>
+                ) : null}
               </div>
 
-              {checkoutError ? (
-                <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
-              ) : !confirmAddress ? (
-                <p className="mt-3 text-xs text-muted-text">Per continuare, conferma l’indirizzo di spedizione.</p>
-              ) : shippingQuoteError ? (
-                <p className="mt-3 text-xs font-semibold text-red-600">{shippingQuoteError}</p>
-              ) : (
-                <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
-              )}
+              {/* DATI FATTURAZIONE */}
+              <div className="rounded-2xl border border-border bg-background p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-sm font-extrabold text-text">Dati di fatturazione</div>
+                  <Link href="/account/indirizzi" className="text-sm font-semibold text-link hover:text-link-hover">
+                    Modifica
+                  </Link>
+                </div>
+
+                <div className="mt-3 text-sm text-text/80 whitespace-pre-line">
+                  {addrLoading ? (
+                    <span className="text-xs text-muted-text">Carico…</span>
+                  ) : addrError ? (
+                    <span className="text-xs font-semibold text-red-600">{addrError}</span>
+                  ) : billingAddress ? (
+                    formatAddressBlock(billingAddress)
+                  ) : (
+                    <span className="text-xs text-muted-text">
+                      Nessun indirizzo di fatturazione salvato.
+                    </span>
+                  )}
+                </div>
+
+                {!addrLoading && !addrError && billingInvalid ? (
+                  <div className="mt-2 text-xs font-semibold text-red-600">
+                    Fatturazione: completa l’indirizzo in “Indirizzi”.
+                  </div>
+                ) : null}
+              </div>
+
+              {/* RIEPILOGO ORDINE */}
+              <div className="rounded-2xl border border-border bg-surface p-5">
+                <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
+
+                <div className="mt-4 space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-text">Articoli</span>
+                    <span className="text-text">{summary.count}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-text">Subtotale</span>
+                    <span className="text-text">{formatEUR(subtotal)}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-text">Spedizione</span>
+                    <span className="text-text">
+                      {shippingQuoteBusy ? "Calcolo…" : shippingQuoteError ? "—" : shippingEur != null ? formatEUR(shippingEur) : "—"}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
+                    <span className="text-sm font-extrabold text-text">Totale</span>
+                    <span className="text-base font-extrabold text-text">{formatEUR(estimatedTotal)}</span>
+                  </div>
+
+                  <div className="mt-2 text-xs text-muted-text">
+                    Consegna: <b>24/48h</b>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <Button className="w-full" onClick={startCheckout} disabled={!canCheckout}>
+                    {checkoutBusy ? "Apro Stripe…" : "Vai al checkout"}
+                  </Button>
+                </div>
+
+                {checkoutError ? (
+                  <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
+                ) : !canCheckout ? (
+                  <p className="mt-3 text-xs text-muted-text">
+                    Per continuare, completa spedizione e fatturazione in “Indirizzi”.
+                  </p>
+                ) : shippingQuoteError ? (
+                  <p className="mt-3 text-xs font-semibold text-red-600">{shippingQuoteError}</p>
+                ) : (
+                  <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
+                )}
+              </div>
             </aside>
           </div>
         )}

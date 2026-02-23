@@ -1,3 +1,5 @@
+//src/app/registrati/azienda/page.tsx
+
 "use client";
 
 import { useMemo, useState } from "react";
@@ -23,6 +25,37 @@ function isValidEmail(email: string) {
   return true;
 }
 
+type Address = {
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string;
+};
+
+function capOk(cap: string) {
+  const c = String(cap || "").replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
+}
+
+function normalizeAddr(a: Address): Address {
+  return {
+    address: a.address.trim(),
+    city: a.city.trim(),
+    postalCode: a.postalCode.trim().replace(/\s+/g, ""),
+    province: a.province.trim(),
+    country: "IT",
+  };
+}
+
+function validateAddr(a: Address): string | null {
+  if (a.address.trim().length < 3) return "Inserisci un indirizzo valido.";
+  if (a.city.trim().length < 2) return "Inserisci una città valida.";
+  if (!capOk(a.postalCode)) return "Inserisci un CAP valido (5 cifre).";
+  if (a.province.trim().length < 2) return "Inserisci una provincia valida.";
+  return null;
+}
+
 export const dynamic = "force-dynamic";
 
 export default function RegisterBusinessPage() {
@@ -43,6 +76,24 @@ export default function RegisterBusinessPage() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
+  // indirizzi
+  const [shippingAddress, setShippingAddress] = useState<Address>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
+  });
+
+  const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
+  const [billingAddress, setBillingAddress] = useState<Address>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
+  });
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -56,7 +107,11 @@ export default function RegisterBusinessPage() {
   const vatOk = useMemo(() => vatNumber.trim().length >= 5 && vatNumber.trim().length <= 40, [vatNumber]);
   const sdiOk = useMemo(() => sdi.trim().length >= 3 && sdi.trim().length <= 20, [sdi]);
 
-  const canSubmit = emailOk && pwOk && pwMatch && companyOk && vatOk && pecOk && sdiOk && !loading;
+  const shipErr = useMemo(() => validateAddr(shippingAddress), [shippingAddress]);
+  const billErr = useMemo(() => (billingSameAsShipping ? null : validateAddr(billingAddress)), [billingSameAsShipping, billingAddress]);
+
+  const canSubmit =
+    emailOk && pwOk && pwMatch && companyOk && vatOk && pecOk && sdiOk && !shipErr && !billErr && !loading;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,7 +128,7 @@ export default function RegisterBusinessPage() {
       email: clamp(email.toLowerCase(), 254),
       password,
 
-      // referenti (se li vuoi salvare in customer-profile)
+      // referenti
       firstName: clamp(firstName, 60),
       lastName: clamp(lastName, 60),
 
@@ -82,6 +137,11 @@ export default function RegisterBusinessPage() {
       vatNumber: clamp(vatNumber, 40),
       pec: clamp(pec.toLowerCase(), 254),
       sdi: clamp(sdi.toUpperCase(), 20),
+
+      // indirizzi
+      shippingAddress: normalizeAddr(shippingAddress),
+      billingSameAsShipping,
+      billingAddress: billingSameAsShipping ? undefined : normalizeAddr(billingAddress),
     };
 
     setLoading(true);
@@ -118,6 +178,10 @@ export default function RegisterBusinessPage() {
         setErrorMsg("Compila tutti i campi aziendali obbligatori (Ragione sociale, P.IVA, PEC, SDI).");
         return;
       }
+      if (String(data?.error || "").startsWith("SHIPPING_") || String(data?.error || "").startsWith("BILLING_")) {
+        setErrorMsg("Indirizzo non valido. Controlla spedizione/fatturazione e riprova.");
+        return;
+      }
 
       setErrorMsg("Registrazione non riuscita. Riprova tra qualche secondo.");
     } catch {
@@ -137,7 +201,7 @@ export default function RegisterBusinessPage() {
 
       <h1 className="text-3xl font-extrabold">Registra la tua azienda per avere prezzi dedicati</h1>
       <p className="mt-2 text-sm text-text/70">
-        Compila i dati aziendali: Ragione sociale, P.IVA, PEC e SDI sono obbligatori.
+        Compila i dati aziendali e gli indirizzi: serviranno per spedizione e fatturazione.
       </p>
 
       <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
@@ -147,64 +211,23 @@ export default function RegisterBusinessPage() {
           <div className="mt-4 space-y-3">
             <div>
               <label className="block text-sm font-medium">Ragione sociale</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
-                disabled={loading}
-                maxLength={140}
-                required
-              />
-              {!companyOk && companyName.length > 0 ? (
-                <p className="mt-1 text-sm text-red-600">Inserisci una ragione sociale valida.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3" value={companyName} onChange={(e) => setCompanyName(e.target.value)} disabled={loading} maxLength={140} required />
             </div>
 
             <div>
               <label className="block text-sm font-medium">Partita IVA</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={vatNumber}
-                onChange={(e) => setVatNumber(e.target.value)}
-                disabled={loading}
-                maxLength={40}
-                required
-              />
-              {!vatOk && vatNumber.length > 0 ? (
-                <p className="mt-1 text-sm text-red-600">Inserisci una P.IVA valida.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3" value={vatNumber} onChange={(e) => setVatNumber(e.target.value)} disabled={loading} maxLength={40} required />
             </div>
 
             <div>
               <label className="block text-sm font-medium">PEC</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={pec}
-                onChange={(e) => setPec(e.target.value)}
-                disabled={loading}
-                type="email"
-                inputMode="email"
-                maxLength={254}
-                required
-              />
-              {pec.length > 0 && !pecOk ? (
-                <p className="mt-1 text-sm text-red-600">Inserisci una PEC valida.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3" value={pec} onChange={(e) => setPec(e.target.value)} disabled={loading} type="email" inputMode="email" maxLength={254} required />
+              {pec.length > 0 && !pecOk ? <p className="mt-1 text-sm text-red-600">Inserisci una PEC valida.</p> : null}
             </div>
 
             <div>
               <label className="block text-sm font-medium">SDI</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3 uppercase"
-                value={sdi}
-                onChange={(e) => setSdi(e.target.value)}
-                disabled={loading}
-                maxLength={20}
-                required
-              />
-              {!sdiOk && sdi.length > 0 ? (
-                <p className="mt-1 text-sm text-red-600">Inserisci un SDI valido.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3 uppercase" value={sdi} onChange={(e) => setSdi(e.target.value)} disabled={loading} maxLength={20} required />
             </div>
           </div>
         </section>
@@ -215,87 +238,103 @@ export default function RegisterBusinessPage() {
           <div className="mt-4 space-y-3">
             <div>
               <label className="block text-sm font-medium">Email (accesso)</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                autoComplete="email"
-                disabled={loading}
-                required
-              />
-              {email.length > 0 && !emailOk ? (
-                <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3" value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" disabled={loading} required />
+              {email.length > 0 && !emailOk ? <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p> : null}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-medium">Nome referente (opz.)</label>
-                <input
-                  className="mt-1 w-full rounded-md border p-3"
-                  value={firstName}
-                  onChange={(e) => setFirstName(e.target.value)}
-                  disabled={loading}
-                  maxLength={60}
-                />
+                <input className="mt-1 w-full rounded-md border p-3" value={firstName} onChange={(e) => setFirstName(e.target.value)} disabled={loading} maxLength={60} />
               </div>
               <div>
                 <label className="block text-sm font-medium">Cognome referente (opz.)</label>
-                <input
-                  className="mt-1 w-full rounded-md border p-3"
-                  value={lastName}
-                  onChange={(e) => setLastName(e.target.value)}
-                  disabled={loading}
-                  maxLength={60}
-                />
+                <input className="mt-1 w-full rounded-md border p-3" value={lastName} onChange={(e) => setLastName(e.target.value)} disabled={loading} maxLength={60} />
               </div>
             </div>
 
             <div>
               <label className="block text-sm font-medium">Password</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                autoComplete="new-password"
-                required
-                disabled={loading}
-                minLength={8}
-                maxLength={200}
-              />
+              <input className="mt-1 w-full rounded-md border p-3" value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="new-password" required disabled={loading} minLength={8} maxLength={200} />
             </div>
 
             <div>
               <label className="block text-sm font-medium">Conferma password</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                type="password"
-                autoComplete="new-password"
-                required
-                disabled={loading}
-                minLength={8}
-                maxLength={200}
-              />
-              {confirmPassword.length > 0 && !pwMatch ? (
-                <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p>
-              ) : null}
+              <input className="mt-1 w-full rounded-md border p-3" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} type="password" autoComplete="new-password" required disabled={loading} minLength={8} maxLength={200} />
+              {confirmPassword.length > 0 && !pwMatch ? <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p> : null}
             </div>
           </div>
         </section>
 
-        {errorMsg ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
-        ) : null}
+        <section className="rounded-2xl border border-border bg-background p-5 space-y-3">
+          <div className="text-sm font-extrabold">Indirizzo di spedizione</div>
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
-        >
+          <label className="block">
+            <div className="text-sm font-medium">Indirizzo</div>
+            <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.address} onChange={(e) => setShippingAddress((s) => ({ ...s, address: e.target.value }))} />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-sm font-medium">Città</div>
+              <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.city} onChange={(e) => setShippingAddress((s) => ({ ...s, city: e.target.value }))} />
+            </label>
+            <label className="block">
+              <div className="text-sm font-medium">Provincia</div>
+              <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.province} onChange={(e) => setShippingAddress((s) => ({ ...s, province: e.target.value }))} />
+            </label>
+          </div>
+
+          <label className="block">
+            <div className="text-sm font-medium">CAP</div>
+            <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.postalCode} onChange={(e) => setShippingAddress((s) => ({ ...s, postalCode: e.target.value }))} inputMode="numeric" />
+          </label>
+
+          {shipErr ? <div className="text-sm text-red-600">{shipErr}</div> : null}
+        </section>
+
+        <section className="rounded-2xl border border-border bg-background p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-extrabold">Indirizzo di fatturazione</div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={billingSameAsShipping} onChange={(e) => setBillingSameAsShipping(e.target.checked)} disabled={loading} />
+              Uguale alla spedizione
+            </label>
+          </div>
+
+          {!billingSameAsShipping ? (
+            <>
+              <label className="block">
+                <div className="text-sm font-medium">Indirizzo</div>
+                <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.address} onChange={(e) => setBillingAddress((s) => ({ ...s, address: e.target.value }))} />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <div className="text-sm font-medium">Città</div>
+                  <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.city} onChange={(e) => setBillingAddress((s) => ({ ...s, city: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <div className="text-sm font-medium">Provincia</div>
+                  <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.province} onChange={(e) => setBillingAddress((s) => ({ ...s, province: e.target.value }))} />
+                </label>
+              </div>
+
+              <label className="block">
+                <div className="text-sm font-medium">CAP</div>
+                <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.postalCode} onChange={(e) => setBillingAddress((s) => ({ ...s, postalCode: e.target.value }))} inputMode="numeric" />
+              </label>
+
+              {billErr ? <div className="text-sm text-red-600">{billErr}</div> : null}
+            </>
+          ) : (
+            <div className="text-sm text-text/70">Useremo lo stesso indirizzo della spedizione.</div>
+          )}
+        </section>
+
+        {errorMsg ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div> : null}
+
+        <button type="submit" disabled={!canSubmit} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
           {loading ? "Creazione..." : "Crea account Business"}
         </button>
 

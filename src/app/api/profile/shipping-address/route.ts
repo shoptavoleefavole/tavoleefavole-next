@@ -61,6 +61,8 @@ async function strapiFetch(path: string, init: RequestInit) {
   return { res, data, text };
 }
 
+const IS_DEV = process.env.NODE_ENV !== "production";
+
 function capOk(cap: string) {
   const c = String(cap || "").replace(/\s+/g, "");
   return /^\d{5}$/.test(c);
@@ -109,7 +111,6 @@ async function findCustomerProfile(apiToken: string, userId: number) {
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "1");
   qs.set("filters[user][id][$eq]", String(userId));
-  // utile in caso di Draft&Publish
   qs.set("publicationState", "preview");
 
   const r = await strapiFetch(`/api/customer-profiles?${qs.toString()}`, {
@@ -122,8 +123,8 @@ async function findCustomerProfile(apiToken: string, userId: number) {
   return { ok: true as const, row: first };
 }
 
-async function putCustomerProfile(apiToken: string, identifier: string, addr: Address) {
-  const payload = {
+function buildUpdatePayload(addr: Address) {
+  return {
     data: {
       shippingAddress: {
         address: addr.address,
@@ -134,6 +135,10 @@ async function putCustomerProfile(apiToken: string, identifier: string, addr: Ad
       },
     },
   };
+}
+
+async function putCustomerProfile(apiToken: string, identifier: string, addr: Address) {
+  const payload = buildUpdatePayload(addr);
 
   return await strapiFetch(`/api/customer-profiles/${encodeURIComponent(identifier)}?publicationState=preview`, {
     method: "PUT",
@@ -171,6 +176,13 @@ async function postCustomerProfile(apiToken: string, userId: number, addr: Addre
   });
 }
 
+function mapUpstreamError(status: number) {
+  if (status === 401 || status === 403) return "STRAPI_TOKEN_FORBIDDEN";
+  if (status === 404) return "PROFILE_NOT_FOUND";
+  if (status === 400) return "STRAPI_VALIDATION_ERROR";
+  return "PROFILE_UPDATE_FAILED";
+}
+
 export async function GET(req: Request) {
   try {
     const cookieHeader = req.headers.get("cookie") || "";
@@ -184,7 +196,17 @@ export async function GET(req: Request) {
     if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
     const prof = await findCustomerProfile(apiToken, userId);
-    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
+    if (!prof.ok) {
+      return jsonNoStore(
+        {
+          ok: false,
+          error: "PROFILE_FIND_FAILED",
+          status: prof.status,
+          ...(IS_DEV ? { details: String(prof.text || "").slice(0, 500) } : {}),
+        },
+        502
+      );
+    }
 
     const row = prof.row;
     if (!row?.id) return jsonNoStore({ ok: true, hasAddress: false, address: null }, 200);
@@ -193,8 +215,11 @@ export async function GET(req: Request) {
     const hasAddress = !!(addr?.address && addr?.city && addr?.postalCode && addr?.province);
 
     return jsonNoStore({ ok: true, hasAddress, address: addr }, 200);
-  } catch {
-    return jsonNoStore({ ok: false, error: "PROFILE_ROUTE_FAILED" }, 500);
+  } catch (e: any) {
+    return jsonNoStore(
+      { ok: false, error: "PROFILE_ROUTE_FAILED", ...(IS_DEV ? { details: String(e?.message || e) } : {}) },
+      500
+    );
   }
 }
 
@@ -216,7 +241,17 @@ export async function PUT(req: Request) {
     if (!norm.ok) return jsonNoStore({ ok: false, error: norm.error }, 400);
 
     const prof = await findCustomerProfile(apiToken, userId);
-    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
+    if (!prof.ok) {
+      return jsonNoStore(
+        {
+          ok: false,
+          error: "PROFILE_FIND_FAILED",
+          status: prof.status,
+          ...(IS_DEV ? { details: String(prof.text || "").slice(0, 500) } : {}),
+        },
+        502
+      );
+    }
 
     const row = prof.row;
 
@@ -229,6 +264,7 @@ export async function PUT(req: Request) {
             ok: false,
             error: "PROFILE_CREATE_FAILED",
             status: created.res.status,
+            ...(IS_DEV ? { details: String(created.text || "").slice(0, 500) } : {}),
           },
           502
         );
@@ -236,7 +272,7 @@ export async function PUT(req: Request) {
       return jsonNoStore({ ok: true }, 200);
     }
 
-    // Strapi v5 spesso vuole documentId. Se c'è, usalo.
+    const id = typeof row?.id === "number" ? String(row.id) : null;
     const documentId =
       typeof row?.documentId === "string"
         ? row.documentId
@@ -244,30 +280,59 @@ export async function PUT(req: Request) {
         ? row.attributes.documentId
         : null;
 
-    const id = typeof row?.id === "number" ? String(row.id) : null;
-
-    // 1) tenta con documentId
-    if (documentId) {
-      const r1 = await putCustomerProfile(apiToken, documentId, norm.value);
-      if (r1.res.ok) return jsonNoStore({ ok: true }, 200);
-      // se fallisce, proviamo con id numerico come fallback
-      if (id) {
-        const r2 = await putCustomerProfile(apiToken, id, norm.value);
-        if (r2.res.ok) return jsonNoStore({ ok: true }, 200);
-        return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r2.res.status }, 502);
-      }
-      return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r1.res.status }, 502);
-    }
-
-    // 2) fallback su id numerico
+    // ✅ 1) prova update con ID numerico (più compatibile)
     if (id) {
       const r = await putCustomerProfile(apiToken, id, norm.value);
-      if (!r.res.ok) return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r.res.status }, 502);
-      return jsonNoStore({ ok: true }, 200);
+      if (r.res.ok) return jsonNoStore({ ok: true }, 200);
+
+      // se 404 e abbiamo documentId, proviamo quello come fallback
+      if (r.res.status === 404 && documentId) {
+        const r2 = await putCustomerProfile(apiToken, documentId, norm.value);
+        if (r2.res.ok) return jsonNoStore({ ok: true }, 200);
+
+        return jsonNoStore(
+          {
+            ok: false,
+            error: mapUpstreamError(r2.res.status),
+            status: r2.res.status,
+            ...(IS_DEV ? { details: String(r2.text || "").slice(0, 500) } : {}),
+          },
+          502
+        );
+      }
+
+      return jsonNoStore(
+        {
+          ok: false,
+          error: mapUpstreamError(r.res.status),
+          status: r.res.status,
+          ...(IS_DEV ? { details: String(r.text || "").slice(0, 500) } : {}),
+        },
+        502
+      );
+    }
+
+    // ✅ 2) fallback: documentId
+    if (documentId) {
+      const r = await putCustomerProfile(apiToken, documentId, norm.value);
+      if (r.res.ok) return jsonNoStore({ ok: true }, 200);
+
+      return jsonNoStore(
+        {
+          ok: false,
+          error: mapUpstreamError(r.res.status),
+          status: r.res.status,
+          ...(IS_DEV ? { details: String(r.text || "").slice(0, 500) } : {}),
+        },
+        502
+      );
     }
 
     return jsonNoStore({ ok: false, error: "PROFILE_NOT_FOUND" }, 404);
-  } catch {
-    return jsonNoStore({ ok: false, error: "PROFILE_ROUTE_FAILED" }, 500);
+  } catch (e: any) {
+    return jsonNoStore(
+      { ok: false, error: "PROFILE_ROUTE_FAILED", ...(IS_DEV ? { details: String(e?.message || e) } : {}) },
+      500
+    );
   }
 }

@@ -1,3 +1,5 @@
+//src/app/registrati/privato/pase.tsx
+
 "use client";
 
 import { useMemo, useState } from "react";
@@ -23,6 +25,37 @@ function clamp(v: string, max: number) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+type Address = {
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string; // IT
+};
+
+function capOk(cap: string) {
+  const c = String(cap || "").replace(/\s+/g, "");
+  return /^\d{5}$/.test(c);
+}
+
+function normalizeAddr(a: Address): Address {
+  return {
+    address: a.address.trim(),
+    city: a.city.trim(),
+    postalCode: a.postalCode.trim().replace(/\s+/g, ""),
+    province: a.province.trim(),
+    country: "IT",
+  };
+}
+
+function validateAddr(a: Address): string | null {
+  if (a.address.trim().length < 3) return "Inserisci un indirizzo valido.";
+  if (a.city.trim().length < 2) return "Inserisci una città valida.";
+  if (!capOk(a.postalCode)) return "Inserisci un CAP valido (5 cifre).";
+  if (a.province.trim().length < 2) return "Inserisci una provincia valida.";
+  return null;
+}
+
 export const dynamic = "force-dynamic";
 
 export default function RegisterPrivatePage() {
@@ -35,16 +68,29 @@ export default function RegisterPrivatePage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
+  const [shippingAddress, setShippingAddress] = useState<Address>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
+  });
+
+  const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
+  const [billingAddress, setBillingAddress] = useState<Address>({
+    address: "",
+    city: "",
+    postalCode: "",
+    province: "",
+    country: "IT",
+  });
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const emailOk = useMemo(() => isValidEmail(email), [email]);
-
   const pwOk = useMemo(() => password.length >= 8 && password.length <= 200, [password]);
-  const pwMatch = useMemo(
-    () => password.length > 0 && password === confirmPassword,
-    [password, confirmPassword]
-  );
+  const pwMatch = useMemo(() => password.length > 0 && password === confirmPassword, [password, confirmPassword]);
 
   const nameOk = useMemo(() => {
     const fn = firstName.trim();
@@ -52,7 +98,13 @@ export default function RegisterPrivatePage() {
     return fn.length >= 2 && ln.length >= 2 && fn.length <= 60 && ln.length <= 60;
   }, [firstName, lastName]);
 
-  const canSubmit = emailOk && nameOk && pwOk && pwMatch && !loading;
+  const shipErr = useMemo(() => validateAddr(shippingAddress), [shippingAddress]);
+  const billErr = useMemo(
+    () => (billingSameAsShipping ? null : validateAddr(billingAddress)),
+    [billingSameAsShipping, billingAddress]
+  );
+
+  const canSubmit = emailOk && nameOk && pwOk && pwMatch && !shipErr && !billErr && !loading;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -70,6 +122,10 @@ export default function RegisterPrivatePage() {
       firstName: clamp(firstName, 60),
       lastName: clamp(lastName, 60),
       password,
+
+      shippingAddress: normalizeAddr(shippingAddress),
+      billingSameAsShipping,
+      billingAddress: billingSameAsShipping ? undefined : normalizeAddr(billingAddress),
     };
 
     setLoading(true);
@@ -102,6 +158,10 @@ export default function RegisterPrivatePage() {
         setErrorMsg("Dati non validi. Controlla email e riprova.");
         return;
       }
+      if (String(data?.error || "").startsWith("SHIPPING_") || String(data?.error || "").startsWith("BILLING_")) {
+        setErrorMsg("Indirizzo non valido. Controlla spedizione/fatturazione e riprova.");
+        return;
+      }
 
       setErrorMsg("Registrazione non riuscita. Riprova tra qualche secondo.");
     } catch {
@@ -122,101 +182,158 @@ export default function RegisterPrivatePage() {
       <h1 className="text-3xl font-extrabold">Registrati (Privato)</h1>
 
       <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
-        <div>
-          <label className="block text-sm font-medium">Email</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            type="email"
-            autoComplete="email"
-            required
-            disabled={loading}
-            inputMode="email"
-          />
-          {email.length > 0 && !emailOk ? (
-            <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p>
-          ) : null}
-        </div>
+        <section className="rounded-2xl border border-border bg-background p-5 space-y-3">
+          <div className="text-sm font-extrabold">Dati account</div>
 
-        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium">Nome</label>
+            <label className="block text-sm font-medium">Email</label>
             <input
               className="mt-1 w-full rounded-md border p-3"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              autoComplete="given-name"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              autoComplete="email"
               required
               disabled={loading}
-              maxLength={60}
+              inputMode="email"
             />
+            {email.length > 0 && !emailOk ? <p className="mt-1 text-sm text-red-600">Inserisci un’email valida.</p> : null}
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium">Nome</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                autoComplete="given-name"
+                required
+                disabled={loading}
+                maxLength={60}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium">Cognome</label>
+              <input
+                className="mt-1 w-full rounded-md border p-3"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                autoComplete="family-name"
+                required
+                disabled={loading}
+                maxLength={60}
+              />
+            </div>
+          </div>
+
           <div>
-            <label className="block text-sm font-medium">Cognome</label>
+            <label className="block text-sm font-medium">Password</label>
             <input
               className="mt-1 w-full rounded-md border p-3"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-              autoComplete="family-name"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              autoComplete="new-password"
               required
               disabled={loading}
-              maxLength={60}
+              minLength={8}
+              maxLength={200}
             />
+            {!pwOk && password.length > 0 ? <p className="mt-1 text-sm text-red-600">Minimo 8 caratteri (massimo 200).</p> : null}
           </div>
-        </div>
 
-        {!nameOk && (firstName.length > 0 || lastName.length > 0) ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Inserisci nome e cognome (almeno 2 caratteri).
+          <div>
+            <label className="block text-sm font-medium">Conferma password</label>
+            <input
+              className="mt-1 w-full rounded-md border p-3"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              type="password"
+              autoComplete="new-password"
+              required
+              disabled={loading}
+              minLength={8}
+              maxLength={200}
+            />
+            {confirmPassword.length > 0 && !pwMatch ? <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p> : null}
           </div>
-        ) : null}
+        </section>
 
-        <div>
-          <label className="block text-sm font-medium">Password</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            autoComplete="new-password"
-            required
-            disabled={loading}
-            minLength={8}
-            maxLength={200}
-          />
-          {!pwOk && password.length > 0 ? (
-            <p className="mt-1 text-sm text-red-600">Minimo 8 caratteri (massimo 200).</p>
-          ) : null}
-        </div>
+        <section className="rounded-2xl border border-border bg-background p-5 space-y-3">
+          <div className="text-sm font-extrabold">Indirizzo di spedizione</div>
 
-        <div>
-          <label className="block text-sm font-medium">Conferma password</label>
-          <input
-            className="mt-1 w-full rounded-md border p-3"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            type="password"
-            autoComplete="new-password"
-            required
-            disabled={loading}
-            minLength={8}
-            maxLength={200}
-          />
-          {confirmPassword.length > 0 && !pwMatch ? (
-            <p className="mt-1 text-sm text-red-600">Le password non coincidono.</p>
-          ) : null}
-        </div>
+          <label className="block">
+            <div className="text-sm font-medium">Indirizzo</div>
+            <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.address} onChange={(e) => setShippingAddress((s) => ({ ...s, address: e.target.value }))} />
+          </label>
 
-        {errorMsg ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
-        ) : null}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-sm font-medium">Città</div>
+              <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.city} onChange={(e) => setShippingAddress((s) => ({ ...s, city: e.target.value }))} />
+            </label>
+            <label className="block">
+              <div className="text-sm font-medium">Provincia</div>
+              <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.province} onChange={(e) => setShippingAddress((s) => ({ ...s, province: e.target.value }))} />
+            </label>
+          </div>
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50"
-        >
+          <label className="block">
+            <div className="text-sm font-medium">CAP</div>
+            <input className="mt-1 w-full rounded-md border p-3" value={shippingAddress.postalCode} onChange={(e) => setShippingAddress((s) => ({ ...s, postalCode: e.target.value }))} inputMode="numeric" />
+          </label>
+
+          {shipErr ? <div className="text-sm text-red-600">{shipErr}</div> : null}
+        </section>
+
+        <section className="rounded-2xl border border-border bg-background p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-extrabold">Indirizzo di fatturazione</div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={billingSameAsShipping}
+                onChange={(e) => setBillingSameAsShipping(e.target.checked)}
+                disabled={loading}
+              />
+              Uguale alla spedizione
+            </label>
+          </div>
+
+          {!billingSameAsShipping ? (
+            <>
+              <label className="block">
+                <div className="text-sm font-medium">Indirizzo</div>
+                <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.address} onChange={(e) => setBillingAddress((s) => ({ ...s, address: e.target.value }))} />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <div className="text-sm font-medium">Città</div>
+                  <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.city} onChange={(e) => setBillingAddress((s) => ({ ...s, city: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <div className="text-sm font-medium">Provincia</div>
+                  <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.province} onChange={(e) => setBillingAddress((s) => ({ ...s, province: e.target.value }))} />
+                </label>
+              </div>
+
+              <label className="block">
+                <div className="text-sm font-medium">CAP</div>
+                <input className="mt-1 w-full rounded-md border p-3" value={billingAddress.postalCode} onChange={(e) => setBillingAddress((s) => ({ ...s, postalCode: e.target.value }))} inputMode="numeric" />
+              </label>
+
+              {billErr ? <div className="text-sm text-red-600">{billErr}</div> : null}
+            </>
+          ) : (
+            <div className="text-sm text-text/70">Useremo lo stesso indirizzo della spedizione.</div>
+          )}
+        </section>
+
+        {errorMsg ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div> : null}
+
+        <button type="submit" disabled={!canSubmit} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
           {loading ? "Creazione..." : "Crea account"}
         </button>
 
