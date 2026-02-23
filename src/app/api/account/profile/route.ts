@@ -1,5 +1,5 @@
+// src/app/api/account/profile/route.ts
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,7 +70,6 @@ function normalizeAddress(a: any): Required<Address> {
 }
 
 function addressHasAny(a: Required<Address>) {
-  // attenzione: "IT" da solo non deve far risultare l'indirizzo “compilato”
   const core = [a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
   const country = String(a.country || "").trim().toUpperCase();
   const countryMeaningful = country && country !== "IT";
@@ -79,12 +78,10 @@ function addressHasAny(a: Required<Address>) {
 
 function validateAddressIfAny(a: Required<Address>) {
   if (!addressHasAny(a)) return { ok: true as const, msg: "" };
-
   if (a.address.trim().length < 2) return { ok: false as const, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false as const, msg: "Città non valida." };
   if (a.postalCode.trim().length < 3) return { ok: false as const, msg: "CAP non valido." };
   if (a.country.trim().length !== 2) return { ok: false as const, msg: "Paese non valido (usa 2 lettere, es. IT)." };
-
   return { ok: true as const, msg: "" };
 }
 
@@ -94,24 +91,69 @@ async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   return { raw, tooLarge: false };
 }
 
-async function fetchJson(url: string, init: RequestInit) {
-  const res = await fetch(url, { ...init, cache: "no-store" });
+function getCookieValue(cookieHeader: string, name: string) {
+  const parts = cookieHeader.split(";").map((p) => p.trim());
+  const hit = parts.find((p) => p.startsWith(`${name}=`));
+  if (!hit) return null;
+  return decodeURIComponent(hit.slice(name.length + 1));
+}
+
+function getJwtFromReq(req: Request) {
+  const cookieHeader = req.headers.get("cookie") || "";
+  return getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken") || "";
+}
+
+function isRetryableFetchError(e: any) {
+  const code = e?.cause?.code || e?.code;
+  return (
+    e?.name === "AbortError" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNRESET" ||
+    code === "EAI_AGAIN" ||
+    String(e?.message || "").toLowerCase().includes("fetch failed")
+  );
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, ms: number, tries = 2) {
+  let lastErr: any;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fetchWithTimeout(url, init, ms);
+    } catch (e: any) {
+      lastErr = e;
+      if (!isRetryableFetchError(e) || i === tries - 1) break;
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+async function fetchJson(url: string, init: RequestInit, timeoutMs = 12_000) {
+  const res = await fetchWithRetry(url, init, timeoutMs, 2);
   const text = await res.text().catch(() => "");
   return { res, json: safeJsonParse(text), text };
 }
 
-async function getJwtOr401() {
-  const cookieStore = await cookies(); // ✅ in route handlers è async
-  const jwt = cookieStore.get("tf_token")?.value || ""; // <-- usa il nome cookie corretto
-  if (!jwt) return { jwt: "", err: jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401) };
-  return { jwt, err: null as any };
-}
-
 async function getUserFromJwt(base: string, jwt: string) {
-  const me = await fetchJson(`${base}/api/users/me`, {
-    method: "GET",
-    headers: { Accept: "application/json", Authorization: `Bearer ${jwt}` },
-  });
+  const me = await fetchJson(
+    `${base}/api/users/me`,
+    {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${jwt}` },
+    },
+    12_000
+  );
   if (!me.res.ok || !me.json?.id) return null;
   return {
     id: Number(me.json.id),
@@ -120,44 +162,44 @@ async function getUserFromJwt(base: string, jwt: string) {
   };
 }
 
-/**
- * ✅ Strapi v4: row.attributes contiene i campi
- * ✅ Strapi v5: i campi sono “flat” su row
- */
+/** v4: row.attributes, v5: flat */
 function extractAttrs(row: any) {
   if (!row || typeof row !== "object") return {};
   if (row.attributes && typeof row.attributes === "object") return row.attributes;
-
-  // v5 flat: copiamo tutto tranne id/documentId e meta noti
   const out: any = { ...row };
   delete out.id;
   delete out.documentId;
   return out;
 }
 
-/**
- * Trova CustomerProfile e ritorna anche documentId (Strapi v5).
- * Prova prima senza publicationState, poi con publicationState=preview.
- */
+function pickKey(row: any): { id: string | null; documentId: string | null } {
+  const id = typeof row?.id === "number" ? String(row.id) : typeof row?.id === "string" ? row.id : null;
+  const doc =
+    typeof row?.documentId === "string"
+      ? row.documentId
+      : typeof row?.attributes?.documentId === "string"
+      ? row.attributes.documentId
+      : null;
+  return { id, documentId: doc };
+}
+
 async function findCustomerProfile(base: string, userId: number) {
   const headers = { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` };
 
   async function tryQuery(qs: URLSearchParams) {
-    const r = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers });
+    const r = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers }, 12_000);
     const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-    if (!row?.id && !row?.documentId) return null;
-
-    return {
-      id: Number(row.id ?? 0),
-      documentId: String(row.documentId ?? ""),
-      attrs: extractAttrs(row),
-    };
+    if (!row) return null;
+    const { id, documentId } = pickKey(row);
+    if (!id && !documentId) return null;
+    return { row, id, documentId, attrs: extractAttrs(row) };
   }
 
   const qs1 = new URLSearchParams();
   qs1.set("populate", "*");
   qs1.set("pagination[pageSize]", "1");
   qs1.set("filters[user][id][$eq]", String(userId));
+
   let found = await tryQuery(qs1);
   if (found) return found;
 
@@ -166,11 +208,12 @@ async function findCustomerProfile(base: string, userId: number) {
   found = await tryQuery(qs1b);
   if (found) return found;
 
-  // fallback per relazioni legacy
+  // fallback legacy relations
   const qs2 = new URLSearchParams();
   qs2.set("populate", "*");
   qs2.set("pagination[pageSize]", "1");
   qs2.set("filters[users_permissions_user][id][$eq]", String(userId));
+
   found = await tryQuery(qs2);
   if (found) return found;
 
@@ -189,38 +232,23 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
     Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
   };
 
-  const payload = {
-    data: {
-      ...data,
-      user: userId,
-      publishedAt: new Date().toISOString(),
-    },
-  };
+  const payload = { data: { ...data, user: userId } };
 
-  const c = await fetchJson(`${base}/api/customer-profiles`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  const row = c.json?.data ?? null;
-  if (c.res.ok && row?.id) {
-    return {
-      id: Number(row.id ?? 0),
-      documentId: String(row.documentId ?? ""),
-      attrs: extractAttrs(row),
-    };
+  // compat Draft&Publish (se esiste)
+  if (!("publishedAt" in (data || {}))) {
+    (payload.data as any).publishedAt = new Date().toISOString();
   }
 
-  return null;
+  const c = await fetchJson(`${base}/api/customer-profiles`, { method: "POST", headers, body: JSON.stringify(payload) }, 12_000);
+  const row = c.json?.data ?? null;
+  if (!c.res.ok || !row) return null;
+
+  const { id, documentId } = pickKey(row);
+  if (!id && !documentId) return null;
+
+  return { row, id, documentId, attrs: extractAttrs(row) };
 }
 
-/**
- * Update robusto:
- * - prova PUT con documentId (v5)
- * - poi con id (v4)
- * - per ciascuno prova URL liscia e ?publicationState=preview
- */
 async function updateCustomerProfile(base: string, key: string, patch: any) {
   const headers = {
     "Content-Type": "application/json",
@@ -228,29 +256,23 @@ async function updateCustomerProfile(base: string, key: string, patch: any) {
     Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
   };
 
-  const candidates = [
+  const urls = [
     `${base}/api/customer-profiles/${encodeURIComponent(key)}`,
     `${base}/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
   ];
 
   let last: any = null;
-
-  for (const url of candidates) {
-    const r = await fetchJson(url, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ data: patch }),
-    });
+  for (const url of urls) {
+    const r = await fetchJson(url, { method: "PUT", headers, body: JSON.stringify({ data: patch }) }, 12_000);
     last = r;
     if (r.res.ok) return r;
   }
-
   return last;
 }
 
-export async function GET() {
-  const { jwt, err } = await getJwtOr401();
-  if (err) return err;
+export async function GET(req: Request) {
+  const jwt = getJwtFromReq(req);
+  if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
 
   if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
@@ -277,7 +299,6 @@ export async function GET() {
   }
 
   const attrs = profile.attrs || {};
-
   return jsonNoStore(
     {
       ok: true,
@@ -294,8 +315,8 @@ export async function GET() {
 }
 
 export async function PUT(req: Request) {
-  const { jwt, err } = await getJwtOr401();
-  if (err) return err;
+  const jwt = getJwtFromReq(req);
+  if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
 
   if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
@@ -304,9 +325,7 @@ export async function PUT(req: Request) {
   if (!me) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
 
   const ct = req.headers.get("content-type") || "";
-  if (!ct.includes("application/json")) {
-    return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
-  }
+  if (!ct.includes("application/json")) return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
 
   const { raw, tooLarge } = await readBodyWithLimit(req);
   if (tooLarge) return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
@@ -320,13 +339,13 @@ export async function PUT(req: Request) {
     return jsonNoStore({ ok: false, error: "INVALID_NAME" }, 400);
   }
 
-  const shippingAddress = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
-  const billingAddress = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
+  const shipping = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
+  const billing = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
 
-  const shipVal = validateAddressIfAny(shippingAddress);
+  const shipVal = validateAddressIfAny(shipping);
   if (!shipVal.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
 
-  const billVal = validateAddressIfAny(billingAddress);
+  const billVal = validateAddressIfAny(billing);
   if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
   const profile = await findCustomerProfile(base, me.id);
@@ -335,13 +354,9 @@ export async function PUT(req: Request) {
     firstName,
     lastName,
     customerType: profile?.attrs?.customerType ? normalizeCustomerType(profile.attrs.customerType) : "PRIVATE",
+    shippingAddress: addressHasAny(shipping) ? shipping : null,
+    billingAddress: addressHasAny(billing) ? billing : null,
   };
-
-  // ✅ IMPORTANT: se indirizzo vuoto → settiamo null (così Strapi aggiorna davvero)
-  patch.shippingAddress = addressHasAny(shippingAddress) ? shippingAddress : null;
-  patch.billingAddress = addressHasAny(billingAddress) ? billingAddress : null;
-
-  if (!profile?.attrs?.publishedAt) patch.publishedAt = new Date().toISOString();
 
   // CREATE
   if (!profile) {
@@ -364,19 +379,15 @@ export async function PUT(req: Request) {
     );
   }
 
-  // UPDATE
-  const keysToTry = [profile.documentId ? profile.documentId : null, profile.id ? String(profile.id) : null].filter(
-    Boolean
-  ) as string[];
+  // UPDATE: prima id, poi documentId
+  const keysToTry = [profile.id, profile.documentId].filter(Boolean) as string[];
 
   let lastFail: any = null;
-
   for (const key of keysToTry) {
     const upd = await updateCustomerProfile(base, key, patch);
     if (upd?.res?.ok) {
       const row = upd.json?.data ?? null;
       const attrs = extractAttrs(row);
-
       return jsonNoStore(
         {
           ok: true,

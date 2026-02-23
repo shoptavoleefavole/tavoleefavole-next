@@ -1,12 +1,10 @@
-//src/components/cart/cartView
-
+// src/components/cart/CartView.tsx
 "use client";
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Container from "@/components/Container";
 import Button from "@/components/ui/Button";
-import ButtonLink from "@/components/ui/ButtonLink";
 import { useCart } from "@/components/cart/CartProvider";
 import { formatEUR } from "@/lib/format";
 
@@ -158,12 +156,12 @@ type Address = {
   country: string;
 };
 
-type ProfileAddressesResponse = {
+type ProfileResponse = {
   ok: boolean;
-  shippingAddress: Address | null;
-  billingAddress: Address | null;
-  hasShipping?: boolean;
-  hasBilling?: boolean;
+  shippingAddress?: Address | null;
+  billingAddress?: Address | null;
+  error?: string;
+  message?: string;
 };
 
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
@@ -205,7 +203,7 @@ export default function CartView() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // indirizzi (spedizione + fatturazione)
+  // indirizzi (spedizione + fatturazione) DAL PROFILO
   const [addrLoading, setAddrLoading] = useState(true);
   const [addrError, setAddrError] = useState<string | null>(null);
   const [shippingAddress, setShippingAddress] = useState<Address | null>(null);
@@ -216,7 +214,7 @@ export default function CartView() {
   const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
 
-  // ---- LOAD profile addresses (PRO)
+  // ---- LOAD profile addresses (UNICA fonte: /api/account/profile)
   useEffect(() => {
     let cancelled = false;
 
@@ -224,55 +222,34 @@ export default function CartView() {
       setAddrLoading(true);
       setAddrError(null);
 
-      // 1) prova endpoint nuovo (spedizione + fatturazione)
       try {
-        const res = await fetchWithTimeout("/api/profile/addresses", {
+        const res = await fetchWithTimeout("/api/account/profile", {
           method: "GET",
           credentials: "include",
           timeoutMs: 12_000,
+          headers: { Accept: "application/json" },
         });
 
-        if (res.ok) {
-          const data = (await res.json().catch(() => null)) as ProfileAddressesResponse | null;
-          if (cancelled) return;
-
-          if (data?.ok) {
-            setShippingAddress(data.shippingAddress ?? null);
-            setBillingAddress(data.billingAddress ?? null);
-            setAddrLoading(false);
-            return;
-          }
-        }
-
-        // se 404 o non ok -> fallback a shipping-address (non rompiamo nulla)
-      } catch {
-        // fallback sotto
-      }
-
-      // 2) fallback: vecchio endpoint solo spedizione
-      try {
-        const res2 = await fetchWithTimeout("/api/profile/shipping-address", {
-          method: "GET",
-          credentials: "include",
-          timeoutMs: 12_000,
-        });
-        const data2 = await res2.json().catch(() => null);
+        const data = (await res.json().catch(() => null)) as ProfileResponse | null;
         if (cancelled) return;
 
-        if (res2.ok && data2?.ok && data2?.address) {
-          setShippingAddress(data2.address as Address);
+        if (!res.ok || !data?.ok) {
+          setAddrError("Impossibile caricare gli indirizzi dal profilo.");
+          setShippingAddress(null);
           setBillingAddress(null);
-          setAddrLoading(false);
           return;
         }
 
-        setAddrError("Impossibile caricare gli indirizzi dal profilo.");
-        setAddrLoading(false);
+        setShippingAddress((data.shippingAddress as Address) ?? null);
+        setBillingAddress((data.billingAddress as Address) ?? null);
       } catch {
         if (!cancelled) {
           setAddrError("Impossibile caricare gli indirizzi dal profilo.");
-          setAddrLoading(false);
+          setShippingAddress(null);
+          setBillingAddress(null);
         }
+      } finally {
+        if (!cancelled) setAddrLoading(false);
       }
     }
 
@@ -352,7 +329,7 @@ export default function CartView() {
     const errShip = validateAddress(shippingAddress);
     if (errShip) {
       setShippingQuoteBusy(false);
-      setShippingQuoteError("Completa l’indirizzo di spedizione per calcolare la spedizione.");
+      setShippingQuoteError("Completa l’indirizzo di spedizione nel Profilo.");
       setShippingEur(null);
       return;
     }
@@ -527,7 +504,9 @@ export default function CartView() {
             <div className="text-base font-semibold text-text">Il carrello è vuoto</div>
             <p className="mt-1 text-sm text-muted-text">Aggiungi un prodotto dal catalogo per iniziare.</p>
             <div className="mt-6">
-              <ButtonLink href="/catalogo">Vai al catalogo</ButtonLink>
+              <Link href="/catalogo" className="font-semibold underline">
+                Vai al catalogo
+              </Link>
             </div>
           </div>
         ) : (
@@ -618,7 +597,6 @@ export default function CartView() {
 
             {/* DESTRA: spedizione + fatturazione + riepilogo */}
             <aside className="space-y-4">
-              {/* BOX consegna */}
               <div className="rounded-2xl border border-border bg-surface p-5">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
@@ -627,17 +605,16 @@ export default function CartView() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
                     <div className="mt-1 text-sm text-text/70">
-                      Spedizione calcolata automaticamente in base al <b>peso totale</b> e agli indirizzi salvati.
+                      Spedizione calcolata automaticamente in base al <b>peso totale</b> e agli indirizzi salvati nel Profilo.
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* DATI SPEDIZIONE */}
               <div className="rounded-2xl border border-border bg-background p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm font-extrabold text-text">Dati di spedizione</div>
-                  <Link href="/account/indirizzi" className="text-sm font-semibold text-link hover:text-link-hover">
+                  <Link href="/account/profilo" className="text-sm font-semibold text-link hover:text-link-hover">
                     Modifica
                   </Link>
                 </div>
@@ -655,17 +632,14 @@ export default function CartView() {
                 </div>
 
                 {!addrLoading && !addrError && shippingInvalid ? (
-                  <div className="mt-2 text-xs font-semibold text-red-600">
-                    Spedizione: completa l’indirizzo in “Indirizzi”.
-                  </div>
+                  <div className="mt-2 text-xs font-semibold text-red-600">Spedizione: completa l’indirizzo nel Profilo.</div>
                 ) : null}
               </div>
 
-              {/* DATI FATTURAZIONE */}
               <div className="rounded-2xl border border-border bg-background p-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm font-extrabold text-text">Dati di fatturazione</div>
-                  <Link href="/account/indirizzi" className="text-sm font-semibold text-link hover:text-link-hover">
+                  <Link href="/account/profilo" className="text-sm font-semibold text-link hover:text-link-hover">
                     Modifica
                   </Link>
                 </div>
@@ -678,20 +652,15 @@ export default function CartView() {
                   ) : billingAddress ? (
                     formatAddressBlock(billingAddress)
                   ) : (
-                    <span className="text-xs text-muted-text">
-                      Nessun indirizzo di fatturazione salvato.
-                    </span>
+                    <span className="text-xs text-muted-text">Nessun indirizzo di fatturazione salvato.</span>
                   )}
                 </div>
 
                 {!addrLoading && !addrError && billingInvalid ? (
-                  <div className="mt-2 text-xs font-semibold text-red-600">
-                    Fatturazione: completa l’indirizzo in “Indirizzi”.
-                  </div>
+                  <div className="mt-2 text-xs font-semibold text-red-600">Fatturazione: completa l’indirizzo nel Profilo.</div>
                 ) : null}
               </div>
 
-              {/* RIEPILOGO ORDINE */}
               <div className="rounded-2xl border border-border bg-surface p-5">
                 <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
 
@@ -732,9 +701,7 @@ export default function CartView() {
                 {checkoutError ? (
                   <p className="mt-3 text-xs font-semibold text-red-600">{checkoutError}</p>
                 ) : !canCheckout ? (
-                  <p className="mt-3 text-xs text-muted-text">
-                    Per continuare, completa spedizione e fatturazione in “Indirizzi”.
-                  </p>
+                  <p className="mt-3 text-xs text-muted-text">Per continuare, completa spedizione e fatturazione nel Profilo.</p>
                 ) : shippingQuoteError ? (
                   <p className="mt-3 text-xs font-semibold text-red-600">{shippingQuoteError}</p>
                 ) : (

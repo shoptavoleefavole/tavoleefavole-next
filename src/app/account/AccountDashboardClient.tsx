@@ -1,8 +1,10 @@
+//src/app/account/AccountDashboardClient.tsx
+
 "use client";
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type SafeUser = {
@@ -43,14 +45,20 @@ function formatName(firstName: unknown, lastName: unknown) {
   return `${fn} ${ln}`.trim();
 }
 
+function isInternalHref(href: string): boolean {
+  const s = String(href || "").trim();
+  // solo path interni tipo "/account", no "//evil.com"
+  return s.startsWith("/") && !s.startsWith("//");
+}
+
 function isSafeExternalHref(href: string): boolean {
   const s = String(href || "").trim();
   if (!s) return false;
 
-  // Blocca schemi pericolosi
+  // blocca schemi pericolosi
   if (/^\s*javascript:/i.test(s) || /^\s*data:/i.test(s) || /^\s*vbscript:/i.test(s)) return false;
 
-  // Consenti solo http/https e (opzionale) mailto/tel
+  // consentiti
   if (/^https?:\/\//i.test(s)) return true;
   if (/^mailto:/i.test(s)) return true;
   if (/^tel:/i.test(s)) return true;
@@ -58,11 +66,24 @@ function isSafeExternalHref(href: string): boolean {
   return false;
 }
 
+function isAllowedWhatsappUrl(href: string): boolean {
+  try {
+    const u = new URL(href);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+    const host = u.hostname.toLowerCase();
+
+    // whitelist
+    return host === "wa.me" || host === "api.whatsapp.com" || host === "web.whatsapp.com";
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    return await fetch(url, { cache: "no-store", ...init, signal: ctrl.signal });
   } finally {
     clearTimeout(t);
   }
@@ -155,15 +176,24 @@ function DashboardCard(props: {
   );
 
   if (props.href) {
-    const href = String(props.href);
-    const external = isSafeExternalHref(href) && /^https?:\/\//i.test(href);
+    const href = String(props.href).trim();
 
-    if (external) {
+    // link interno
+    if (isInternalHref(href)) {
+      return (
+        <Link href={href} className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          {inner}
+        </Link>
+      );
+    }
+
+    // link esterno (https/mailto/tel)
+    if (isSafeExternalHref(href)) {
       return (
         <a
           href={href}
-          target="_blank"
-          rel="noopener noreferrer"
+          target={/^https?:\/\//i.test(href) ? "_blank" : undefined}
+          rel={/^https?:\/\//i.test(href) ? "noopener noreferrer" : undefined}
           className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           {inner}
@@ -171,14 +201,15 @@ function DashboardCard(props: {
       );
     }
 
-    // href interno
+    // fallback: non renderizzare href pericoloso
     return (
-      <Link
-        href={href}
-        className="block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      <button
+        type="button"
+        onClick={props.onClick}
+        className="w-full rounded-2xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         {inner}
-      </Link>
+      </button>
     );
   }
 
@@ -203,32 +234,33 @@ export default function AccountDashboardClient({
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
 
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   // Nome “reale” dal customer-profile
   const [profileName, setProfileName] = useState<string>("");
 
-  const display = useMemo(() => {
-    return profileName || niceFallbackName(user);
-  }, [profileName, user]);
+  const display = useMemo(() => profileName || niceFallbackName(user), [profileName, user]);
 
   const loadProfileName = useCallback(async () => {
     try {
-      const res = await fetchWithTimeout(
-        "/api/account/profile",
-        {
-          method: "GET",
-          credentials: "include",
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-        },
-        12000
-      );
+      const res = await fetchWithTimeout("/api/account/profile", {
+        method: "GET",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
 
       if (!res.ok) return;
       const data = (await res.json().catch(() => null)) as ProfilePayload | null;
       if (!data?.ok) return;
 
       const full = formatName(data.firstName, data.lastName);
-      setProfileName(full);
+      if (aliveRef.current) setProfileName(full);
     } catch {
       // best-effort
     }
@@ -236,7 +268,6 @@ export default function AccountDashboardClient({
 
   useEffect(() => {
     loadProfileName();
-
     const onAuth = () => loadProfileName();
     window.addEventListener(AUTH_EVENT, onAuth);
     return () => window.removeEventListener(AUTH_EVENT, onAuth);
@@ -247,28 +278,23 @@ export default function AccountDashboardClient({
     setLoggingOut(true);
 
     try {
-      await fetchWithTimeout(
-        "/api/auth/logout",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { Accept: "application/json" },
-          cache: "no-store",
-        },
-        12000
-      );
+      await fetchWithTimeout("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
     } catch {
       // best-effort
     } finally {
       window.dispatchEvent(new Event(AUTH_EVENT));
-      setLoggingOut(false);
+      if (aliveRef.current) setLoggingOut(false);
       router.replace("/");
       router.refresh();
     }
   }
 
   const safeWhatsappHref =
-    whatsappHref && isSafeExternalHref(whatsappHref) ? whatsappHref : undefined;
+    whatsappHref && isSafeExternalHref(whatsappHref) && isAllowedWhatsappUrl(whatsappHref) ? whatsappHref : undefined;
 
   return (
     <section className="mx-auto max-w-5xl">
@@ -278,9 +304,7 @@ export default function AccountDashboardClient({
             <h1 className="text-2xl font-extrabold">
               Ciao, <span className="text-primary">{display}</span>
             </h1>
-            <p className="mt-2 text-sm text-text/70">
-              Da qui puoi gestire ordini, profilo e preferiti in modo semplice e veloce.
-            </p>
+            <p className="mt-2 text-sm text-text/70">Da qui puoi gestire ordini, profilo e preferiti in modo semplice e veloce.</p>
             <p className="mt-1 text-xs text-text/60">
               Email: <span className="font-semibold">{sanitizeInlineText(user.email, 80)}</span>
             </p>
@@ -306,30 +330,9 @@ export default function AccountDashboardClient({
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <DashboardCard
-            title="Profilo"
-            desc="Dati personali, sicurezza e preferenze."
-            href="/account/profilo"
-            icon={<CardIcon name="user" />}
-          />
-          <DashboardCard
-            title="Ordini"
-            desc="Storico ordini e dettagli delle spedizioni."
-            href="/account/ordini"
-            icon={<CardIcon name="box" />}
-          />
-          <DashboardCard
-            title="Preferiti"
-            desc="I prodotti salvati per acquisti futuri."
-            href="/account/preferiti"
-            icon={<CardIcon name="heart" />}
-          />
-          <DashboardCard
-            title="Indirizzi"
-            desc="Gestisci spedizione e fatturazione."
-            href="/account/indirizzi"
-            icon={<span aria-hidden="true">📦</span>}
-          />
+          <DashboardCard title="Profilo" desc="Dati personali, indirizzi e preferenze." href="/account/profilo" icon={<CardIcon name="user" />} />
+          <DashboardCard title="Ordini" desc="Storico ordini e dettagli delle spedizioni." href="/account/ordini" icon={<CardIcon name="box" />} />
+          <DashboardCard title="Preferiti" desc="I prodotti salvati per acquisti futuri." href="/account/preferiti" icon={<CardIcon name="heart" />} />
 
           {safeWhatsappHref ? (
             <DashboardCard
@@ -340,18 +343,12 @@ export default function AccountDashboardClient({
               badge="WhatsApp"
             />
           ) : (
-            <DashboardCard
-              title="Assistenza"
-              desc="Contattaci per supporto su ordini e prodotti."
-              href="/contatti"
-              icon={<CardIcon name="help" />}
-            />
+            <DashboardCard title="Assistenza" desc="Contattaci per supporto su ordini e prodotti." href="/contatti" icon={<CardIcon name="help" />} />
           )}
         </div>
 
         <div className="mt-6 text-xs text-text/60">
-          Suggerimento: per una gestione completa e ordinata, questa area evita menu a tendina sovrapposti e mantiene
-          l’esperienza pulita su mobile e desktop.
+          Suggerimento: per una gestione completa e ordinata, questa area evita menu a tendina sovrapposti e mantiene l’esperienza pulita su mobile e desktop.
         </div>
       </div>
     </section>

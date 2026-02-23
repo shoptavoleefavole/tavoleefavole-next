@@ -9,13 +9,7 @@ type Address = {
   city: string;
   postalCode: string;
   province: string;
-  country: string;
-};
-
-type Body = {
-  shippingAddress?: Partial<Address> | null;
-  billingAddress?: Partial<Address> | null;
-  billingSameAsShipping?: boolean;
+  country: string; // IT
 };
 
 function jsonNoStore(data: any, status = 200) {
@@ -37,11 +31,6 @@ function pickStrapiBaseUrl() {
   return String(process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "").replace(/\/+$/, "");
 }
 
-function requireEnv(name: string, v: string) {
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
 function getCookieValue(cookieHeader: string, name: string) {
   const parts = cookieHeader.split(";").map((p) => p.trim());
   const hit = parts.find((p) => p.startsWith(`${name}=`));
@@ -60,8 +49,9 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 12_000
 }
 
 async function strapiFetch(path: string, init: RequestInit) {
-  const STRAPI_URL = requireEnv("STRAPI_URL", pickStrapiBaseUrl());
-  const res = await fetchWithTimeout(`${STRAPI_URL}${path}`, init);
+  const base = pickStrapiBaseUrl();
+  if (!base) throw new Error("STRAPI_URL_MISSING");
+  const res = await fetchWithTimeout(`${base}${path}`, init);
   const text = await res.text().catch(() => "");
   const data = safeJsonParse(text);
   return { res, data, text };
@@ -79,20 +69,31 @@ function normalizeAddress(input: any): Address {
     city: String(src.city ?? "").trim().slice(0, 80),
     postalCode: String(src.postalCode ?? "").trim().replace(/\s+/g, "").slice(0, 10),
     province: String(src.province ?? "").trim().slice(0, 24),
-    country: String(src.country ?? "IT").trim().slice(0, 2).toUpperCase() || "IT",
+    country: (String(src.country ?? "IT").trim().toUpperCase() || "IT").slice(0, 2),
   };
 }
 
-function isComplete(a: Address) {
-  return a.address.length >= 3 && a.city.length >= 2 && capOk(a.postalCode) && a.province.length >= 2;
+function validateAddress(a: Address): string | null {
+  if (a.address.length < 3) return "ADDRESS_INVALID";
+  if (a.city.length < 2) return "CITY_INVALID";
+  if (!capOk(a.postalCode)) return "CAP_INVALID";
+  if (a.province.length < 2) return "PROVINCE_INVALID";
+  if (!a.country || a.country.length < 2) return "COUNTRY_INVALID";
+  return null;
 }
 
-function pickComponent(row: any, key: "shippingAddress" | "billingAddress"): Address | null {
+function pickAddrFromProfile(row: any, key: "shippingAddress" | "billingAddress"): Address | null {
   const a = row?.attributes ?? row ?? {};
-  const c = a?.[key] ?? null;
-  if (!c || typeof c !== "object") return null;
+  const v = a?.[key] ?? null;
+  if (!v || typeof v !== "object") return null;
 
-  return normalizeAddress(c);
+  return {
+    address: String(v.address ?? "").trim(),
+    city: String(v.city ?? "").trim(),
+    postalCode: String(v.postalCode ?? "").trim(),
+    province: String(v.province ?? "").trim(),
+    country: String(v.country ?? "IT").trim() || "IT",
+  };
 }
 
 async function getUserMe(userJwt: string) {
@@ -104,7 +105,7 @@ async function getUserMe(userJwt: string) {
   return r.data;
 }
 
-async function findCustomerProfile(apiToken: string, userId: number) {
+async function findCustomerProfile(token: string, userId: number) {
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "1");
   qs.set("filters[user][id][$eq]", String(userId));
@@ -112,46 +113,56 @@ async function findCustomerProfile(apiToken: string, userId: number) {
 
   const r = await strapiFetch(`/api/customer-profiles?${qs.toString()}`, {
     method: "GET",
-    headers: { Accept: "application/json", Authorization: `Bearer ${apiToken}` },
+    headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
   });
 
-  if (!r.res.ok) return null;
-  return Array.isArray(r.data?.data) ? r.data.data[0] : null;
+  if (!r.res.ok) return { ok: false as const, status: r.res.status };
+  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
+  return { ok: true as const, row: first };
 }
 
-function getIdentifiers(row: any) {
+function getProfileKey(row: any): string | null {
   const id = typeof row?.id === "number" ? String(row.id) : null;
-  const documentId =
+  const doc =
     typeof row?.documentId === "string"
       ? row.documentId
       : typeof row?.attributes?.documentId === "string"
       ? row.attributes.documentId
       : null;
-  return { id, documentId };
+  // ✅ preferisci id numerico
+  return id || doc || null;
 }
 
-async function putCustomerProfile(apiToken: string, identifier: string, payload: any) {
-  return await strapiFetch(`/api/customer-profiles/${encodeURIComponent(identifier)}?publicationState=preview`, {
+async function upsertProfile(token: string, userId: number, shippingAddress: Address, billingAddress: Address, existingRow: any) {
+  const payload = { data: { user: userId, shippingAddress, billingAddress } };
+
+  // se non esiste, crea
+  if (!existingRow?.id && !existingRow?.documentId) {
+    const created = await strapiFetch("/api/customer-profiles?publicationState=preview", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    return created.res.ok;
+  }
+
+  const key = getProfileKey(existingRow);
+  if (!key) return false;
+
+  const upd = await strapiFetch(`/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`, {
     method: "PUT",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiToken}`,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(payload),
   });
-}
-
-async function postCustomerProfile(apiToken: string, userId: number, payload: any) {
-  return await strapiFetch(`/api/customer-profiles?publicationState=preview`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiToken}`,
-    },
-    body: JSON.stringify({ data: { user: userId, ...payload.data } }),
-  });
+  return upd.res.ok;
 }
 
 export async function GET(req: Request) {
@@ -160,29 +171,24 @@ export async function GET(req: Request) {
     const userJwt = getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken");
     if (!userJwt) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    const apiToken = requireEnv("STRAPI_API_TOKEN", process.env.STRAPI_API_TOKEN || "");
+    const apiToken = String(process.env.STRAPI_API_TOKEN || "").trim();
+    const token = apiToken || userJwt; // fallback (se hai permessi pubblici)
+
     const me = await getUserMe(userJwt);
     const userId = typeof me?.id === "number" ? me.id : null;
     if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    const profile = await findCustomerProfile(apiToken, userId);
-    if (!profile?.id) {
-      return jsonNoStore({ ok: true, shippingAddress: null, billingAddress: null }, 200);
-    }
+    const prof = await findCustomerProfile(token, userId);
+    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
 
-    const shippingAddress = pickComponent(profile, "shippingAddress");
-    const billingAddress = pickComponent(profile, "billingAddress");
+    const row = prof.row;
+    const shippingAddress = row ? pickAddrFromProfile(row, "shippingAddress") : null;
+    const billingAddress = row ? pickAddrFromProfile(row, "billingAddress") : null;
 
-    return jsonNoStore(
-      {
-        ok: true,
-        shippingAddress,
-        billingAddress,
-        hasShipping: !!(shippingAddress && isComplete(shippingAddress)),
-        hasBilling: !!(billingAddress && isComplete(billingAddress)),
-      },
-      200
-    );
+    const hasShipping = !!(shippingAddress?.address && shippingAddress?.city && shippingAddress?.postalCode && shippingAddress?.province);
+    const hasBilling = !!(billingAddress?.address && billingAddress?.city && billingAddress?.postalCode && billingAddress?.province);
+
+    return jsonNoStore({ ok: true, shippingAddress, billingAddress, hasShipping, hasBilling }, 200);
   } catch {
     return jsonNoStore({ ok: false, error: "PROFILE_ROUTE_FAILED" }, 500);
   }
@@ -194,63 +200,33 @@ export async function PUT(req: Request) {
     const userJwt = getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken");
     if (!userJwt) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
-    const apiToken = requireEnv("STRAPI_API_TOKEN", process.env.STRAPI_API_TOKEN || "");
+    const apiToken = String(process.env.STRAPI_API_TOKEN || "").trim();
+    const token = apiToken || userJwt;
+
     const me = await getUserMe(userJwt);
     const userId = typeof me?.id === "number" ? me.id : null;
     if (!userId) return jsonNoStore({ ok: false, error: "UNAUTHENTICATED" }, 401);
 
     const raw = await req.text().catch(() => "");
-    const body = (safeJsonParse(raw) ?? {}) as Body;
+    const body = safeJsonParse(raw) ?? {};
 
-    const shipping = body.shippingAddress ? normalizeAddress(body.shippingAddress) : null;
-    const billingSame = Boolean(body.billingSameAsShipping);
-    const billing = billingSame
-      ? shipping
-      : body.billingAddress
-      ? normalizeAddress(body.billingAddress)
-      : null;
+    const billingSameAsShipping = Boolean(body?.billingSameAsShipping);
 
-    // validazione minima: se presenti, devono essere completi
-    if (shipping && !isComplete(shipping)) return jsonNoStore({ ok: false, error: "SHIPPING_INVALID" }, 400);
-    if (billing && !isComplete(billing)) return jsonNoStore({ ok: false, error: "BILLING_INVALID" }, 400);
+    const ship = normalizeAddress(body?.shippingAddress);
+    const shipErr = validateAddress(ship);
+    if (shipErr) return jsonNoStore({ ok: false, error: `SHIPPING_${shipErr}` }, 400);
 
-    const payload = {
-      data: {
-        ...(shipping ? { shippingAddress: shipping } : {}),
-        ...(billing ? { billingAddress: billing } : {}),
-      },
-    };
+    const bill = billingSameAsShipping ? ship : normalizeAddress(body?.billingAddress);
+    const billErr = validateAddress(bill);
+    if (billErr) return jsonNoStore({ ok: false, error: `BILLING_${billErr}` }, 400);
 
-    const profile = await findCustomerProfile(apiToken, userId);
+    const prof = await findCustomerProfile(token, userId);
+    if (!prof.ok) return jsonNoStore({ ok: false, error: "PROFILE_FIND_FAILED", status: prof.status }, 502);
 
-    // se non esiste, crealo
-    if (!profile?.id) {
-      const created = await postCustomerProfile(apiToken, userId, payload);
-      if (!created.res.ok) return jsonNoStore({ ok: false, error: "PROFILE_CREATE_FAILED", status: created.res.status }, 502);
-      return jsonNoStore({ ok: true }, 200);
-    }
+    const ok = await upsertProfile(token, userId, ship, bill, prof.row);
+    if (!ok) return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED" }, 502);
 
-    const { id, documentId } = getIdentifiers(profile);
-
-    // prova prima con id numerico, poi documentId
-    if (id) {
-      const r = await putCustomerProfile(apiToken, id, payload);
-      if (r.res.ok) return jsonNoStore({ ok: true }, 200);
-      if (r.res.status === 404 && documentId) {
-        const r2 = await putCustomerProfile(apiToken, documentId, payload);
-        if (r2.res.ok) return jsonNoStore({ ok: true }, 200);
-        return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r2.res.status }, 502);
-      }
-      return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r.res.status }, 502);
-    }
-
-    if (documentId) {
-      const r = await putCustomerProfile(apiToken, documentId, payload);
-      if (!r.res.ok) return jsonNoStore({ ok: false, error: "PROFILE_UPDATE_FAILED", status: r.res.status }, 502);
-      return jsonNoStore({ ok: true }, 200);
-    }
-
-    return jsonNoStore({ ok: false, error: "PROFILE_NOT_FOUND" }, 404);
+    return jsonNoStore({ ok: true }, 200);
   } catch {
     return jsonNoStore({ ok: false, error: "PROFILE_ROUTE_FAILED" }, 500);
   }
