@@ -23,6 +23,7 @@ function ChevronDownIcon({ className = "" }: { className?: string }) {
 type Pos = { top: number; left: number; width: number } | null;
 type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
+type NavOcc = { slug: string; label: string };
 
 const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_BASE_URL || "";
@@ -58,6 +59,10 @@ function isNavCat(x: any): x is NavCat {
     typeof x.label === "string" &&
     Array.isArray(x.subcategories)
   );
+}
+
+function isNavOcc(x: any): x is NavOcc {
+  return x && typeof x === "object" && typeof x.slug === "string" && typeof x.label === "string";
 }
 
 function normalizeStrapiCategory(row: any): NavCat | null {
@@ -97,6 +102,20 @@ function normalizeStrapiCategory(row: any): NavCat | null {
   return { slug, label, icon: icon ?? null, subcategories };
 }
 
+function normalizeStrapiOccasion(row: any): NavOcc | null {
+  const a = row?.attributes ?? row ?? {};
+
+  const slugRaw = a?.slug ?? a?.documentId ?? null;
+  const slug = typeof slugRaw === "string" ? slugRaw.trim() : null;
+  if (!slug) return null;
+
+  // titolo può essere "Titolo" oppure "titolo" (dipende da come l’hai creato)
+  const labelRaw = a?.Titolo ?? a?.titolo ?? a?.title ?? a?.label ?? a?.name ?? slug;
+  const label = String(labelRaw ?? slug).trim() || slug;
+
+  return { slug, label };
+}
+
 async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<NavCat[]> {
   if (!STRAPI_URL) return [];
 
@@ -133,7 +152,6 @@ async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat
             ? json
             : [];
 
-      // Se l’API interna restituisce già oggetti normalizzati, normalizeStrapiCategory li accetta comunque.
       const normalized = data.map(normalizeStrapiCategory).filter(isNavCat);
       if (normalized.length) return normalized;
     }
@@ -145,12 +163,61 @@ async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat
   return fetchNavbarCategoriesFromStrapi(signal);
 }
 
+async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
+  // 1) endpoint interno (preferibile)
+  try {
+    const res = await fetch("/api/nav/occasions", { cache: "no-store", signal });
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+
+      const data: any[] = Array.isArray(json?.data)
+        ? json.data
+        : Array.isArray(json?.occasions)
+          ? json.occasions
+          : Array.isArray(json)
+            ? json
+            : [];
+
+      const normalized = data.map(normalizeStrapiOccasion).filter(isNavOcc);
+      return normalized;
+    }
+  } catch {
+    // noop
+  }
+
+  // 2) fallback diretto su Strapi (best-effort)
+  if (!STRAPI_URL) return [];
+  try {
+    const qs = new URLSearchParams();
+    qs.set("pagination[pageSize]", "100");
+    qs.set("sort[0]", "startDate:asc");
+    qs.set("sort[1]", "createdAt:asc");
+
+    const url = `${STRAPI_URL.replace(/\/$/, "")}/api/occasions?${qs.toString()}`;
+    const res = await fetch(url, { cache: "no-store", signal });
+    if (!res.ok) return [];
+
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+    const data: any[] = Array.isArray(json?.data) ? json.data : [];
+
+    // Nota: qui non filtriamo per date lato client perché lo fa già l’endpoint interno.
+    // Se Strapi è raggiungibile ma /api/nav/occasions no, meglio non mostrare robe fuori periodo:
+    // quindi teniamo SOLO normalize e basta (se vuoi, poi replichiamo la logica date anche qui).
+    return data.map(normalizeStrapiOccasion).filter(isNavOcc);
+  } catch {
+    return [];
+  }
+}
+
 export default function Navbar() {
   const pathname = usePathname() ?? "/";
   const router = useRouter();
 
   const [categories, setCategories] = useState<NavCat[]>([]);
   const [loaded, setLoaded] = useState(false);
+
+  const [occasions, setOccasions] = useState<NavOcc[]>([]);
 
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const openElRef = useRef<HTMLButtonElement | null>(null);
@@ -195,6 +262,32 @@ export default function Navbar() {
         window.clearTimeout(t);
         if (!alive) return;
         setLoaded(true);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      window.clearTimeout(t);
+      controller.abort();
+    };
+  }, []);
+
+  // fetch occasions (voci stagionali)
+  useEffect(() => {
+    let alive = true;
+    const controller = new AbortController();
+    const t = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        const occs = await fetchNavbarOccasionsRobust(controller.signal);
+        if (!alive) return;
+        setOccasions(Array.isArray(occs) ? occs : []);
+      } catch {
+        if (!alive) return;
+        setOccasions([]);
+      } finally {
+        window.clearTimeout(t);
       }
     })();
 
@@ -298,7 +391,7 @@ export default function Navbar() {
 
   useEffect(() => {
     measureOverflow();
-  }, [categories.length]);
+  }, [categories.length, occasions.length]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -317,7 +410,6 @@ export default function Navbar() {
 
   const desktopRow = (
     <div className="hidden md:block py-3">
-      {/* ✅ Barra scrollabile stile Deghi: una riga, se non ci sta -> scroll orizzontale */}
       <div className="relative -mx-4">
         <div
           ref={scrollerRef}
@@ -325,13 +417,47 @@ export default function Navbar() {
           aria-label="Categorie"
         >
           <ul className="flex w-max items-stretch gap-3 py-1 pr-4">
+            {/* ✅ OCCASIONI (solo quando attive) */}
+            {occasions.map((o) => {
+              const isActive = pathname.startsWith(`/occasione/${o.slug}`);
+
+              const pillBase = [
+                "min-w-max",
+                "inline-flex items-center justify-center gap-2",
+                "rounded-2xl border",
+                "px-4 py-3",
+                "whitespace-nowrap leading-none",
+                "text-[15px] font-bold tracking-tight",
+                "transition-colors transition-shadow duration-200",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              ].join(" ");
+
+              const pillState = isActive
+                ? "border-primary/40 bg-primary/5 shadow-sm"
+                : "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm";
+
+              return (
+                <li key={`occ-${o.slug}`} className="shrink-0">
+                  <Link
+                    href={`/occasione/${o.slug}`}
+                    className={`${pillBase} ${pillState}`}
+                    aria-current={isActive ? "page" : undefined}
+                    onMouseEnter={() => scheduleClose(0)} // chiudi eventuale dropdown aperto
+                  >
+                    <span className="h-[22px] w-[22px] rounded-lg bg-surface-2" aria-hidden="true" />
+                    <span className="text-text">{o.label}</span>
+                  </Link>
+                </li>
+              );
+            })}
+
+            {/* ✅ CATEGORIE */}
             {categories.map((cat) => {
               const hasSubs = cat.subcategories.length > 0;
               const isOpen = openSlug === cat.slug;
               const isActive =
                 activeMacroSlug === cat.slug || pathname.startsWith(`/categoria/${cat.slug}`);
 
-              // ✅ leggibilità: testo leggermente più grande + bold (non extrabold) + spacing più pulito
               const pillBase = [
                 "min-w-max",
                 "inline-flex items-center justify-center gap-2",
@@ -414,7 +540,6 @@ export default function Navbar() {
           </ul>
         </div>
 
-        {/* ✅ Fade laterali solo se overflow (niente frecce/indicatori che “spostano”) */}
         {isOverflowing ? (
           <>
             <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background via-background/80 to-transparent" />
