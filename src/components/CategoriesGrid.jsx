@@ -20,7 +20,7 @@ export default function CategoriesGrid() {
             color: "inherit",
           }}
         >
-          <Image src={c.icon} alt={c.label} width={40} height={40} />
+          <Image src={c.icon} alt={c.label} width={40} height={40} sizes="40px" />
           <div style={{ fontWeight: 600 }}>{c.label}</div>
         </Link>
       ))}

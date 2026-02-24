@@ -53,6 +53,13 @@ type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
 type NavOcc = { slug: string; label: string };
 
+type OccasionTheme = {
+  pill: string;
+  text: string;
+  iconBg: string;
+  badge: string;
+};
+
 const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_BASE_URL || "";
 
@@ -221,23 +228,25 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
 }
 
 /** ✅ Tema visivo per le macro stagionali */
-function occasionTheme(slug: string) {
-  switch (String(slug || "").toLowerCase()) {
-    case "pasqua":
-      return {
-        pill: "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60",
-        text: "text-emerald-900",
-        iconBg: "bg-emerald-200/60",
-        badge: "bg-emerald-700 text-white",
-      };
-    default:
-      return {
-        pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
-        text: "text-text",
-        iconBg: "bg-surface-2",
-        badge: "bg-accent text-accent-contrast",
-      };
+
+function occasionTheme(slug: string): OccasionTheme {
+  const s = String(slug || "").toLowerCase();
+
+  if (s === "pasqua") {
+    return {
+      pill: "border-border/70 bg-[#F6E27A]/55 hover:bg-[#F6E27A]/70",
+      text: "text-text",
+      iconBg: "bg-white/70",
+      badge: "bg-primary text-primary-contrast",
+    };
   }
+
+  return {
+    pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
+    text: "text-text",
+    iconBg: "bg-surface-2",
+    badge: "bg-accent text-accent-contrast",
+  };
 }
 
 export default function Navbar() {
@@ -409,7 +418,7 @@ export default function Navbar() {
   function measureOverflow() {
     const el = scrollerRef.current;
     if (!el) return;
-    setIsOverflowing(el.scrollWidth > el.clientWidth + 2);
+    setIsOverflowing(el.scrollWidth > el.clientWidth + 8);
   }
 
   useEffect(() => {
@@ -433,13 +442,13 @@ export default function Navbar() {
 
   const desktopRow = (
     <div className="hidden md:block py-3">
-      <div className="relative -mx-4">
+      <div className="relative">
         <div
           ref={scrollerRef}
-          className="no-scrollbar overflow-x-auto scroll-smooth px-3"
+          className="no-scrollbar overflow-x-auto scroll-smooth px-4 md:px-6"
           aria-label="Categorie"
         >
-          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-4">
+          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-6 pl-2">
             {/* ✅ OCCASIONE: SOLO PASQUA (con fallback se non arriva da Strapi) */}
             {shouldShowFallbackEaster ? (
               <li className="shrink-0">
@@ -612,8 +621,8 @@ export default function Navbar() {
 
         {isOverflowing ? (
           <>
-            <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background via-background/80 to-transparent" />
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background via-background/80 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background via-background/40 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background via-background/40 to-transparent" />
           </>
         ) : null}
 
