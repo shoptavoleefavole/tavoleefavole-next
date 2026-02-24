@@ -136,8 +136,18 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
+  // ✅ FIX: evitare "cache: no-store" quando c’è anche "next: { revalidate }"
+  const hasRevalidate = Boolean((init as any)?.next?.revalidate);
+  const hasExplicitCache = typeof (init as any)?.cache === "string";
+
+  const mergedInit: RequestInit = {
+    ...init,
+    signal: controller.signal,
+    ...(hasExplicitCache || hasRevalidate ? {} : { cache: "no-store" }),
+  };
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, mergedInit);
   } finally {
     clearTimeout(t);
   }
@@ -540,10 +550,8 @@ function ProductRail(props: {
                       image={p.image}
                       price={p.price}
                       qty={1}
-                      // ✅ passiamo inventario Strapi
                       stockQty={p.stockQty ?? null}
                       trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
-                      // fallback (non usato se stockQty c'è)
                       inStock={!isOutOfStock}
                       disabledLabel="Esaurito"
                     />
@@ -818,12 +826,12 @@ export default async function Home() {
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
   return (
-  <main className="mx-auto max-w-7xl px-4 py-10">
-    <EasterStrip />
+    <main className="mx-auto max-w-7xl px-4 py-10">
+      <EasterStrip />
 
-    <Hero />
+      <Hero />
 
-    <PersonalizedPrintsCarouselBlock />
+      <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (
         <ProductRail

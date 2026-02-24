@@ -572,6 +572,7 @@ export default function ProfilePageClient() {
           <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">{successMsg}</div>
         ) : null}
 
+        className="w-full h-12 rounded-full !bg-primary !text-primary-contrast text-sm font-extrabold hover:!bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
         <button type="submit" disabled={!canSave} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
           {saving ? "Salvataggio..." : "Salva modifiche"}
         </button>

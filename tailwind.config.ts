@@ -24,7 +24,12 @@ const config: Config = {
         "link-hover": "rgb(var(--color-link-hover) / <alpha-value>)",
         success: "rgb(var(--color-success) / <alpha-value>)",
         warn: "rgb(var(--color-warn) / <alpha-value>)",
-        error: "rgb(var(--color-error) / <alpha-value>)"
+        error: "rgb(var(--color-error) / <alpha-value>)",
+        brand: "rgb(var(--color-brand) / <alpha-value>)",
+        "brand-dark": "rgb(var(--color-brand-dark) / <alpha-value>)",
+        "brand-soft": "rgb(var(--color-brand-soft) / <alpha-value>)",
+        "surface-1": "rgb(var(--color-surface-1) / <alpha-value>)",
+        line: "rgb(var(--color-line) / <alpha-value>)"
       },
       borderRadius: {
         xl: "var(--radius-xl)",
@@ -32,7 +37,9 @@ const config: Config = {
       },
       boxShadow: {
         sm: "var(--shadow-sm)",
-        md: "var(--shadow-md)"
+        md: "var(--shadow-md)",
+        header: "var(--shadow-header)",
+        soft: "var(--shadow-soft)"
       }
     }
   },

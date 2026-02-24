@@ -7,7 +7,23 @@
     Brand palette (estratta da public/icon.png):
     - Pink ~ rgb(224,24,112)
     - Teal ~ rgb(24,164,156)
+
+    Extra UI tokens (per replica Allegato 1):
+    - brand / brand-dark / brand-soft
+    - surface-1 / line
+    - shadow-header / shadow-soft
   */
+
+  --color-brand: 177 58 90;        /* bottone "Cerca" / accenti */
+  --color-brand-dark: 143 46 73;   /* hover/active */
+  --color-brand-soft: 247 230 236; /* rosa chiarissimo */
+
+  --color-surface-1: 255 255 255;  /* bianco pieno (pillole) */
+  --color-line: 20 20 20;          /* usare con alpha per bordi soft */
+
+  --shadow-header: 0 8px 24px rgba(20, 20, 20, 0.08);
+  --shadow-soft: 0 6px 18px rgba(20, 20, 20, 0.10);
+
   --color-primary: 224 24 112;            /* rosa */
   --color-primary-hover: 200 20 100;
   --color-primary-active: 176 16 88;
@@ -37,6 +53,7 @@
 
   --radius-xl: 14px;
   --radius-2xl: 16px;
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.10);
 }

@@ -117,9 +117,26 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <Header />
                 </Suspense>
 
+                {/* Desktop categories strip */}
                 <div className="hidden border-t border-border bg-background md:block">
                   <div className="mx-auto max-w-7xl px-4">
-                    <Navbar />
+                    <div className="relative overflow-hidden rounded-2xl">
+                      {/* Background texture */}
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-0 bg-[url('/nav-strip.webp')] bg-cover bg-center"
+                      />
+                      {/* Overlay per leggibilità */}
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/25 to-background/60"
+                      />
+
+                      {/* Contenuto sopra */}
+                      <div className="relative">
+                        <Navbar />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

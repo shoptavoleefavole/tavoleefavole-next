@@ -388,7 +388,7 @@ export default function Header() {
   const accountHref = loggedIn ? "/account" : accountLinkForGuest();
 
   return (
-    <header className="border-b border-border bg-background/90 backdrop-blur">
+    <header className="border-b border-line/10 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70 shadow-header">
       <Container>
         {/* MOBILE */}
         <div className="md:hidden grid grid-cols-3 items-center py-2">
@@ -409,7 +409,14 @@ export default function Header() {
             className="justify-self-center flex items-center rounded-xl px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             aria-label="Home"
           >
-            <Image src="/brand/tavoleefavole-logo.svg" alt="Tavole & Favole" width={170} height={48} priority className="h-10 w-auto" />
+            <Image
+              src="/brand/tavoleefavole-logo.svg"
+              alt="Tavole & Favole"
+              width={170}
+              height={48}
+              priority
+              className="h-10 w-auto"
+            />
           </Link>
 
           <Link
@@ -430,18 +437,33 @@ export default function Header() {
         </div>
 
         {/* DESKTOP */}
-        <div className="hidden md:flex items-center gap-3 py-3">
-          <Link href="/" className="flex items-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label="Home">
-            <Image src="/brand/tavoleefavole-logo.svg" alt="Tavole & Favole" width={290} height={92} priority className="h-16 w-auto" />
+        <div className="hidden md:flex items-center gap-4 py-3">
+          <Link
+            href="/"
+            className="flex items-center rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            aria-label="Home"
+          >
+            <Image
+              src="/brand/tavoleefavole-logo.svg"
+              alt="Tavole & Favole"
+              width={290}
+              height={92}
+              priority
+              className="h-16 w-auto"
+            />
           </Link>
 
-          <form onSubmit={onSubmit} className="flex flex-1 items-center overflow-hidden rounded-full border border-border bg-white h-11">
-            <div className="flex items-center border-r border-border h-11">
+          {/* Search: stile Allegato 1 */}
+          <form
+            onSubmit={onSubmit}
+            className="flex flex-1 items-stretch overflow-hidden rounded-2xl border border-line/10 bg-surface-1 shadow-sm h-11"
+          >
+            <div className="flex items-center border-r border-line/10 h-11">
               <select
                 value={cat}
                 onChange={(e) => setCat(e.target.value)}
                 aria-label="Categoria"
-                className="h-11 bg-transparent px-3 text-sm outline-none cursor-pointer"
+                className="h-11 bg-transparent pl-4 pr-3 text-sm font-semibold text-text outline-none cursor-pointer min-w-[140px]"
               >
                 <option value="">Tutte</option>
                 {!catsLoaded ? <option disabled>Caricamento…</option> : null}
@@ -459,11 +481,14 @@ export default function Header() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder={searchPlaceholder}
-              className="h-11 flex-1 px-3 text-sm outline-none"
+              className="h-11 flex-1 px-4 text-sm outline-none placeholder:text-muted-text"
               aria-label="Cerca prodotti"
             />
 
-            <button type="submit" className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition">
+            <button
+              type="submit"
+              className="h-11 px-6 text-sm font-extrabold bg-brand text-primary-contrast hover:bg-brand-dark transition"
+            >
               Cerca
             </button>
           </form>
@@ -484,7 +509,6 @@ export default function Header() {
                     <>
                       <span className="font-semibold">Ciao,</span>{" "}
                       {(displayName || "Account").split(" ")[0]}
-
                     </>
                   ) : (
                     "Accedi"
@@ -493,6 +517,7 @@ export default function Header() {
               </Link>
             </div>
 
+            {/* CART */}
             <Link
               href="/carrello"
               className="inline-flex h-10 items-center gap-2 rounded-xl bg-surface px-3 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -516,13 +541,16 @@ export default function Header() {
         </div>
 
         {/* MOBILE search */}
-        <form onSubmit={onSubmit} className="md:hidden pb-3 flex h-11 items-center overflow-hidden rounded-full border border-border bg-white">
-          <div className="flex items-center border-r border-border h-11">
+        <form
+          onSubmit={onSubmit}
+          className="md:hidden pb-3 flex h-11 items-stretch overflow-hidden rounded-2xl border border-line/10 bg-surface-1 shadow-sm"
+        >
+          <div className="flex items-center border-r border-line/10 h-11">
             <select
               value={cat}
               onChange={(e) => setCat(e.target.value)}
               aria-label="Categoria"
-              className="h-11 bg-transparent px-3 text-sm outline-none cursor-pointer"
+              className="h-11 bg-transparent pl-4 pr-3 text-sm font-semibold text-text outline-none cursor-pointer min-w-[120px]"
             >
               <option value="">Tutte</option>
               {!catsLoaded ? <option disabled>Caricamento…</option> : null}
@@ -540,11 +568,14 @@ export default function Header() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={searchPlaceholder}
-            className="h-11 flex-1 px-3 text-sm outline-none"
+            className="h-11 flex-1 px-4 text-sm outline-none placeholder:text-muted-text"
             aria-label="Cerca prodotti"
           />
 
-          <button type="submit" className="h-11 px-5 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition">
+          <button
+            type="submit"
+            className="h-11 px-5 text-sm font-extrabold bg-brand text-primary-contrast hover:bg-brand-dark transition"
+          >
             Cerca
           </button>
         </form>

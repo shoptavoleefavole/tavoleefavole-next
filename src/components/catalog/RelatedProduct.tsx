@@ -43,6 +43,8 @@ export default async function RelatedProducts({
   qs.set("pagination[pageSize]", "6");
 
   const url = `${STRAPI_URL.replace(/\/$/, "")}/api/products?${qs.toString()}`;
+
+  // ✅ Usa UNA sola strategia cache: revalidate
   const res = await fetch(url, { next: { revalidate: 60 }, headers });
 
   if (!res.ok) return null;
@@ -51,29 +53,31 @@ export default async function RelatedProducts({
   const json = safeJsonParse(text);
   const data: any[] = Array.isArray(json?.data) ? json.data : [];
 
-  const items = data.map((p: any) => {
-    const slug = p?.slug ?? p?.attributes?.slug ?? "";
-    const name = p?.name ?? p?.attributes?.name ?? "";
+  const items = data
+    .map((p: any) => {
+      const slug = p?.slug ?? p?.attributes?.slug ?? "";
+      const name = p?.name ?? p?.attributes?.name ?? "";
 
-    const images =
-      p?.images ??
-      p?.attributes?.images?.data ??
-      p?.attributes?.images ??
-      [];
+      const images =
+        p?.images ??
+        p?.attributes?.images?.data ??
+        p?.attributes?.images ??
+        [];
 
-    const first = Array.isArray(images) ? images[0] : images;
-    const imageUrlRaw =
-      first?.formats?.small?.url ??
-      first?.formats?.thumbnail?.url ??
-      first?.url ??
-      first?.attributes?.url ??
-      null;
+      const first = Array.isArray(images) ? images[0] : images;
+      const imageUrlRaw =
+        first?.formats?.small?.url ??
+        first?.formats?.thumbnail?.url ??
+        first?.url ??
+        first?.attributes?.url ??
+        null;
 
-    const imageUrl = absUrl(STRAPI_URL, imageUrlRaw);
-    const price = p?.price ?? p?.attributes?.price ?? null;
+      const imageUrl = absUrl(STRAPI_URL, imageUrlRaw);
+      const price = p?.price ?? p?.attributes?.price ?? null;
 
-    return { slug: String(slug), name: String(name), imageUrl, price };
-  }).filter((x: any) => x.slug);
+      return { slug: String(slug), name: String(name), imageUrl, price };
+    })
+    .filter((x: any) => x.slug);
 
   if (!items.length) return null;
 

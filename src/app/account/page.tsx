@@ -116,7 +116,7 @@ export default async function AccountPage() {
   const whatsappHref = process.env.NEXT_PUBLIC_WHATSAPP_URL || "";
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-10">
+    <main> className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
       <AccountDashboardClient user={mergedUser} whatsappHref={whatsappHref || undefined} />
     </main>
   );

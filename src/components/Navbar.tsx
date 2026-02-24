@@ -24,7 +24,6 @@ function ChevronDownIcon({ className = "" }: { className?: string }) {
 function EasterEggIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      {/* Uovo */}
       <path
         d="M12 2.6c-3.7 0-6.7 5.1-6.7 10.5 0 5.7 3 8.4 6.7 8.4s6.7-2.7 6.7-8.4c0-5.4-3-10.5-6.7-10.5Z"
         stroke="currentColor"
@@ -32,7 +31,6 @@ function EasterEggIcon({ className = "" }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Decorazione zig-zag */}
       <path
         d="M7.7 12.1l1.5-1.2 1.5 1.2 1.5-1.2 1.5 1.2 1.5-1.2"
         stroke="currentColor"
@@ -40,7 +38,6 @@ function EasterEggIcon({ className = "" }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Puntini piccoli */}
       <path
         d="M9 15.6h.01M12 16.4h.01M15 15.6h.01"
         stroke="currentColor"
@@ -234,8 +231,9 @@ function occasionTheme(slug: string) {
         badge: "bg-emerald-700 text-white",
       };
     default:
+      // Default più vicino ad Allegato 1 (pill “pulita”)
       return {
-        pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
+        pill: "border-line/10 bg-surface-1/85 hover:bg-surface-1 hover:shadow-soft",
         text: "text-text",
         iconBg: "bg-surface-2",
         badge: "bg-accent text-accent-contrast",
@@ -443,7 +441,7 @@ export default function Navbar() {
 
               const pillBase = [
                 "inline-flex items-center justify-center gap-2",
-                "rounded-2xl border",
+                "rounded-full border",
                 "px-3 py-2 sm:px-4 sm:py-3",
                 "whitespace-nowrap leading-none",
                 "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
@@ -466,7 +464,6 @@ export default function Navbar() {
                     aria-current={isActive ? "page" : undefined}
                     title={o.label}
                     onClick={() => {
-                      // chiudi eventuale dropdown categorie aperto
                       setOpenSlug(null);
                       setPos(null);
                       openElRef.current = null;
@@ -502,7 +499,7 @@ export default function Navbar() {
 
               const pillBase = [
                 "inline-flex items-center justify-center gap-2",
-                "rounded-2xl border",
+                "rounded-full border",
                 "px-3 py-2 sm:px-4 sm:py-3",
                 "whitespace-nowrap leading-none",
                 "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
@@ -511,8 +508,8 @@ export default function Navbar() {
               ].join(" ");
 
               const pillState = isActive
-                ? "border-primary/40 bg-primary/5 shadow-sm"
-                : "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm";
+                ? "border-primary/30 bg-primary/5 shadow-sm"
+                : "border-line/10 bg-surface-1/85 hover:bg-surface-1 hover:shadow-soft";
 
               return (
                 <li key={cat.slug} className="shrink-0">
@@ -574,8 +571,8 @@ export default function Navbar() {
 
         {isOverflowing ? (
           <>
-            <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background via-background/80 to-transparent" />
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background via-background/80 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background/70 via-background/40 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background/70 via-background/40 to-transparent" />
           </>
         ) : null}
 
@@ -606,8 +603,8 @@ export default function Navbar() {
         <div
           ref={panelRef}
           className={[
-            "fixed z-[100000] rounded-2xl border border-border",
-            "bg-background/95 backdrop-blur",
+            "fixed z-[100000] rounded-2xl border border-line/10",
+            "bg-surface-1/95 backdrop-blur",
             "p-2 shadow-xl",
           ].join(" ")}
           style={{ top: pos.top, left: pos.left, width: pos.width }}
