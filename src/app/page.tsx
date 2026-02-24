@@ -5,6 +5,7 @@ import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
+import EasterStrip from "@/components/seasonal/EasterStrip";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -817,10 +818,12 @@ export default async function Home() {
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-10">
-      <Hero />
+  <main className="mx-auto max-w-7xl px-4 py-10">
+    <EasterStrip />
 
-      <PersonalizedPrintsCarouselBlock />
+    <Hero />
+
+    <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (
         <ProductRail

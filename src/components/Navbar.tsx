@@ -75,7 +75,6 @@ function normalizeStrapiCategory(row: any): NavCat | null {
   const labelRaw = a?.label ?? a?.name ?? a?.title ?? slug;
   const label = String(labelRaw ?? slug).trim() || slug;
 
-  // Icon: supporta Strapi v4/v5 e anche stringa già pronta
   const iconRaw =
     (typeof a?.icon === "string" ? a.icon : null) ??
     a?.icon?.data?.attributes?.url ??
@@ -109,7 +108,6 @@ function normalizeStrapiOccasion(row: any): NavOcc | null {
   const slug = typeof slugRaw === "string" ? slugRaw.trim() : null;
   if (!slug) return null;
 
-  // titolo può essere "Titolo" oppure "titolo" (dipende da come l’hai creato)
   const labelRaw = a?.Titolo ?? a?.titolo ?? a?.title ?? a?.label ?? a?.name ?? slug;
   const label = String(labelRaw ?? slug).trim() || slug;
 
@@ -138,7 +136,6 @@ async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<Na
 }
 
 async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat[]> {
-  // 1) prova endpoint interno (preferibile perché gestisce token/CORS)
   try {
     const res = await fetch("/api/nav/categories", { cache: "no-store", signal });
     if (res.ok) {
@@ -159,12 +156,10 @@ async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat
     // noop
   }
 
-  // 2) fallback diretto su Strapi
   return fetchNavbarCategoriesFromStrapi(signal);
 }
 
 async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
-  // 1) endpoint interno (preferibile)
   try {
     const res = await fetch("/api/nav/occasions", { cache: "no-store", signal });
     if (res.ok) {
@@ -178,35 +173,36 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
             ? json
             : [];
 
-      const normalized = data.map(normalizeStrapiOccasion).filter(isNavOcc);
-      return normalized;
+      return data.map(normalizeStrapiOccasion).filter(isNavOcc);
     }
   } catch {
     // noop
   }
 
-  // 2) fallback diretto su Strapi (best-effort)
-  if (!STRAPI_URL) return [];
-  try {
-    const qs = new URLSearchParams();
-    qs.set("pagination[pageSize]", "100");
-    qs.set("sort[0]", "startDate:asc");
-    qs.set("sort[1]", "createdAt:asc");
+  return [];
+}
 
-    const url = `${STRAPI_URL.replace(/\/$/, "")}/api/occasions?${qs.toString()}`;
-    const res = await fetch(url, { cache: "no-store", signal });
-    if (!res.ok) return [];
-
-    const text = await res.text().catch(() => "");
-    const json = safeJsonParse(text);
-    const data: any[] = Array.isArray(json?.data) ? json.data : [];
-
-    // Nota: qui non filtriamo per date lato client perché lo fa già l’endpoint interno.
-    // Se Strapi è raggiungibile ma /api/nav/occasions no, meglio non mostrare robe fuori periodo:
-    // quindi teniamo SOLO normalize e basta (se vuoi, poi replichiamo la logica date anche qui).
-    return data.map(normalizeStrapiOccasion).filter(isNavOcc);
-  } catch {
-    return [];
+/** ✅ Tema visivo per le macro stagionali */
+function occasionTheme(slug: string) {
+  switch (slug) {
+    case "pasqua":
+      return {
+        emoji: "🐣",
+        pill: "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60",
+        text: "text-emerald-900",
+        iconBg: "bg-emerald-200/60",
+        badge: "bg-emerald-700 text-white",
+        badgeText: "Pasqua",
+      };
+    default:
+      return {
+        emoji: "✨",
+        pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
+        text: "text-text",
+        iconBg: "bg-surface-2",
+        badge: "bg-accent text-accent-contrast",
+        badgeText: "Evento",
+      };
   }
 }
 
@@ -226,7 +222,6 @@ export default function Navbar() {
   useEffect(() => setMounted(true), []);
 
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const closeTimer = useRef<number | null>(null);
   const [pos, setPos] = useState<Pos>(null);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -242,6 +237,7 @@ export default function Navbar() {
   useEffect(() => {
     setOpenSlug(null);
     setPos(null);
+    openElRef.current = null;
   }, [pathname]);
 
   // fetch categories
@@ -272,7 +268,7 @@ export default function Navbar() {
     };
   }, []);
 
-  // fetch occasions (voci stagionali)
+  // fetch occasions
   useEffect(() => {
     let alive = true;
     const controller = new AbortController();
@@ -297,22 +293,6 @@ export default function Navbar() {
       controller.abort();
     };
   }, []);
-
-  function clearCloseTimer() {
-    if (closeTimer.current) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  }
-
-  function scheduleClose(ms = 220) {
-    clearCloseTimer();
-    closeTimer.current = window.setTimeout(() => {
-      setOpenSlug(null);
-      setPos(null);
-      openElRef.current = null;
-    }, ms);
-  }
 
   function updatePosFromEl(el: HTMLButtonElement | null) {
     if (!el) return setPos(null);
@@ -361,6 +341,7 @@ export default function Navbar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // ✅ chiudi quando clicchi fuori
   useEffect(() => {
     if (!openSlug) return;
 
@@ -411,15 +392,12 @@ export default function Navbar() {
   const desktopRow = (
     <div className="hidden md:block py-3">
       <div className="relative -mx-4">
-        <div
-          ref={scrollerRef}
-          className="no-scrollbar overflow-x-auto scroll-smooth px-3"
-          aria-label="Categorie"
-        >
+        <div ref={scrollerRef} className="no-scrollbar overflow-x-auto scroll-smooth px-3" aria-label="Categorie">
           <ul className="flex w-max items-stretch gap-3 py-1 pr-4">
-            {/* ✅ OCCASIONI (solo quando attive) */}
+            {/* ✅ OCCASIONI (Pasqua diversa) */}
             {occasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
+              const t = occasionTheme(o.slug);
 
               const pillBase = [
                 "min-w-max",
@@ -432,26 +410,39 @@ export default function Navbar() {
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
               ].join(" ");
 
-              const pillState = isActive
-                ? "border-primary/40 bg-primary/5 shadow-sm"
-                : "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm";
+              const pillState = isActive ? `${t.pill} shadow-sm ring-1 ring-primary/10` : `${t.pill}`;
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
                   <Link
                     href={`/occasione/${o.slug}`}
-                    className={`${pillBase} ${pillState}`}
+                    className={`${pillBase} ${pillState} ${t.text}`}
                     aria-current={isActive ? "page" : undefined}
-                    onMouseEnter={() => scheduleClose(0)} // chiudi eventuale dropdown aperto
+                    title={o.label}
+                    onClick={() => {
+                      // chiudi eventuale dropdown categorie aperto
+                      setOpenSlug(null);
+                      setPos(null);
+                      openElRef.current = null;
+                    }}
                   >
-                    <span className="h-[22px] w-[22px] rounded-lg bg-surface-2" aria-hidden="true" />
-                    <span className="text-text">{o.label}</span>
+                    <span className={`grid h-[22px] w-[22px] place-items-center rounded-lg ${t.iconBg}`} aria-hidden="true">
+                      {t.emoji}
+                    </span>
+
+                    <span>{o.label}</span>
+
+                    {o.slug === "pasqua" ? (
+                      <span className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}>
+                        Offerte
+                      </span>
+                    ) : null}
                   </Link>
                 </li>
               );
             })}
 
-            {/* ✅ CATEGORIE */}
+            {/* ✅ CATEGORIE (dropdown SOLO CLICK) */}
             {categories.map((cat) => {
               const hasSubs = cat.subcategories.length > 0;
               const isOpen = openSlug === cat.slug;
@@ -473,13 +464,6 @@ export default function Navbar() {
                 ? "border-primary/40 bg-primary/5 shadow-sm"
                 : "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm";
 
-              const onOpen = (el: HTMLButtonElement) => {
-                clearCloseTimer();
-                openElRef.current = el;
-                setOpenSlug(cat.slug);
-                updatePosFromEl(el);
-              };
-
               return (
                 <li key={cat.slug} className="shrink-0">
                   <button
@@ -489,22 +473,17 @@ export default function Navbar() {
                     aria-haspopup={hasSubs ? "menu" : undefined}
                     title={cat.label}
                     className={`${pillBase} ${pillState}`}
-                    onMouseEnter={(e) => {
-                      if (hasSubs) onOpen(e.currentTarget);
-                      else scheduleClose(0);
-                    }}
-                    onMouseLeave={() => (hasSubs ? scheduleClose(220) : undefined)}
-                    onFocus={(e) => {
-                      if (hasSubs) onOpen(e.currentTarget);
-                    }}
-                    onBlur={() => (hasSubs ? scheduleClose(220) : undefined)}
                     onClick={(e) => {
                       if (hasSubs) {
-                        clearCloseTimer();
+                        // ✅ SOLO CLICK: toggle dropdown
                         openElRef.current = e.currentTarget;
                         setOpenSlug((cur) => (cur === cat.slug ? null : cat.slug));
                         updatePosFromEl(e.currentTarget);
                       } else {
+                        // categoria senza sub → vai
+                        setOpenSlug(null);
+                        setPos(null);
+                        openElRef.current = null;
                         router.push(`/categoria/${cat.slug}`);
                       }
                     }}
@@ -548,9 +527,7 @@ export default function Navbar() {
         ) : null}
 
         {!STRAPI_URL ? (
-          <div className="mt-2 px-4 text-xs text-text/50">
-            STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).
-          </div>
+          <div className="mt-2 px-4 text-xs text-text/50">STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).</div>
         ) : null}
 
         {!loaded ? (
@@ -560,9 +537,7 @@ export default function Navbar() {
         ) : null}
 
         {loaded && categories.length === 0 ? (
-          <div className="mt-2 px-4 text-xs text-text/50">
-            Nessuna categoria trovata (o Strapi non raggiungibile).
-          </div>
+          <div className="mt-2 px-4 text-xs text-text/50">Nessuna categoria trovata (o Strapi non raggiungibile).</div>
         ) : null}
       </div>
     </div>
@@ -581,8 +556,6 @@ export default function Navbar() {
           style={{ top: pos.top, left: pos.left, width: pos.width }}
           role="menu"
           aria-label="Sottocategorie"
-          onMouseEnter={() => clearCloseTimer()}
-          onMouseLeave={() => scheduleClose(220)}
         >
           {(() => {
             const cat = categories.find((c) => c.slug === openSlug);
