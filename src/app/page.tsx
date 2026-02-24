@@ -5,14 +5,14 @@ import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
-import EasterStrip from "@/components/seasonal/EasterStrip";
+import EasterHeroPromo from "@/components/seasonal/EasterHeroPromo";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
 type HomeProduct = {
-  id: string; // usato in cart ecc.
-  strapiId: number | null; // ID numerico Strapi (relazioni Favorite)
+  id: string;
+  strapiId: number | null;
   slug: string;
   name: string;
   price: number;
@@ -22,13 +22,29 @@ type HomeProduct = {
   shortDescription?: string;
   sku?: string | null;
 
-  // ✅ Inventario Strapi (fonte verità)
   stockQty?: number | null;
   trackInventory?: boolean | null;
 
-  // (legacy / fallback)
   inStock?: boolean;
 };
+
+type EasterProduct = {
+  slug: string;
+  name: string;
+  imageUrl?: string | null;
+  price?: number | null;
+  compareAtPrice?: number | null;
+};
+
+/** ✅ QUI scegli i prodotti pasquali da mostrare nel riquadro HERO (solo questi scorrono) */
+const EASTER_FEATURED_SLUGS = [
+  "uovo-di-pasqua-caffarel-500g",
+  "uovo-di-pasqua-lindt-400g",
+  "ovetti-assortiti-200g",
+  "coniglietto-cioccolato-150g",
+];
+
+/* ---------------- WhatsApp ---------------- */
 
 const WHATSAPP_NUMBER = "393482483901";
 function waUrl(text: string) {
@@ -37,8 +53,13 @@ function waUrl(text: string) {
 
 /* ---------------- Strapi env ---------------- */
 
+// ✅ Fix: in produzione evita di costruire URL verso localhost se manca env
 const STRAPI_URL =
-  process.env.NEXT_PUBLIC_STRAPI_URL || process.env.STRAPI_URL || "http://localhost:1337";
+  process.env.NEXT_PUBLIC_STRAPI_URL ||
+  process.env.STRAPI_URL ||
+  (process.env.NODE_ENV === "production"
+    ? "https://tavoleefavole-strapi.onrender.com"
+    : "http://localhost:1337");
 
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
@@ -59,7 +80,8 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!u) return null;
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
-  return u;
+  // ✅ Fix: gestisci anche "uploads/..." senza slash iniziale
+  return `${base.replace(/\/$/, "")}/${u.replace(/^\/+/, "")}`;
 }
 
 function safeLabel(v: unknown, fallback: string) {
@@ -118,7 +140,7 @@ function extractMediaUrls(base: string, media: any): string[] {
     .filter(Boolean);
 }
 
-/* ---------------- ✅ Deadline helper (anti-freeze) ---------------- */
+/* ---------------- Deadline helper ---------------- */
 
 function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
@@ -129,14 +151,18 @@ function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   ]);
 }
 
-/* ---------------- ✅ Fetch robusto (NO crash) ---------------- */
+/* ---------------- Fetch robusto ---------------- */
 
 async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
   const timeoutMs = init.timeoutMs ?? 10_000;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
+<<<<<<< HEAD
   // ✅ FIX: evitare "cache: no-store" quando c’è anche "next: { revalidate }"
+=======
+  // ✅ evita conflitto cache + revalidate
+>>>>>>> pasqua-banner
   const hasRevalidate = Boolean((init as any)?.next?.revalidate);
   const hasExplicitCache = typeof (init as any)?.cache === "string";
 
@@ -254,7 +280,6 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   const id = String(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? slug);
   const sku = getDefaultSku(a);
 
-  // ✅ inventario Strapi
   const stockQty = toInt(a?.stockQty);
   const trackInventory = toBool(a?.trackInventory);
 
@@ -269,11 +294,8 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
     images: imgs,
     shortDescription: String(a?.shortDescription ?? "").trim() || undefined,
     sku,
-
     stockQty,
     trackInventory,
-
-    // fallback (se esiste ancora in Strapi)
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
   };
 }
@@ -285,21 +307,14 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[2]", "price");
   qs.set("fields[3]", "compareAtPrice");
   qs.set("fields[4]", "shortDescription");
-
-  // ✅ inventario
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
-
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
-    revalidate: 60,
-    timeoutMs: 9_000,
-  });
-
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, { revalidate: 60, timeoutMs: 9_000 });
   if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
@@ -312,46 +327,30 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[2]", "price");
   qs.set("fields[3]", "compareAtPrice");
   qs.set("fields[4]", "shortDescription");
-
-  // ✅ inventario
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
-
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
-    revalidate: 60,
-    timeoutMs: 9_000,
-  });
-
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, { revalidate: 60, timeoutMs: 9_000 });
   if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
-/**
- * ✅ Manteniamo la tua availability esterna, ma NON deve sovrascrivere lo stock Strapi.
- * Quindi: aggiorniamo `inStock` solo se manca stockQty (o trackInventory è nullo).
- */
 async function withAvailability(items: HomeProduct[]) {
-  const skus = Array.from(
-    new Set(items.map((p) => p.sku).filter((x): x is string => typeof x === "string" && x.length > 0))
-  );
-
+  const skus = Array.from(new Set(items.map((p) => p.sku).filter((x): x is string => !!x)));
   if (!skus.length) return items;
 
   const availability = await getAvailability({ skus, warehouse: "MAIN" }).catch(() => null);
   const bySku = (availability as any)?.data?.MAIN ?? {};
 
   return items.map((p) => {
-    const track = p.trackInventory !== false; // default true
+    const track = p.trackInventory !== false;
     const hasQty = typeof p.stockQty === "number";
-
-    // ✅ Se Strapi ci dà stockQty e trackInventory=true, NON tocchiamo inStock
     if (track && hasQty) return p;
 
     if (!p.sku) return p;
@@ -366,99 +365,86 @@ async function withAvailabilitySafe(items: HomeProduct[], timeoutMs = 2_500) {
   return withDeadline(withAvailability(items), timeoutMs, items);
 }
 
-/* ---------------- UI ---------------- */
+/* ---------------- HERO PRODUCTS (Pasqua selezionati) ---------------- */
 
-function Hero() {
-  return (
-    <section className="relative overflow-hidden rounded-3xl border border-border bg-surface">
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-24 -top-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
-        <div className="absolute -right-24 -bottom-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
-      </div>
+async function fetchEasterProducts(limit = 10): Promise<EasterProduct[]> {
+  const base = baseStrapiUrl();
+  const token =
+    process.env.STRAPI_API_TOKEN ||
+    process.env.STRAPI_TOKEN ||
+    process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
+    process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
+    "";
 
-      <div className="relative grid items-center gap-10 px-6 py-10 sm:px-10 sm:py-12 lg:grid-cols-12 lg:gap-8 lg:px-12">
-        <div className="lg:col-span-6">
-          <p className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs font-extrabold text-text/70">
-            Spedizione rapida • Supporto dedicato • Pagamenti sicuri
-          </p>
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-          <h1 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl lg:text-5xl">
-            Tutto per pasticceria, cake design e confetti — consegna rapida e assistenza reale.
-          </h1>
+  async function get(url: string) {
+    const res = await fetch(url, { headers, next: { revalidate: 60 } });
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as any;
+  }
 
-          <p className="mt-4 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-            Prodotti selezionati, schede chiare e checkout semplice. Spediamo rapidamente oppure ritiri in negozio: come preferisci.
-          </p>
+  const qs = new URLSearchParams();
+  qs.set("fields[0]", "slug");
+  qs.set("fields[1]", "name");
+  qs.set("fields[2]", "price");
+  qs.set("fields[3]", "compareAtPrice");
+  qs.set("populate[images][fields][0]", "url");
+  qs.set("populate[images][fields][1]", "formats");
+  qs.set("pagination[pageSize]", "100");
+  qs.set("filters[category][slug][$eq]", "pasqua");
+  qs.set("sort[0]", "updatedAt:desc");
 
-          <div className="mt-6 flex flex-wrap gap-3">
-            <Link
-              href="/catalogo"
-              className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-            >
-              Vai al catalogo
-            </Link>
+  const json = await get(`${base}/api/products?${qs.toString()}`);
+  const rows: any[] = Array.isArray(json?.data) ? json.data : [];
 
-            <Link
-              href="/cialde-personalizzate"
-              className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
-            >
-              Cialde personalizzate
-            </Link>
+  function pickImage(a: any) {
+    const imgs = a?.images?.data ?? a?.images ?? [];
+    const first = Array.isArray(imgs) ? imgs[0] : imgs;
+    const raw =
+      first?.attributes?.formats?.small?.url ??
+      first?.attributes?.formats?.thumbnail?.url ??
+      first?.attributes?.url ??
+      first?.formats?.small?.url ??
+      first?.formats?.thumbnail?.url ??
+      first?.url ??
+      null;
 
-            <Link
-              href="/resi"
-              className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
-            >
-              Resi & rimborsi
-            </Link>
-          </div>
+    if (!raw) return null;
+    if (String(raw).startsWith("http")) return String(raw);
+    if (String(raw).startsWith("/")) return `${base}${raw}`;
+    return `${base}/${String(raw).replace(/^\/+/, "")}`;
+  }
 
-          <div className="mt-8 grid gap-3 sm:grid-cols-3">
-            {[
-              { t: "Pagamenti sicuri", d: "Carte · Stripe" },
-              { t: "Resi", d: "Procedura semplice" },
-              { t: "Assistenza", d: "Contatti chiari" },
-            ].map((x) => (
-              <div key={x.t} className="rounded-2xl border border-border bg-background/70 p-4">
-                <div className="text-sm font-extrabold">{x.t}</div>
-                <div className="mt-1 text-sm text-text/70">{x.d}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+  const mapped = rows
+    .map((r) => {
+      const a = r?.attributes ?? r ?? {};
+      const slug = String(a?.slug ?? "").trim();
+      if (!slug) return null;
 
-        <div className="lg:col-span-6">
-          <div className="relative overflow-hidden rounded-3xl border border-border bg-background">
-            <div className="relative aspect-[16/11]">
-              <Image
-                src="https://images.unsplash.com/photo-1542826438-bd32f43c5f65?auto=format&fit=crop&w=1600&q=70"
-                alt="Preparazioni di pasticceria"
-                fill
-                sizes="(min-width: 1024px) 50vw, 100vw"
-                className="object-cover"
-                unoptimized
-                priority
-              />
-            </div>
+      return {
+        slug,
+        name: String(a?.name ?? a?.title ?? slug),
+        imageUrl: pickImage(a),
+        price: toNumber(a?.price),
+        compareAtPrice: a?.compareAtPrice == null ? null : toNumber(a?.compareAtPrice),
+      } as EasterProduct;
+    })
+    .filter(Boolean) as EasterProduct[];
 
-            <div className="grid gap-2 p-4 sm:grid-cols-2">
-              <div className="rounded-2xl border border-border bg-surface p-4">
-                <div className="text-xs font-extrabold text-text/70">In evidenza</div>
-                <div className="mt-1 text-sm font-extrabold">Novità e offerte sempre aggiornate</div>
-              </div>
-              <div className="rounded-2xl border border-border bg-surface p-4">
-                <div className="text-xs font-extrabold text-text/70">Affidabilità</div>
-                <div className="mt-1 text-sm font-extrabold">Navigazione chiara e checkout semplice</div>
-              </div>
-            </div>
-          </div>
+  const selected = EASTER_FEATURED_SLUGS.map((s) => String(s).trim()).filter(Boolean);
 
-          <p className="mt-3 text-xs text-text/60">Immagine demo (puoi sostituirla con un banner tuo quando vuoi).</p>
-        </div>
-      </div>
-    </section>
-  );
+  if (selected.length) {
+    const bySlug = new Map(mapped.map((p) => [p.slug, p]));
+    const picked = selected.map((s) => bySlug.get(s)).filter(Boolean) as EasterProduct[];
+    return picked.length ? picked.slice(0, limit) : mapped.slice(0, limit);
+  }
+
+  return mapped.slice(0, limit);
 }
+
+/* ---------------- UI ---------------- */
 
 function ProductRail(props: {
   title: string;
@@ -468,7 +454,7 @@ function ProductRail(props: {
   items: HomeProduct[];
 }) {
   const { title, subtitle, rightHref, rightLabel, items } = props;
-
+  
   return (
     <section className="mt-12">
       <div className="flex items-end justify-between gap-4">
@@ -488,10 +474,6 @@ function ProductRail(props: {
             const hasSale =
               p.compareAtPrice != null && Number(p.compareAtPrice) > Number(p.price) && p.price > 0;
 
-            // ✅ Regola disponibilità:
-            // - se trackInventory=false -> sempre acquistabile
-            // - se stockQty è numero -> acquistabile solo se > 0
-            // - altrimenti fallback su p.inStock
             const track = p.trackInventory !== false;
             const hasQty = typeof p.stockQty === "number";
             const isOutOfStock = track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
@@ -511,7 +493,14 @@ function ProductRail(props: {
                 <Link href={`/prodotto/${p.slug}`} className="block">
                   <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface-2/60">
                     {p.image ? (
-                      <Image src={p.image} alt={p.name} fill sizes="260px" className="object-cover" unoptimized />
+                      <Image
+                        src={p.image}
+                        alt={p.name}
+                        fill
+                        sizes="(max-width: 768px) 100vw, 260px"
+                        className="object-cover"
+                        quality={60}
+                      />
                     ) : null}
 
                     {hasSale ? (
@@ -626,177 +615,54 @@ const BISCOTTI_PAGE_HREF = "/stampe-biscotti-personalizzate";
 function PersonalizedPrintsCarouselBlock() {
   return (
     <section className="mt-10">
-      <style>{`
-        @keyframes tfSlideA {
-          0% { opacity: 1; visibility: visible; transform: translateY(0); }
-          45% { opacity: 1; visibility: visible; transform: translateY(0); }
-          50% { opacity: 0; visibility: hidden; transform: translateY(6px); }
-          100% { opacity: 0; visibility: hidden; transform: translateY(6px); }
-        }
-        @keyframes tfSlideB {
-          0% { opacity: 0; visibility: hidden; transform: translateY(6px); }
-          49% { opacity: 0; visibility: hidden; transform: translateY(6px); }
-          55% { opacity: 1; visibility: visible; transform: translateY(0); }
-          95% { opacity: 1; visibility: visible; transform: translateY(0); }
-          100% { opacity: 0; visibility: hidden; transform: translateY(6px); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .tf-slideA { animation: none !important; opacity: 1 !important; visibility: visible !important; transform: none !important; }
-          .tf-slideB { animation: none !important; opacity: 0 !important; visibility: hidden !important; transform: none !important; }
-        }
-      `}</style>
-
       <div className="relative overflow-hidden rounded-3xl border border-border bg-background">
         <div aria-hidden="true" className="pointer-events-none absolute inset-0">
           <div className="absolute -left-24 -top-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
           <div className="absolute -right-24 -bottom-24 h-72 w-72 rounded-full bg-surface-2/70 blur-3xl" />
         </div>
 
-        <div className="relative grid">
-          <div className="tf-slideA col-start-1 row-start-1" style={{ animation: "tfSlideA 8s infinite ease-in-out" }}>
-            <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
-              <div className="lg:col-span-6">
-                <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
-                  Stampe personalizzate • Per torte
-                </p>
+        <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
+          <div className="lg:col-span-6">
+            <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
+              Stampe personalizzate • Per torte / biscotti
+            </p>
 
-                <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
-                  Cialde personalizzate per la tua torta
-                </h2>
+            <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
+              Cialde e stampe personalizzate
+            </h2>
 
-                <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-                  Carica un’immagine, scrivi una dedica e completa l’ordine in pochi minuti.
-                </p>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
+              Carica un’immagine, scrivi una dedica e completa l’ordine in pochi minuti.
+            </p>
 
-                <div className="mt-6">
-                  <div className="text-sm font-extrabold">Come funziona</div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                    {[
-                      { n: "1", t: "Scegli formato" },
-                      { n: "2", t: "Scrivi la dedica" },
-                      { n: "3", t: "Carica l’immagine" },
-                    ].map((x) => (
-                      <div key={x.n} className="rounded-2xl border border-border bg-surface p-4">
-                        <div className="text-xs font-extrabold text-text/70">Step {x.n}</div>
-                        <div className="mt-1 text-sm font-extrabold">{x.t}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+            <div className="mt-7 flex flex-wrap items-center gap-3">
+              <Link
+                href={CIALDE_PAGE_HREF}
+                className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+              >
+                Personalizza ora
+              </Link>
 
-                <div className="mt-7 flex flex-wrap items-center gap-3">
-                  <Link
-                    href={CIALDE_PAGE_HREF}
-                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-                  >
-                    Personalizza ora
-                  </Link>
+              <Link
+                href={BISCOTTI_PAGE_HREF}
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
+              >
+                Stampe biscotti
+              </Link>
 
-                  <a
-                    href={waUrl("Ciao! Vorrei info sulle cialde personalizzate 😊")}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
-                  >
-                    WhatsApp
-                  </a>
-                </div>
-
-                <p className="mt-3 text-xs text-text/70">
-                  Stampa nitida e colori brillanti. Consegna a casa o ritiro in negozio.
-                </p>
-              </div>
-
-              <div className="lg:col-span-6">
-                <CialdeExamplesCarousel />
-              </div>
+              <a
+                href={waUrl("Ciao! Vorrei info sulle cialde personalizzate 😊")}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
+              >
+                WhatsApp
+              </a>
             </div>
           </div>
 
-          <div className="tf-slideB col-start-1 row-start-1" style={{ animation: "tfSlideB 8s infinite ease-in-out" }}>
-            <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
-              <div className="lg:col-span-6">
-                <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
-                  Stampe personalizzate • Per biscotti
-                </p>
-
-                <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
-                  Stampe per biscotti su foglio A4
-                </h2>
-
-                <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-                  Stampe tonde da ritagliare (4,5 · 5 · 6 cm). Perfette per decorare biscotti in modo rapido e pulito.
-                </p>
-
-                <div className="mt-6">
-                  <div className="text-sm font-extrabold">Come funziona</div>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                    {[
-                      { n: "1", t: "Scegli la dimensione" },
-                      { n: "2", t: "Carica immagine e testo" },
-                      { n: "3", t: "Ricevi o ritira" },
-                    ].map((x) => (
-                      <div key={x.n} className="rounded-2xl border border-border bg-surface p-4">
-                        <div className="text-xs font-extrabold text-text/70">Step {x.n}</div>
-                        <div className="mt-1 text-sm font-extrabold">{x.t}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="mt-7 flex flex-wrap items-center gap-3">
-                  <Link
-                    href={BISCOTTI_PAGE_HREF}
-                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-                  >
-                    Personalizza biscotti
-                  </Link>
-
-                  <a
-                    href={waUrl("Ciao! Vorrei info sulle stampe per biscotti su foglio A4 😊")}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
-                  >
-                    WhatsApp
-                  </a>
-                </div>
-
-                <p className="mt-3 text-xs text-text/70">
-                  Foglio A4 con stampe da ritagliare. Consegna a casa o ritiro in negozio.
-                </p>
-              </div>
-
-              <div className="lg:col-span-6">
-                <div className="overflow-hidden rounded-3xl border border-border bg-background">
-                  <div className="relative aspect-[16/11] bg-surface">
-                    <Image
-                      src="https://images.unsplash.com/photo-1519869325930-281384150729?auto=format&fit=crop&w=1600&q=70"
-                      alt="Esempio biscotti decorati"
-                      fill
-                      sizes="(min-width: 1024px) 50vw, 100vw"
-                      className="object-cover"
-                      unoptimized
-                    />
-                  </div>
-
-                  <div className="grid gap-2 p-4 sm:grid-cols-2">
-                    <div className="rounded-2xl border border-border bg-surface p-4">
-                      <div className="text-xs font-extrabold text-text/70">Formati</div>
-                      <div className="mt-1 text-sm font-extrabold">4,5 · 5 · 6 cm</div>
-                    </div>
-                    <div className="rounded-2xl border border-border bg-surface p-4">
-                      <div className="text-xs font-extrabold text-text/70">Consiglio</div>
-                      <div className="mt-1 text-sm font-extrabold">30 sec in freezer per staccare meglio</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-3 text-xs text-text/60">
-                  Immagine demo (poi la sostituiamo con una foto reale del prodotto).
-                </div>
-              </div>
-            </div>
+          <div className="lg:col-span-6">
+            <CialdeExamplesCarousel />
           </div>
         </div>
       </div>
@@ -809,28 +675,29 @@ function PersonalizedPrintsCarouselBlock() {
 export default async function Home() {
   const latestP = withDeadline(fetchLatestProducts(12), 9_500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9_500, []);
+  const easterP = withDeadline(fetchEasterProducts(10), 9_500, []);
 
-  const [latestRaw, saleCandRaw] = await Promise.all([latestP, saleP]);
+  const [latestRaw, saleCandRaw, easterProducts] = await Promise.all([latestP, saleP, easterP]);
 
-  const sale = saleCandRaw
-    .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
-    .slice(0, 12);
+  const sale = saleCandRaw.filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0).slice(0, 12);
 
-  const latestStockP = withDeadline(
-    withAvailabilitySafe(latestRaw.slice(0, 12), 2_500),
-    2_800,
-    latestRaw.slice(0, 12)
-  );
+  const latestStockP = withDeadline(withAvailabilitySafe(latestRaw.slice(0, 12), 2_500), 2_800, latestRaw.slice(0, 12));
   const saleStockP = withDeadline(withAvailabilitySafe(sale, 2_500), 2_800, sale);
 
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
   return (
+<<<<<<< HEAD
     <main className="mx-auto max-w-7xl px-4 py-10">
       <EasterStrip />
 
       <Hero />
 
+=======
+    <main className="mx-auto max-w-7xl px-4 pt-1 pb-10">
+      <EasterHeroPromo products={easterProducts} />
+
+>>>>>>> pasqua-banner
       <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (

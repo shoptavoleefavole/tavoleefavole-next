@@ -53,6 +53,13 @@ type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
 type NavOcc = { slug: string; label: string };
 
+type OccasionTheme = {
+  pill: string;
+  text: string;
+  iconBg: string;
+  badge: string;
+};
+
 const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_BASE_URL || "";
 
@@ -221,6 +228,7 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
 }
 
 /** ✅ Tema visivo per le macro stagionali */
+<<<<<<< HEAD
 function occasionTheme(slug: string) {
   switch (slug) {
     case "pasqua":
@@ -238,7 +246,27 @@ function occasionTheme(slug: string) {
         iconBg: "bg-surface-2",
         badge: "bg-accent text-accent-contrast",
       };
+=======
+
+function occasionTheme(slug: string): OccasionTheme {
+  const s = String(slug || "").toLowerCase();
+
+  if (s === "pasqua") {
+    return {
+      pill: "border-border/70 bg-[#F6E27A]/55 hover:bg-[#F6E27A]/70",
+      text: "text-text",
+      iconBg: "bg-white/70",
+      badge: "bg-primary text-primary-contrast",
+    };
+>>>>>>> pasqua-banner
   }
+
+  return {
+    pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
+    text: "text-text",
+    iconBg: "bg-surface-2",
+    badge: "bg-accent text-accent-contrast",
+  };
 }
 
 export default function Navbar() {
@@ -249,6 +277,14 @@ export default function Navbar() {
   const [loaded, setLoaded] = useState(false);
 
   const [occasions, setOccasions] = useState<NavOcc[]>([]);
+
+  // ✅ Mostriamo SOLO Pasqua (ma manteniamo fetch per non rompere nulla)
+  const displayedOccasions = useMemo(() => {
+    const list = Array.isArray(occasions) ? occasions : [];
+    return list.filter((o) => String(o.slug).toLowerCase() === "pasqua");
+  }, [occasions]);
+
+  const shouldShowFallbackEaster = displayedOccasions.length === 0;
 
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const openElRef = useRef<HTMLButtonElement | null>(null);
@@ -402,7 +438,7 @@ export default function Navbar() {
   function measureOverflow() {
     const el = scrollerRef.current;
     if (!el) return;
-    setIsOverflowing(el.scrollWidth > el.clientWidth + 2);
+    setIsOverflowing(el.scrollWidth > el.clientWidth + 8);
   }
 
   useEffect(() => {
@@ -426,18 +462,55 @@ export default function Navbar() {
 
   const desktopRow = (
     <div className="hidden md:block py-3">
-      <div className="relative -mx-4">
+      <div className="relative">
         <div
           ref={scrollerRef}
-          className="no-scrollbar overflow-x-auto scroll-smooth px-3"
+          className="no-scrollbar overflow-x-auto scroll-smooth px-4 md:px-6"
           aria-label="Categorie"
         >
-          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-4">
-            {/* ✅ OCCASIONI */}
-            {occasions.map((o) => {
+          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-6 pl-2">
+            {/* ✅ OCCASIONE: SOLO PASQUA (con fallback se non arriva da Strapi) */}
+            {shouldShowFallbackEaster ? (
+              <li className="shrink-0">
+                <Link
+                  href="/occasione/pasqua"
+                  className={[
+                    "inline-flex items-center justify-center gap-2",
+                    "rounded-2xl border",
+                    "px-3 py-2 sm:px-4 sm:py-3",
+                    "whitespace-nowrap leading-none",
+                    "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+                    "transition-colors transition-shadow duration-200",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                    "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60 text-emerald-900",
+                  ].join(" ")}
+                  title="Pasqua"
+                  onClick={() => {
+                    setOpenSlug(null);
+                    setPos(null);
+                    openElRef.current = null;
+                  }}
+                >
+                  <span
+                    className="grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg bg-emerald-200/60"
+                    aria-hidden="true"
+                  >
+                    <EasterEggIcon className="h-5 w-5" />
+                  </span>
+
+                  <span className="max-w-[140px] md:max-w-none truncate">Pasqua</span>
+
+                  <span className="ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold bg-emerald-700 text-white">
+                    Offerte
+                  </span>
+                </Link>
+              </li>
+            ) : null}
+
+            {displayedOccasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
               const t = occasionTheme(o.slug);
-              const isEasterOcc = o.slug === "pasqua";
+              const isEasterOcc = String(o.slug).toLowerCase() === "pasqua";
 
               const pillBase = [
                 "inline-flex items-center justify-center gap-2",
@@ -449,12 +522,9 @@ export default function Navbar() {
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
               ].join(" ");
 
-              const pillState =
-                isActive && isEasterOcc
-                  ? `${t.pill} border-[#C9A44C]/70 ring-1 ring-[#C9A44C]/25 shadow-[0_0_0_1px_rgba(201,164,76,0.18),0_14px_34px_rgba(43,27,20,0.08)]`
-                  : isActive
-                    ? `${t.pill} shadow-sm ring-1 ring-primary/10`
-                    : `${t.pill}`;
+              const pillState = isActive
+                ? `${t.pill} shadow-sm ring-1 ring-primary/10`
+                : `${t.pill}`;
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
@@ -571,8 +641,13 @@ export default function Navbar() {
 
         {isOverflowing ? (
           <>
+<<<<<<< HEAD
             <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background/70 via-background/40 to-transparent" />
             <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background/70 via-background/40 to-transparent" />
+=======
+            <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background via-background/40 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background via-background/40 to-transparent" />
+>>>>>>> pasqua-banner
           </>
         ) : null}
 
