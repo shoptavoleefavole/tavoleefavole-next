@@ -20,6 +20,37 @@ function ChevronDownIcon({ className = "" }: { className?: string }) {
   );
 }
 
+/** ✅ Icona Pasqua (uovo) stile outline come le icone del sito */
+function EasterEggIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      {/* Uovo */}
+      <path
+        d="M12 2.6c-3.7 0-6.7 5.1-6.7 10.5 0 5.7 3 8.4 6.7 8.4s6.7-2.7 6.7-8.4c0-5.4-3-10.5-6.7-10.5Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {/* Decorazione zig-zag */}
+      <path
+        d="M7.7 12.1l1.5-1.2 1.5 1.2 1.5-1.2 1.5 1.2 1.5-1.2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {/* Puntini piccoli */}
+      <path
+        d="M9 15.6h.01M12 16.4h.01M15 15.6h.01"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 type Pos = { top: number; left: number; width: number } | null;
 type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
@@ -34,17 +65,30 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!maybeUrl) return null;
   const u = String(maybeUrl).trim();
   if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  if (
+    u.startsWith("http://") ||
+    u.startsWith("https://") ||
+    u.startsWith("data:") ||
+    u.startsWith("blob:")
+  )
+    return u;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
   return u;
 }
 
 function safeJsonParse(text: string): any {
   try {
-    return JSON.parse(text);
+    return text ? JSON.parse(text) : null;
   } catch {
     return null;
   }
+}
+
+async function fetchJsonSafe(url: string, init?: RequestInit) {
+  const res = await fetch(url, init);
+  const text = await res.text().catch(() => "");
+  const json = safeJsonParse(text);
+  return { ok: res.ok, status: res.status, json, text };
 }
 
 function isNavSub(x: any): x is NavSub {
@@ -93,7 +137,10 @@ function normalizeStrapiCategory(row: any): NavCat | null {
           const sSlug = sa?.slug;
           if (!sSlug) return null;
           const sLabel = sa?.label ?? sa?.name ?? sa?.title ?? sSlug;
-          return { slug: String(sSlug).trim(), label: String(sLabel ?? sSlug).trim() || String(sSlug) };
+          return {
+            slug: String(sSlug).trim(),
+            label: String(sLabel ?? sSlug).trim() || String(sSlug),
+          };
         })
         .filter(isNavSub)
     : [];
@@ -124,23 +171,19 @@ async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<Na
   qs.set("sort[0]", "createdAt:asc");
 
   const url = `${STRAPI_URL.replace(/\/$/, "")}/api/categories?${qs.toString()}`;
+  const { ok, json } = await fetchJsonSafe(url, { cache: "no-store", signal });
 
-  const res = await fetch(url, { cache: "no-store", signal });
-  const text = await res.text().catch(() => "");
-  const json = safeJsonParse(text);
-
-  if (!res.ok) return [];
+  if (!ok) return [];
 
   const data: any[] = Array.isArray(json?.data) ? json.data : [];
   return data.map(normalizeStrapiCategory).filter(isNavCat);
 }
 
 async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat[]> {
+  // 1) endpoint interno (preferibile)
   try {
-    const res = await fetch("/api/nav/categories", { cache: "no-store", signal });
-    if (res.ok) {
-      const json = await res.json().catch(() => null);
-
+    const { ok, json } = await fetchJsonSafe("/api/nav/categories", { cache: "no-store", signal });
+    if (ok) {
       const data: any[] = Array.isArray(json?.data)
         ? json.data
         : Array.isArray(json?.categories)
@@ -156,15 +199,14 @@ async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat
     // noop
   }
 
+  // 2) fallback diretto su Strapi
   return fetchNavbarCategoriesFromStrapi(signal);
 }
 
 async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
   try {
-    const res = await fetch("/api/nav/occasions", { cache: "no-store", signal });
-    if (res.ok) {
-      const json = await res.json().catch(() => null);
-
+    const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { cache: "no-store", signal });
+    if (ok) {
       const data: any[] = Array.isArray(json?.data)
         ? json.data
         : Array.isArray(json?.occasions)
@@ -178,7 +220,6 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
   } catch {
     // noop
   }
-
   return [];
 }
 
@@ -187,21 +228,17 @@ function occasionTheme(slug: string) {
   switch (slug) {
     case "pasqua":
       return {
-        emoji: "🐣",
         pill: "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60",
         text: "text-emerald-900",
         iconBg: "bg-emerald-200/60",
         badge: "bg-emerald-700 text-white",
-        badgeText: "Pasqua",
       };
     default:
       return {
-        emoji: "✨",
         pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
         text: "text-text",
         iconBg: "bg-surface-2",
         badge: "bg-accent text-accent-contrast",
-        badgeText: "Evento",
       };
   }
 }
@@ -341,7 +378,7 @@ export default function Navbar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // ✅ chiudi quando clicchi fuori
+  // chiudi quando clicchi fuori
   useEffect(() => {
     if (!openSlug) return;
 
@@ -392,28 +429,30 @@ export default function Navbar() {
   const desktopRow = (
     <div className="hidden md:block py-3">
       <div className="relative -mx-4">
-        <div ref={scrollerRef} className="no-scrollbar overflow-x-auto scroll-smooth px-3" aria-label="Categorie">
+        <div
+          ref={scrollerRef}
+          className="no-scrollbar overflow-x-auto scroll-smooth px-3"
+          aria-label="Categorie"
+        >
           <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-4">
-            {/* ✅ OCCASIONI (Pasqua diversa) */}
+            {/* ✅ OCCASIONI */}
             {occasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
               const t = occasionTheme(o.slug);
+              const isEasterOcc = o.slug === "pasqua";
 
               const pillBase = [
-              // ✅ sempre 1 riga + responsive
-              "inline-flex items-center justify-center gap-2",
-              "rounded-2xl border",
-              "px-3 py-2 sm:px-4 sm:py-3",
-              "whitespace-nowrap leading-none",
-              "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
-              "transition-colors transition-shadow duration-200",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-            ].join(" ");
-
-              const isEaster = o.slug === "pasqua";
+                "inline-flex items-center justify-center gap-2",
+                "rounded-2xl border",
+                "px-3 py-2 sm:px-4 sm:py-3",
+                "whitespace-nowrap leading-none",
+                "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+                "transition-colors transition-shadow duration-200",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              ].join(" ");
 
               const pillState =
-                isActive && isEaster
+                isActive && isEasterOcc
                   ? `${t.pill} border-[#C9A44C]/70 ring-1 ring-[#C9A44C]/25 shadow-[0_0_0_1px_rgba(201,164,76,0.18),0_14px_34px_rgba(43,27,20,0.08)]`
                   : isActive
                     ? `${t.pill} shadow-sm ring-1 ring-primary/10`
@@ -437,14 +476,14 @@ export default function Navbar() {
                       className={`grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg ${t.iconBg}`}
                       aria-hidden="true"
                     >
-                      {t.emoji}
+                      {isEasterOcc ? <EasterEggIcon className="h-5 w-5" /> : "✨"}
                     </span>
 
                     <span className="max-w-[110px] sm:max-w-[140px] md:max-w-none truncate">
                       {o.label}
-                    </span>     
+                    </span>
 
-                    {o.slug === "pasqua" ? (
+                    {isEasterOcc ? (
                       <span className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}>
                         Offerte
                       </span>
@@ -462,15 +501,14 @@ export default function Navbar() {
                 activeMacroSlug === cat.slug || pathname.startsWith(`/categoria/${cat.slug}`);
 
               const pillBase = [
-              // ✅ sempre 1 riga, più “responsive”
-              "inline-flex items-center justify-center gap-2",
-              "rounded-2xl border",
-              "px-3 py-2 sm:px-4 sm:py-3",
-              "whitespace-nowrap leading-none",
-              "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
-              "transition-colors transition-shadow duration-200",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-            ].join(" ");
+                "inline-flex items-center justify-center gap-2",
+                "rounded-2xl border",
+                "px-3 py-2 sm:px-4 sm:py-3",
+                "whitespace-nowrap leading-none",
+                "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+                "transition-colors transition-shadow duration-200",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              ].join(" ");
 
               const pillState = isActive
                 ? "border-primary/40 bg-primary/5 shadow-sm"
@@ -487,12 +525,10 @@ export default function Navbar() {
                     className={`${pillBase} ${pillState}`}
                     onClick={(e) => {
                       if (hasSubs) {
-                        // ✅ SOLO CLICK: toggle dropdown
                         openElRef.current = e.currentTarget;
                         setOpenSlug((cur) => (cur === cat.slug ? null : cat.slug));
                         updatePosFromEl(e.currentTarget);
                       } else {
-                        // categoria senza sub → vai
                         setOpenSlug(null);
                         setPos(null);
                         openElRef.current = null;
@@ -512,7 +548,10 @@ export default function Navbar() {
                         aria-hidden="true"
                       />
                     ) : (
-                      <span className="h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] rounded-lg bg-surface-2" aria-hidden="true" />
+                      <span
+                        className="h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] rounded-lg bg-surface-2"
+                        aria-hidden="true"
+                      />
                     )}
 
                     <span className="max-w-[120px] sm:max-w-[160px] md:max-w-none truncate text-text">
@@ -541,7 +580,9 @@ export default function Navbar() {
         ) : null}
 
         {!STRAPI_URL ? (
-          <div className="mt-2 px-4 text-xs text-text/50">STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).</div>
+          <div className="mt-2 px-4 text-xs text-text/50">
+            STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).
+          </div>
         ) : null}
 
         {!loaded ? (
@@ -551,7 +592,9 @@ export default function Navbar() {
         ) : null}
 
         {loaded && categories.length === 0 ? (
-          <div className="mt-2 px-4 text-xs text-text/50">Nessuna categoria trovata (o Strapi non raggiungibile).</div>
+          <div className="mt-2 px-4 text-xs text-text/50">
+            Nessuna categoria trovata (o Strapi non raggiungibile).
+          </div>
         ) : null}
       </div>
     </div>
