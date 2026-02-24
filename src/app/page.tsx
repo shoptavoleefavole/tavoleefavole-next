@@ -158,11 +158,7 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
-<<<<<<< HEAD
-  // ✅ FIX: evitare "cache: no-store" quando c’è anche "next: { revalidate }"
-=======
   // ✅ evita conflitto cache + revalidate
->>>>>>> pasqua-banner
   const hasRevalidate = Boolean((init as any)?.next?.revalidate);
   const hasExplicitCache = typeof (init as any)?.cache === "string";
 
@@ -454,7 +450,7 @@ function ProductRail(props: {
   items: HomeProduct[];
 }) {
   const { title, subtitle, rightHref, rightLabel, items } = props;
-  
+
   return (
     <section className="mt-12">
       <div className="flex items-end justify-between gap-4">
@@ -488,7 +484,10 @@ function ProductRail(props: {
                 key={p.id}
                 className="relative w-[260px] shrink-0 rounded-2xl border border-border bg-background p-4 hover:shadow-sm transition"
               >
-                <FavoriteToggleButton productId={favoriteProductId} className="absolute right-3 top-3 z-10" />
+                <FavoriteToggleButton
+                  productId={favoriteProductId}
+                  className="absolute right-3 top-3 z-10"
+                />
 
                 <Link href={`/prodotto/${p.slug}`} className="block">
                   <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface-2/60">
@@ -525,7 +524,9 @@ function ProductRail(props: {
                     </div>
 
                     {p.shortDescription ? (
-                      <div className="mt-2 line-clamp-2 text-xs text-text/70">{p.shortDescription}</div>
+                      <div className="mt-2 line-clamp-2 text-xs text-text/70">
+                        {p.shortDescription}
+                      </div>
                     ) : null}
                   </div>
                 </Link>
@@ -540,7 +541,9 @@ function ProductRail(props: {
                       price={p.price}
                       qty={1}
                       stockQty={p.stockQty ?? null}
-                      trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
+                      trackInventory={
+                        typeof p.trackInventory === "boolean" ? p.trackInventory : undefined
+                      }
                       inStock={!isOutOfStock}
                       disabledLabel="Esaurito"
                     />
@@ -579,8 +582,12 @@ function InfoCards() {
       <div className="rounded-3xl border border-border bg-surface p-6 sm:p-10">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-2xl font-extrabold tracking-tight">Un acquisto semplice, senza sorprese</h2>
-            <p className="mt-1 text-sm text-text/70">Informazioni chiare su spedizioni, resi e assistenza.</p>
+            <h2 className="text-2xl font-extrabold tracking-tight">
+              Un acquisto semplice, senza sorprese
+            </h2>
+            <p className="mt-1 text-sm text-text/70">
+              Informazioni chiare su spedizioni, resi e assistenza.
+            </p>
           </div>
 
           <Link
@@ -600,7 +607,9 @@ function InfoCards() {
             >
               <div className="text-sm font-extrabold">{x.t}</div>
               <div className="mt-2 text-sm text-text/70">{x.d}</div>
-              <div className="mt-4 text-sm font-extrabold text-link group-hover:text-link-hover">{x.cta} →</div>
+              <div className="mt-4 text-sm font-extrabold text-link group-hover:text-link-hover">
+                {x.cta} →
+              </div>
             </Link>
           ))}
         </div>
@@ -679,25 +688,23 @@ export default async function Home() {
 
   const [latestRaw, saleCandRaw, easterProducts] = await Promise.all([latestP, saleP, easterP]);
 
-  const sale = saleCandRaw.filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0).slice(0, 12);
+  const sale = saleCandRaw
+    .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
+    .slice(0, 12);
 
-  const latestStockP = withDeadline(withAvailabilitySafe(latestRaw.slice(0, 12), 2_500), 2_800, latestRaw.slice(0, 12));
+  const latestStockP = withDeadline(
+    withAvailabilitySafe(latestRaw.slice(0, 12), 2_500),
+    2_800,
+    latestRaw.slice(0, 12)
+  );
   const saleStockP = withDeadline(withAvailabilitySafe(sale, 2_500), 2_800, sale);
 
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
   return (
-<<<<<<< HEAD
-    <main className="mx-auto max-w-7xl px-4 py-10">
-      <EasterStrip />
-
-      <Hero />
-
-=======
-    <main className="mx-auto max-w-7xl px-4 pt-1 pb-10">
+    <main className="mx-auto max-w-7xl px-4 pt-2 pb-10">
       <EasterHeroPromo products={easterProducts} />
 
->>>>>>> pasqua-banner
       <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (
@@ -726,8 +733,12 @@ export default async function Home() {
         <div className="rounded-3xl border border-border bg-background p-6 sm:p-10">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-2xl font-extrabold tracking-tight">Pronto a scegliere i tuoi prodotti?</h2>
-              <p className="mt-1 text-sm text-text/70">Naviga il catalogo e trova subito ciò che ti serve.</p>
+              <h2 className="text-2xl font-extrabold tracking-tight">
+                Pronto a scegliere i tuoi prodotti?
+              </h2>
+              <p className="mt-1 text-sm text-text/70">
+                Naviga il catalogo e trova subito ciò che ti serve.
+              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">

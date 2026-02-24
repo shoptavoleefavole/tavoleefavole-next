@@ -69,15 +69,22 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!maybeUrl) return null;
   const u = String(maybeUrl).trim();
   if (!u) return null;
+
   if (
     u.startsWith("http://") ||
     u.startsWith("https://") ||
     u.startsWith("data:") ||
     u.startsWith("blob:")
-  )
+  ) {
     return u;
-  if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
-  return u;
+  }
+
+  const baseClean = String(base || "").replace(/\/+$/, "");
+  if (!baseClean) return u;
+
+  if (u.startsWith("/")) return `${baseClean}${u}`;
+  // ✅ gestisce anche "uploads/..." senza slash iniziale
+  return `${baseClean}/${u.replace(/^\/+/, "")}`;
 }
 
 function safeJsonParse(text: string): any {
@@ -176,7 +183,6 @@ async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<Na
 
   const url = `${STRAPI_URL.replace(/\/$/, "")}/api/categories?${qs.toString()}`;
   const { ok, json } = await fetchJsonSafe(url, { cache: "no-store", signal });
-
   if (!ok) return [];
 
   const data: any[] = Array.isArray(json?.data) ? json.data : [];
@@ -228,26 +234,6 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
 }
 
 /** ✅ Tema visivo per le macro stagionali */
-<<<<<<< HEAD
-function occasionTheme(slug: string) {
-  switch (slug) {
-    case "pasqua":
-      return {
-        pill: "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60",
-        text: "text-emerald-900",
-        iconBg: "bg-emerald-200/60",
-        badge: "bg-emerald-700 text-white",
-      };
-    default:
-      // Default più vicino ad Allegato 1 (pill “pulita”)
-      return {
-        pill: "border-line/10 bg-surface-1/85 hover:bg-surface-1 hover:shadow-soft",
-        text: "text-text",
-        iconBg: "bg-surface-2",
-        badge: "bg-accent text-accent-contrast",
-      };
-=======
-
 function occasionTheme(slug: string): OccasionTheme {
   const s = String(slug || "").toLowerCase();
 
@@ -258,7 +244,6 @@ function occasionTheme(slug: string): OccasionTheme {
       iconBg: "bg-white/70",
       badge: "bg-primary text-primary-contrast",
     };
->>>>>>> pasqua-banner
   }
 
   return {
@@ -522,9 +507,7 @@ export default function Navbar() {
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
               ].join(" ");
 
-              const pillState = isActive
-                ? `${t.pill} shadow-sm ring-1 ring-primary/10`
-                : `${t.pill}`;
+              const pillState = isActive ? `${t.pill} shadow-sm ring-1 ring-primary/10` : `${t.pill}`;
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
@@ -551,7 +534,9 @@ export default function Navbar() {
                     </span>
 
                     {isEasterOcc ? (
-                      <span className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}>
+                      <span
+                        className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}
+                      >
                         Offerte
                       </span>
                     ) : null}
@@ -611,7 +596,6 @@ export default function Navbar() {
                         height={22}
                         sizes="22px"
                         loading="lazy"
-                        unoptimized
                         aria-hidden="true"
                       />
                     ) : (
@@ -641,20 +625,13 @@ export default function Navbar() {
 
         {isOverflowing ? (
           <>
-<<<<<<< HEAD
-            <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background/70 via-background/40 to-transparent" />
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-background/70 via-background/40 to-transparent" />
-=======
             <div className="pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-background via-background/40 to-transparent" />
             <div className="pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-background via-background/40 to-transparent" />
->>>>>>> pasqua-banner
           </>
         ) : null}
 
         {!STRAPI_URL ? (
-          <div className="mt-2 px-4 text-xs text-text/50">
-            STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).
-          </div>
+          <div className="mt-2 px-4 text-xs text-text/50">STRAPI_URL non configurato (NEXT_PUBLIC_STRAPI_URL).</div>
         ) : null}
 
         {!loaded ? (
