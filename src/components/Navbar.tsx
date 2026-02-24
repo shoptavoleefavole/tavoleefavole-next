@@ -393,7 +393,7 @@ export default function Navbar() {
     <div className="hidden md:block py-3">
       <div className="relative -mx-4">
         <div ref={scrollerRef} className="no-scrollbar overflow-x-auto scroll-smooth px-3" aria-label="Categorie">
-          <ul className="flex w-max items-stretch gap-3 py-1 pr-4">
+          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-4">
             {/* ✅ OCCASIONI (Pasqua diversa) */}
             {occasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
@@ -450,15 +450,15 @@ export default function Navbar() {
                 activeMacroSlug === cat.slug || pathname.startsWith(`/categoria/${cat.slug}`);
 
               const pillBase = [
-                "min-w-max",
-                "inline-flex items-center justify-center gap-2",
-                "rounded-2xl border",
-                "px-4 py-3",
-                "whitespace-nowrap leading-none",
-                "text-[15px] font-bold tracking-tight",
-                "transition-colors transition-shadow duration-200",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-              ].join(" ");
+              // ✅ sempre 1 riga, più “responsive”
+              "inline-flex items-center justify-center gap-2",
+              "rounded-2xl border",
+              "px-3 py-2 sm:px-4 sm:py-3",
+              "whitespace-nowrap leading-none",
+              "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+              "transition-colors transition-shadow duration-200",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+            ].join(" ");
 
               const pillState = isActive
                 ? "border-primary/40 bg-primary/5 shadow-sm"
@@ -500,10 +500,12 @@ export default function Navbar() {
                         aria-hidden="true"
                       />
                     ) : (
-                      <span className="h-[22px] w-[22px] rounded-lg bg-surface-2" aria-hidden="true" />
+                      <span className="h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] rounded-lg bg-surface-2" aria-hidden="true" />
                     )}
 
-                    <span className="text-text">{cat.label}</span>
+                    <span className="max-w-[120px] sm:max-w-[160px] md:max-w-none truncate text-text">
+                      {cat.label}
+                    </span>
 
                     {hasSubs ? (
                       <ChevronDownIcon
