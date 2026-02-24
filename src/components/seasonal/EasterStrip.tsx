@@ -1,4 +1,5 @@
 import Link from "next/link";
+export const dynamic = "force-dynamic";
 
 function romeYMD() {
   // YYYY-MM-DD in Europe/Rome
@@ -19,7 +20,7 @@ function isEasterWindowActive() {
   const today = romeYMD();
   const year = today.slice(0, 4);
 
-  const start = `${year}-03-01`;
+  const start = `${year}-02-01`;
   const end = `${year}-04-10`;
 
   return today >= start && today <= end;
