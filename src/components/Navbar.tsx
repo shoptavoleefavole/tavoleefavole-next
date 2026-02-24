@@ -24,7 +24,6 @@ function ChevronDownIcon({ className = "" }: { className?: string }) {
 function EasterEggIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      {/* Uovo */}
       <path
         d="M12 2.6c-3.7 0-6.7 5.1-6.7 10.5 0 5.7 3 8.4 6.7 8.4s6.7-2.7 6.7-8.4c0-5.4-3-10.5-6.7-10.5Z"
         stroke="currentColor"
@@ -32,7 +31,6 @@ function EasterEggIcon({ className = "" }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Decorazione zig-zag */}
       <path
         d="M7.7 12.1l1.5-1.2 1.5 1.2 1.5-1.2 1.5 1.2 1.5-1.2"
         stroke="currentColor"
@@ -40,7 +38,6 @@ function EasterEggIcon({ className = "" }: { className?: string }) {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      {/* Puntini piccoli */}
       <path
         d="M9 15.6h.01M12 16.4h.01M15 15.6h.01"
         stroke="currentColor"
@@ -225,7 +222,7 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
 
 /** ✅ Tema visivo per le macro stagionali */
 function occasionTheme(slug: string) {
-  switch (slug) {
+  switch (String(slug || "").toLowerCase()) {
     case "pasqua":
       return {
         pill: "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60",
@@ -251,6 +248,14 @@ export default function Navbar() {
   const [loaded, setLoaded] = useState(false);
 
   const [occasions, setOccasions] = useState<NavOcc[]>([]);
+
+  // ✅ Mostriamo SOLO Pasqua (ma manteniamo fetch per non rompere nulla)
+  const displayedOccasions = useMemo(() => {
+    const list = Array.isArray(occasions) ? occasions : [];
+    return list.filter((o) => String(o.slug).toLowerCase() === "pasqua");
+  }, [occasions]);
+
+  const shouldShowFallbackEaster = displayedOccasions.length === 0;
 
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const openElRef = useRef<HTMLButtonElement | null>(null);
@@ -435,11 +440,48 @@ export default function Navbar() {
           aria-label="Categorie"
         >
           <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-4">
-            {/* ✅ OCCASIONI */}
-            {occasions.map((o) => {
+            {/* ✅ OCCASIONE: SOLO PASQUA (con fallback se non arriva da Strapi) */}
+            {shouldShowFallbackEaster ? (
+              <li className="shrink-0">
+                <Link
+                  href="/occasione/pasqua"
+                  className={[
+                    "inline-flex items-center justify-center gap-2",
+                    "rounded-2xl border",
+                    "px-3 py-2 sm:px-4 sm:py-3",
+                    "whitespace-nowrap leading-none",
+                    "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+                    "transition-colors transition-shadow duration-200",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                    "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60 text-emerald-900",
+                  ].join(" ")}
+                  title="Pasqua"
+                  onClick={() => {
+                    setOpenSlug(null);
+                    setPos(null);
+                    openElRef.current = null;
+                  }}
+                >
+                  <span
+                    className="grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg bg-emerald-200/60"
+                    aria-hidden="true"
+                  >
+                    <EasterEggIcon className="h-5 w-5" />
+                  </span>
+
+                  <span className="max-w-[140px] md:max-w-none truncate">Pasqua</span>
+
+                  <span className="ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold bg-emerald-700 text-white">
+                    Offerte
+                  </span>
+                </Link>
+              </li>
+            ) : null}
+
+            {displayedOccasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
               const t = occasionTheme(o.slug);
-              const isEasterOcc = o.slug === "pasqua";
+              const isEasterOcc = String(o.slug).toLowerCase() === "pasqua";
 
               const pillBase = [
                 "inline-flex items-center justify-center gap-2",
@@ -451,12 +493,9 @@ export default function Navbar() {
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
               ].join(" ");
 
-              const pillState =
-                isActive && isEasterOcc
-                  ? `${t.pill} border-[#C9A44C]/70 ring-1 ring-[#C9A44C]/25 shadow-[0_0_0_1px_rgba(201,164,76,0.18),0_14px_34px_rgba(43,27,20,0.08)]`
-                  : isActive
-                    ? `${t.pill} shadow-sm ring-1 ring-primary/10`
-                    : `${t.pill}`;
+              const pillState = isActive
+                ? `${t.pill} shadow-sm ring-1 ring-primary/10`
+                : `${t.pill}`;
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
@@ -466,7 +505,6 @@ export default function Navbar() {
                     aria-current={isActive ? "page" : undefined}
                     title={o.label}
                     onClick={() => {
-                      // chiudi eventuale dropdown categorie aperto
                       setOpenSlug(null);
                       setPos(null);
                       openElRef.current = null;

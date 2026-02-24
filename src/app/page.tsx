@@ -6,6 +6,9 @@ import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
 import EasterStrip from "@/components/seasonal/EasterStrip";
+import EasterProductsCarousel, {
+  type EasterProduct,
+} from "@/components/seasonal/EasterProductsCarousel";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -136,8 +139,18 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
+  // ✅ FIX: evitare "cache: no-store" quando c’è anche "next: { revalidate }"
+  const hasRevalidate = Boolean((init as any)?.next?.revalidate);
+  const hasExplicitCache = typeof (init as any)?.cache === "string";
+
+  const mergedInit: RequestInit = {
+    ...init,
+    signal: controller.signal,
+    ...(hasExplicitCache || hasRevalidate ? {} : { cache: "no-store" }),
+  };
+
   try {
-    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, mergedInit);
   } finally {
     clearTimeout(t);
   }
@@ -478,10 +491,6 @@ function ProductRail(props: {
             const hasSale =
               p.compareAtPrice != null && Number(p.compareAtPrice) > Number(p.price) && p.price > 0;
 
-            // ✅ Regola disponibilità:
-            // - se trackInventory=false -> sempre acquistabile
-            // - se stockQty è numero -> acquistabile solo se > 0
-            // - altrimenti fallback su p.inStock
             const track = p.trackInventory !== false;
             const hasQty = typeof p.stockQty === "number";
             const isOutOfStock = track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
@@ -540,10 +549,8 @@ function ProductRail(props: {
                       image={p.image}
                       price={p.price}
                       qty={1}
-                      // ✅ passiamo inventario Strapi
                       stockQty={p.stockQty ?? null}
                       trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
-                      // fallback (non usato se stockQty c'è)
                       inStock={!isOutOfStock}
                       disabledLabel="Esaurito"
                     />
@@ -798,32 +805,131 @@ function PersonalizedPrintsCarouselBlock() {
 
 /* ---------------- PAGE ---------------- */
 
+async function fetchEasterProducts(limit = 12): Promise<EasterProduct[]> {
+  const base = (process.env.NEXT_PUBLIC_STRAPI_URL || process.env.STRAPI_URL || "http://localhost:1337").replace(
+    /\/+$/,
+    ""
+  );
+
+  const token =
+    process.env.STRAPI_API_TOKEN ||
+    process.env.STRAPI_TOKEN ||
+    process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
+    process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
+    "";
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  async function get(url: string) {
+    const res = await fetch(url, { headers, next: { revalidate: 60 } });
+    if (!res.ok) return null;
+    return (await res.json().catch(() => null)) as any;
+  }
+
+  const qs1 = new URLSearchParams();
+  qs1.set("fields[0]", "slug");
+  qs1.set("fields[1]", "name");
+  qs1.set("fields[2]", "price");
+  qs1.set("fields[3]", "compareAtPrice");
+  qs1.set("populate[images][fields][0]", "url");
+  qs1.set("populate[images][fields][1]", "formats");
+  qs1.set("pagination[pageSize]", String(limit));
+  qs1.set("filters[category][slug][$eq]", "pasqua");
+  qs1.set("sort[0]", "updatedAt:desc");
+
+  let json = await get(`${base}/api/products?${qs1.toString()}`);
+
+  if (!Array.isArray(json?.data) || json.data.length === 0) {
+    const qs2 = new URLSearchParams(qs1);
+    qs2.delete("filters[category][slug][$eq]");
+    qs2.set("filters[name][$containsi]", "pasqua");
+    json = await get(`${base}/api/products?${qs2.toString()}`);
+  }
+
+  if (!Array.isArray(json?.data) || json.data.length === 0) {
+    const qs3 = new URLSearchParams();
+    qs3.set("fields[0]", "slug");
+    qs3.set("fields[1]", "name");
+    qs3.set("fields[2]", "price");
+    qs3.set("fields[3]", "compareAtPrice");
+    qs3.set("populate[images][fields][0]", "url");
+    qs3.set("populate[images][fields][1]", "formats");
+    qs3.set("pagination[pageSize]", String(limit));
+    qs3.set("filters[compareAtPrice][$notNull]", "true");
+    qs3.set("sort[0]", "updatedAt:desc");
+    json = await get(`${base}/api/products?${qs3.toString()}`);
+  }
+
+  const rows: any[] = Array.isArray(json?.data) ? json.data : [];
+
+  function pickImage(a: any) {
+    const imgs = a?.images?.data ?? a?.images ?? [];
+    const first = Array.isArray(imgs) ? imgs[0] : imgs;
+    const raw =
+      first?.attributes?.formats?.small?.url ??
+      first?.attributes?.formats?.thumbnail?.url ??
+      first?.attributes?.url ??
+      first?.formats?.small?.url ??
+      first?.formats?.thumbnail?.url ??
+      first?.url ??
+      null;
+
+    if (!raw) return null;
+    if (String(raw).startsWith("http")) return String(raw);
+    if (String(raw).startsWith("/")) return `${base}${raw}`;
+    return String(raw);
+  }
+
+  return rows
+    .map((r) => {
+      const a = r?.attributes ?? r ?? {};
+      const slug = String(a?.slug ?? "").trim();
+      if (!slug) return null;
+
+      const price = toNumber(a?.price);
+      const compareAtPrice = a?.compareAtPrice == null ? null : toNumber(a?.compareAtPrice);
+
+      return {
+        slug,
+        name: String(a?.name ?? a?.title ?? slug),
+        imageUrl: pickImage(a),
+        price: price ?? null,
+        compareAtPrice: compareAtPrice ?? null,
+      } as EasterProduct;
+    })
+    .filter(Boolean) as EasterProduct[];
+}
+
 export default async function Home() {
   const latestP = withDeadline(fetchLatestProducts(12), 9_500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9_500, []);
 
   const [latestRaw, saleCandRaw] = await Promise.all([latestP, saleP]);
 
-  const sale = saleCandRaw
-    .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
-    .slice(0, 12);
+  const sale = saleCandRaw.filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0).slice(0, 12);
 
-  const latestStockP = withDeadline(
-    withAvailabilitySafe(latestRaw.slice(0, 12), 2_500),
-    2_800,
-    latestRaw.slice(0, 12)
-  );
+  const latestStockP = withDeadline(withAvailabilitySafe(latestRaw.slice(0, 12), 2_500), 2_800, latestRaw.slice(0, 12));
   const saleStockP = withDeadline(withAvailabilitySafe(sale, 2_500), 2_800, sale);
 
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
+  const easterProducts = await fetchEasterProducts(12);
 
   return (
-  <main className="mx-auto max-w-7xl px-4 py-10">
-    <EasterStrip />
+    <main className="mx-auto max-w-7xl px-4 py-10">
+      <EasterStrip />
 
-    <Hero />
+      <Hero />
 
-    <PersonalizedPrintsCarouselBlock />
+      <EasterProductsCarousel
+        title="Speciale Pasqua"
+        subtitle="Uova, decorazioni e dolci: scorri e scegli."
+        rightHref="/catalogo?occasione=pasqua"
+        rightLabel="Vedi tutto"
+        items={easterProducts}
+      />
+
+      <PersonalizedPrintsCarouselBlock />
 
       {saleWithStock.length > 0 ? (
         <ProductRail
