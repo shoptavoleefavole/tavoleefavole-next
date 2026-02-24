@@ -400,17 +400,24 @@ export default function Navbar() {
               const t = occasionTheme(o.slug);
 
               const pillBase = [
-                "min-w-max",
-                "inline-flex items-center justify-center gap-2",
-                "rounded-2xl border",
-                "px-4 py-3",
-                "whitespace-nowrap leading-none",
-                "text-[15px] font-bold tracking-tight",
-                "transition-colors transition-shadow duration-200",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-              ].join(" ");
+              // ✅ sempre 1 riga + responsive
+              "inline-flex items-center justify-center gap-2",
+              "rounded-2xl border",
+              "px-3 py-2 sm:px-4 sm:py-3",
+              "whitespace-nowrap leading-none",
+              "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+              "transition-colors transition-shadow duration-200",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+            ].join(" ");
 
-              const pillState = isActive ? `${t.pill} shadow-sm ring-1 ring-primary/10` : `${t.pill}`;
+              const isEaster = o.slug === "pasqua";
+
+              const pillState =
+                isActive && isEaster
+                  ? `${t.pill} border-[#C9A44C]/70 ring-1 ring-[#C9A44C]/25 shadow-[0_0_0_1px_rgba(201,164,76,0.18),0_14px_34px_rgba(43,27,20,0.08)]`
+                  : isActive
+                    ? `${t.pill} shadow-sm ring-1 ring-primary/10`
+                    : `${t.pill}`;
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
@@ -426,11 +433,16 @@ export default function Navbar() {
                       openElRef.current = null;
                     }}
                   >
-                    <span className={`grid h-[22px] w-[22px] place-items-center rounded-lg ${t.iconBg}`} aria-hidden="true">
+                    <span
+                      className={`grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg ${t.iconBg}`}
+                      aria-hidden="true"
+                    >
                       {t.emoji}
                     </span>
 
-                    <span>{o.label}</span>
+                    <span className="max-w-[110px] sm:max-w-[140px] md:max-w-none truncate">
+                      {o.label}
+                    </span>     
 
                     {o.slug === "pasqua" ? (
                       <span className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}>
