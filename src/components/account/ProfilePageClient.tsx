@@ -28,7 +28,13 @@ type ProfilePayload = {
 
 const AUTH_EVENT = "tf:auth-changed";
 const LOGIN_REDIRECT = "/accedi?next=/account/profilo";
-const EMPTY_ADDRESS: Address = { address: "", city: "", postalCode: "", province: "", country: "IT" };
+const EMPTY_ADDRESS: Address = {
+  address: "",
+  city: "",
+  postalCode: "",
+  province: "",
+  country: "IT",
+};
 
 function normalizeAddress(a: any): Address {
   return {
@@ -54,7 +60,9 @@ function toCountry2(v: unknown) {
 }
 
 function isEmptyAddress(a: Address) {
-  const coreEmpty = ![a.address, a.city, a.postalCode, a.province].some((x) => String(x ?? "").trim().length > 0);
+  const coreEmpty = ![a.address, a.city, a.postalCode, a.province].some(
+    (x) => String(x ?? "").trim().length > 0
+  );
   const country = String(a.country ?? "").trim().toUpperCase();
   const countryIsDefaultOrEmpty = !country || country === "IT";
   return coreEmpty && countryIsDefaultOrEmpty;
@@ -66,7 +74,8 @@ function validateAddress(a: Address) {
   if (a.address.trim().length < 2) return { ok: false, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false, msg: "Città non valida." };
   if (a.postalCode.trim().length < 3) return { ok: false, msg: "CAP non valido." };
-  if (toCountry2(a.country).trim().length !== 2) return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
+  if (toCountry2(a.country).trim().length !== 2)
+    return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
 
   return { ok: true, msg: "" };
 }
@@ -83,15 +92,12 @@ function preferNonEmpty(current: string, incoming: unknown): string {
 }
 
 function applyAddressFromServer(current: Address, incoming: Address | null | undefined): Address {
-  // undefined => non tocchiamo
   if (incoming === undefined) return current;
-  // null => reset (server dice “non c’è”)
   if (incoming === null) return { ...EMPTY_ADDRESS };
 
   const inc = normalizeAddress(incoming);
   const incN: Address = { ...inc, country: toCountry2(inc.country || "IT") };
 
-  // se server manda oggetto vuoto, consideriamolo vuoto
   if (isEmptyAddress(incN)) return { ...EMPTY_ADDRESS };
 
   return incN;
@@ -126,7 +132,10 @@ export default function ProfilePageClient() {
     };
   }, []);
 
-  const nameOk = useMemo(() => firstName.trim().length >= 2 && lastName.trim().length >= 2, [firstName, lastName]);
+  const nameOk = useMemo(
+    () => firstName.trim().length >= 2 && lastName.trim().length >= 2,
+    [firstName, lastName]
+  );
   const shipVal = useMemo(() => validateAddress(shippingAddress), [shippingAddress]);
   const billVal = useMemo(() => validateAddress(billingAddress), [billingAddress]);
 
@@ -142,15 +151,12 @@ export default function ProfilePageClient() {
     setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
     setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
 
-    // 🔒 NON sovrascrivere nome/cognome con vuoto
     setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
     setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
 
-    // indirizzi: reset solo se null, altrimenti applica
     setShippingAddress((cur) => applyAddressFromServer(cur, data.shippingAddress));
     setBillingAddress((cur) => applyAddressFromServer(cur, data.billingAddress));
 
-    // sameAsShipping (ricalcola solo se server ci dà entrambi)
     if (data.shippingAddress !== undefined && data.billingAddress !== undefined) {
       const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
       const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
@@ -184,7 +190,6 @@ export default function ProfilePageClient() {
       }
       if (!data?.ok) return;
 
-      // ✅ refresh “non distruttivo”
       applyProfileNonDestructive(data);
     } catch {
       // best-effort
@@ -223,7 +228,6 @@ export default function ProfilePageClient() {
           return;
         }
 
-        // primo load: applica completo
         setEmail(String(data.email ?? ""));
         setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
         setFirstName(String(data.firstName ?? ""));
@@ -244,7 +248,6 @@ export default function ProfilePageClient() {
 
         setSameAsShipping(Boolean(same));
       } catch {
-        // ✅ FIX: non settare stato se unmounted/canceled
         if (canceled || !aliveRef.current) return;
         setErrorMsg("Errore di rete. Riprova.");
       } finally {
@@ -321,7 +324,6 @@ export default function ProfilePageClient() {
         return;
       }
 
-      // ✅ optimistic: i campi restano pieni SEMPRE
       setFirstName(payload.firstName);
       setLastName(payload.lastName);
 
@@ -339,10 +341,7 @@ export default function ProfilePageClient() {
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
 
-      // ✅ applica risposta server non distruttiva
       applyProfileNonDestructive(data);
-
-      // ✅ refresh non distruttivo (best-effort)
       void reloadProfile();
     } catch {
       setErrorMsg("Errore di rete. Riprova.");
@@ -414,10 +413,13 @@ export default function ProfilePageClient() {
             </div>
           </div>
 
-          {!nameOk ? <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p> : null}
+          {!nameOk ? (
+            <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p>
+          ) : null}
 
           <p className="mt-3 text-sm text-muted-text">
-            Anteprima header: <span className="font-semibold">Ciao,</span> {firstToken(firstName) || "Account"}
+            Anteprima header: <span className="font-semibold">Ciao,</span>{" "}
+            {firstToken(firstName) || "Account"}
           </p>
         </section>
 
@@ -563,17 +565,24 @@ export default function ProfilePageClient() {
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
             {errorMsg}
             {debugMsg ? (
-              <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">{debugMsg}</pre>
+              <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">
+                {debugMsg}
+              </pre>
             ) : null}
           </div>
         ) : null}
 
         {successMsg ? (
-          <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">{successMsg}</div>
+          <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+            {successMsg}
+          </div>
         ) : null}
 
-        className="w-full h-12 rounded-full !bg-primary !text-primary-contrast text-sm font-extrabold hover:!bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
-        <button type="submit" disabled={!canSave} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
+        <button
+          type="submit"
+          disabled={!canSave}
+          className="w-full h-12 rounded-full bg-primary text-primary-contrast text-sm font-extrabold hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           {saving ? "Salvataggio..." : "Salva modifiche"}
         </button>
       </form>

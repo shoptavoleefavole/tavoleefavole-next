@@ -8,7 +8,10 @@ export const fetchCache = "force-no-store";
 const NEXT_PATH = "/account";
 
 function strapiBaseUrl() {
-  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
+  const raw =
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337";
   return raw.replace(/\/+$/, "");
 }
 
@@ -40,8 +43,10 @@ function safeUserFromMeJson(json: any): SafeUser | null {
   const firstName = typeof json.firstName === "string" ? json.firstName : null;
   const lastName = typeof json.lastName === "string" ? json.lastName : null;
 
-  const rawType = typeof json.accountType === "string" ? json.accountType.toUpperCase() : null;
-  const accountType = rawType === "BUSINESS" ? "BUSINESS" : rawType === "PERSON" ? "PERSON" : null;
+  const rawType =
+    typeof json.accountType === "string" ? json.accountType.toUpperCase() : null;
+  const accountType =
+    rawType === "BUSINESS" ? "BUSINESS" : rawType === "PERSON" ? "PERSON" : null;
 
   return { id, username, email, firstName, lastName, accountType };
 }
@@ -55,7 +60,10 @@ function extractAttrs(row: any) {
   return out;
 }
 
-async function fetchCustomerProfileName(baseUrl: string, userId: number): Promise<{ firstName?: string; lastName?: string } | null> {
+async function fetchCustomerProfileName(
+  baseUrl: string,
+  userId: number
+): Promise<{ firstName?: string; lastName?: string } | null> {
   if (!STRAPI_SERVICE_TOKEN) return null;
 
   const qs = new URLSearchParams();
@@ -63,7 +71,10 @@ async function fetchCustomerProfileName(baseUrl: string, userId: number): Promis
   qs.set("filters[user][id][$eq]", String(userId));
 
   const res = await fetch(`${baseUrl}/api/customer-profiles?${qs.toString()}`, {
-    headers: { Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`, Accept: "application/json" },
+    headers: {
+      Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
+      Accept: "application/json",
+    },
     cache: "no-store",
   });
 
@@ -116,7 +127,7 @@ export default async function AccountPage() {
   const whatsappHref = process.env.NEXT_PUBLIC_WHATSAPP_URL || "";
 
   return (
-    <main> className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+    <main className="mx-auto max-w-7xl px-4 py-10">
       <AccountDashboardClient user={mergedUser} whatsappHref={whatsappHref || undefined} />
     </main>
   );
