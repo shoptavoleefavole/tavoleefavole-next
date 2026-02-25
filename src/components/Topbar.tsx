@@ -8,7 +8,7 @@ import Container from "@/components/Container";
  */
 
 const SUPPORT_PHONE_TEL = "+393482783901";
-const SUPPORT_PHONE_LABEL = "+39 348 2483901";
+const SUPPORT_PHONE_LABEL = "+39 348 2783901";
 
 // Se vuoi mostrarla, metti in .env.local:
 // NEXT_PUBLIC_SUPPORT_EMAIL=la-tua-email@dominio.it

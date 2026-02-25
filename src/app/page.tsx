@@ -633,23 +633,24 @@ function PersonalizedPrintsCarouselBlock() {
         <div className="relative grid gap-8 p-6 sm:p-10 lg:grid-cols-12 lg:items-center">
           <div className="lg:col-span-6">
             <p className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1 text-xs font-extrabold text-text/70">
-              Stampe personalizzate • Per torte / biscotti
+              Servizio Premium • Stampa alimentare
             </p>
 
             <h2 className="mt-4 text-3xl font-extrabold tracking-tight sm:text-4xl">
-              Cialde e stampe personalizzate
+              Cialde personalizzate per torte
             </h2>
 
             <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-              Carica un’immagine, scrivi una dedica e completa l’ordine in pochi minuti.
+              Carica la tua immagine, scrivi la dedica e ottieni una stampa perfetta per torte e biscotti,
+              pronta da applicare.
             </p>
 
             <div className="mt-7 flex flex-wrap items-center gap-3">
               <Link
                 href={CIALDE_PAGE_HREF}
-                className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+                className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-6 text-sm font-extrabold text-primary-contrast shadow-sm hover:bg-primary-hover"
               >
-                Personalizza ora
+                Personalizza la tua cialda
               </Link>
 
               <Link
@@ -660,13 +661,26 @@ function PersonalizedPrintsCarouselBlock() {
               </Link>
 
               <a
-                href={waUrl("Ciao! Vorrei info sulle cialde personalizzate 😊")}
+                href={waUrl("Ciao! Vorrei info e un’anteprima per cialde/stampe personalizzate 😊")}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
               >
-                WhatsApp
+                WhatsApp • info & anteprima
               </a>
+            </div>
+
+            {/* trust pills */}
+            <div className="mt-5 flex flex-wrap items-center gap-2 text-xs font-semibold text-text/70">
+              <span className="inline-flex items-center rounded-full border border-border bg-background px-3 py-1">
+                Qualità professionale
+              </span>
+              <span className="inline-flex items-center rounded-full border border-border bg-background px-3 py-1">
+                Supporto WhatsApp
+              </span>
+              <span className="inline-flex items-center rounded-full border border-border bg-background px-3 py-1">
+                Spedizione veloce
+              </span>
             </div>
           </div>
 

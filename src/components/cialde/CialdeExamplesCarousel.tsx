@@ -109,6 +109,8 @@ export default function CialdeExamplesCarousel({
   }, [autoPlay, reducedMotion, isPaused, finalSlides, ms]);
 
   const active = finalSlides[i] ?? finalSlides[0];
+  const imgSrc = active?.src ?? DEFAULT_SLIDES[0].src;
+  const altText = active?.alt ?? DEFAULT_SLIDES[0].alt;
 
   function goNext() {
     setI((x) => (x + 1) % finalSlides.length);
@@ -149,47 +151,49 @@ export default function CialdeExamplesCarousel({
       onTouchStart={pause}
       onTouchEnd={resume}
     >
-      <div className="relative aspect-[16/10]">
+      {/* ✅ immagine adattata al riquadro (no zoom/tagli) */}
+      <div className="relative aspect-[16/10] overflow-hidden rounded-3xl bg-surface-2/40">
         <Image
-          src={active.src}
-          alt={active.alt}
+          src={imgSrc}
+          alt={altText}
           fill
-          sizes="(min-width: 1024px) 50vw, 100vw"
-          className="object-cover"
-          priority
+          sizes="(max-width: 640px) 92vw, (max-width: 1024px) 85vw, 560px"
+          className="object-contain p-4"
+          quality={60}
+          priority={false}
         />
+      </div>
 
-        {/* overlay caption */}
-        {active.caption ? (
-          <div className="absolute inset-x-0 bottom-0 p-4">
-            <div className="inline-flex max-w-full items-center rounded-2xl border border-border bg-background/90 px-3 py-2 text-sm font-extrabold">
-              {active.caption}
-            </div>
+      {/* overlay caption */}
+      {active.caption ? (
+        <div className="absolute inset-x-0 bottom-0 p-4">
+          <div className="inline-flex max-w-full items-center rounded-2xl border border-border bg-background/90 px-3 py-2 text-sm font-extrabold">
+            {active.caption}
           </div>
-        ) : null}
-
-        {/* Prev/Next */}
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-between px-3">
-          <button
-            type="button"
-            onClick={goPrev}
-            className="pointer-events-auto grid h-10 w-10 place-items-center rounded-full border border-border bg-background/85 text-sm font-extrabold hover:bg-background"
-            aria-controls={listId}
-            aria-label="Immagine precedente"
-          >
-            ‹
-          </button>
-
-          <button
-            type="button"
-            onClick={goNext}
-            className="pointer-events-auto grid h-10 w-10 place-items-center rounded-full border border-border bg-background/85 text-sm font-extrabold hover:bg-background"
-            aria-controls={listId}
-            aria-label="Immagine successiva"
-          >
-            ›
-          </button>
         </div>
+      ) : null}
+
+      {/* Prev/Next */}
+      <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-between px-3">
+        <button
+          type="button"
+          onClick={goPrev}
+          className="pointer-events-auto grid h-10 w-10 place-items-center rounded-full border border-border bg-background/85 text-sm font-extrabold hover:bg-background"
+          aria-controls={listId}
+          aria-label="Immagine precedente"
+        >
+          ‹
+        </button>
+
+        <button
+          type="button"
+          onClick={goNext}
+          className="pointer-events-auto grid h-10 w-10 place-items-center rounded-full border border-border bg-background/85 text-sm font-extrabold hover:bg-background"
+          aria-controls={listId}
+          aria-label="Immagine successiva"
+        >
+          ›
+        </button>
       </div>
 
       {/* dots + status */}
