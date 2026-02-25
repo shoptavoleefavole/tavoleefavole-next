@@ -450,10 +450,10 @@ export default function Navbar() {
       <div className="relative">
         <div
           ref={scrollerRef}
-          className="no-scrollbar overflow-x-auto scroll-smooth px-4 md:px-6"
+          className="no-scrollbar overflow-x-auto scroll-smooth pl-0 pr-4 md:pl-0 md:pr-6 scroll-px-0"
           aria-label="Categorie"
         >
-          <ul className="flex w-max items-stretch gap-2 md:gap-3 py-1 pr-6 pl-2">
+          <ul className="flex w-max items-stretch gap-1.4 md:gap-2.4 py-1 pr-10 pl-0">
             {/* ✅ OCCASIONE: SOLO PASQUA (con fallback se non arriva da Strapi) */}
             {shouldShowFallbackEaster ? (
               <li className="shrink-0">
@@ -500,7 +500,7 @@ export default function Navbar() {
               const pillBase = [
                 "inline-flex items-center justify-center gap-2",
                 "rounded-full border",
-                "px-3 py-2 sm:px-4 sm:py-3",
+                "px-2.5 py-2 sm:px-4 sm:py-3",
                 "whitespace-nowrap leading-none",
                 "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
                 "transition-colors transition-shadow duration-200",

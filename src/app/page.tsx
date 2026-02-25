@@ -46,7 +46,7 @@ const EASTER_FEATURED_SLUGS = [
 
 /* ---------------- WhatsApp ---------------- */
 
-const WHATSAPP_NUMBER = "393482483901";
+const WHATSAPP_NUMBER = "393482783901";
 function waUrl(text: string) {
   return `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(text)}`;
 }
