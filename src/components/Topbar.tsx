@@ -7,7 +7,7 @@ import Container from "@/components/Container";
  * - Soglia spedizione configurabile via env
  */
 
-const SUPPORT_PHONE_TEL = "+393482483901";
+const SUPPORT_PHONE_TEL = "+393482783901";
 const SUPPORT_PHONE_LABEL = "+39 348 2483901";
 
 // Se vuoi mostrarla, metti in .env.local:

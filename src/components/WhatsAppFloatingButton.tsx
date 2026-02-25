@@ -1,4 +1,4 @@
-const WHATSAPP_NUMBER = "393482483901";
+const WHATSAPP_NUMBER = "393482783901";
 const WHATSAPP_URL = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
   "Ciao Tavole & Favole! Ho bisogno di informazioni 🙂"
 )}`;

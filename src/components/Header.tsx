@@ -412,10 +412,10 @@ export default function Header() {
             <Image
               src="/brand/tavoleefavole-logo.svg"
               alt="Tavole & Favole"
-              width={170}
-              height={48}
+              width={210}
+              height={60}
               priority
-              className="h-10 w-auto"
+              className="h-12 w-auto"
             />
           </Link>
 
@@ -446,10 +446,10 @@ export default function Header() {
             <Image
               src="/brand/tavoleefavole-logo.svg"
               alt="Tavole & Favole"
-              width={290}
-              height={92}
+              width={340}
+              height={108}
               priority
-              className="h-16 w-auto"
+              className="h-20 w-auto"
             />
           </Link>
 
@@ -487,7 +487,7 @@ export default function Header() {
 
             <button
               type="submit"
-              className="h-11 px-6 text-sm font-extrabold bg-brand text-primary-contrast hover:bg-brand-dark transition"
+              className="h-11 px-6 text-sm font-extrabold bg-primary text-primary-contrast hover:bg-primary-hover transition"
             >
               Cerca
             </button>

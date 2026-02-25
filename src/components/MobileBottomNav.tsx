@@ -2,9 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useMemo } from "react";
 import Container from "@/components/Container";
-import { useCart } from "@/components/cart/CartProvider";
 
 function HomeIcon({ className = "" }: { className?: string }) {
   return (
@@ -22,15 +20,10 @@ function HomeIcon({ className = "" }: { className?: string }) {
 function GridIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z" fill="currentColor" />
-    </svg>
-  );
-}
-
-function MenuIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z"
+        fill="currentColor"
+      />
     </svg>
   );
 }
@@ -44,12 +37,19 @@ function UserIcon({ className = "" }: { className?: string }) {
   );
 }
 
-function CartIcon({ className = "" }: { className?: string }) {
+function WhatsAppIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M6 6h15l-2 9H7L6 6z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-      <path d="M6 6L5 3H2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M8 20a1 1 0 100-2 1 1 0 000 2zM18 20a1 1 0 100-2 1 1 0 000 2z" fill="currentColor" />
+      <path
+        d="M20 11.9a8 8 0 0 1-11.8 7L4 20l1.2-4.1A8 8 0 1 1 20 11.9Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.2 8.9c.2-.4.4-.4.6-.4h.5c.2 0 .4 0 .5.3l.7 1.6c.1.3.1.6-.1.8l-.4.5c.6 1 1.5 1.9 2.6 2.5l.5-.4c.2-.2.5-.2.8-.1l1.6.7c.3.1.3.3.3.5v.5c0 .2 0 .4-.4.6-.5.3-1.5.5-2.7 0-2.2-.8-4.6-3-5.5-5.2-.5-1.2-.3-2.2 0-2.7Z"
+        fill="currentColor"
+      />
     </svg>
   );
 }
@@ -59,27 +59,22 @@ function isActivePath(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+type NavItem =
+  | { href: string; label: string; icon: React.ComponentType<{ className?: string }>; external?: false }
+  | { href: string; label: string; icon: React.ComponentType<{ className?: string }>; external: true };
+
 export default function MobileBottomNav() {
   const pathname = usePathname() ?? "/";
-  const { summary } = useCart();
 
-  const cartCount = Number(summary?.count ?? 0);
+  // ✅ usa env se presente, altrimenti fallback numero
+  const whatsappHref = process.env.NEXT_PUBLIC_WHATSAPP_URL || "https://wa.me/393482783901";
 
-  const items = useMemo(
-    () => [
-      { href: "/", label: "Home", icon: HomeIcon },
-      { href: "/catalogo", label: "Catalogo", icon: GridIcon },
-      { href: "/account", label: "Account", icon: UserIcon },
-      { href: "/carrello", label: "Carrello", icon: CartIcon, badge: cartCount },
-    ],
-    [cartCount]
-  );
-
-  function openMenu() {
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("mobile-menu:open"));
-    }
-  }
+  const items: NavItem[] = [
+    { href: whatsappHref, label: "WhatsApp", icon: WhatsAppIcon, external: true },
+    { href: "/", label: "Home", icon: HomeIcon },
+    { href: "/catalogo", label: "Catalogo", icon: GridIcon },
+    { href: "/account", label: "Account", icon: UserIcon },
+  ];
 
   return (
     <nav
@@ -87,21 +82,26 @@ export default function MobileBottomNav() {
       aria-label="Navigazione principale mobile"
     >
       <Container>
-        <div className="grid grid-cols-5 items-center py-2">
-          {/* Menu (apre drawer Header) */}
-          <button
-            type="button"
-            onClick={openMenu}
-            className="flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-muted-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label="Apri menu"
-          >
-            <MenuIcon />
-            MENU
-          </button>
-
+        <div className="grid grid-cols-4 items-center py-2">
           {items.map((it) => {
-            const active = isActivePath(pathname, it.href);
+            const active = !it.external ? isActivePath(pathname, it.href) : false;
             const Icon = it.icon;
+
+            if (it.external) {
+              return (
+                <a
+                  key={it.href}
+                  href={it.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="relative flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-muted-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  aria-label="Apri WhatsApp"
+                >
+                  <Icon />
+                  {it.label}
+                </a>
+              );
+            }
 
             return (
               <Link
@@ -114,12 +114,6 @@ export default function MobileBottomNav() {
               >
                 <Icon />
                 {it.label}
-
-                {"badge" in it && (it.badge ?? 0) > 0 ? (
-                  <span className="absolute right-3 top-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[11px] font-bold text-accent-contrast">
-                    {it.badge}
-                  </span>
-                ) : null}
               </Link>
             );
           })}

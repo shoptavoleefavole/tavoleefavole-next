@@ -5,15 +5,15 @@ export const metadata: Metadata = {
   title: "Contatti",
 };
 
-const PHONE_DISPLAY = "+39 348 248 3901";
-const PHONE_TEL = "+393482483901";
+const PHONE_DISPLAY = "+39 348 278 3901";
+const PHONE_TEL = "+393482783901";
 const EMAIL = "shoptavoleefavole@gmail.com";
 
 const ADDRESS_LINE = "Via Don Alessandro Niccoli, 35A";
 const ADDRESS_CITY = "Carmiano (LE), 73041";
 const ADDRESS_FULL = `${ADDRESS_LINE}, ${ADDRESS_CITY}`;
 
-const WHATSAPP_NUMBER = "393482483901";
+const WHATSAPP_NUMBER = "393482783901";
 const WHATSAPP_URL = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(
   "Ciao Tavole & Favole! Ho bisogno di informazioni 🙂"
 )}`;

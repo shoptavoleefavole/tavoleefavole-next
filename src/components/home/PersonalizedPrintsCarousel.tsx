@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
 
-const WHATSAPP_NUMBER = "393482483901";
+const WHATSAPP_NUMBER = "393482783901";
 function waUrl(text: string) {
   return `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(text)}`;
 }

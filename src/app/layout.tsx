@@ -149,7 +149,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <MobileBottomNav />
             </div>
 
-            <WhatsAppFloatingButton />
+            {/* ✅ Mostra il floating button SOLO su desktop (no doppione su mobile) */}
+            <div className="hidden md:block">
+              <WhatsAppFloatingButton />
+            </div>
           </FavoritesProvider>
         </AppProviders>
 
