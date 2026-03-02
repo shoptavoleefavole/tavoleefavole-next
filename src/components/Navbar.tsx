@@ -20,44 +20,15 @@ function ChevronDownIcon({ className = "" }: { className?: string }) {
   );
 }
 
-/** ✅ Icona Pasqua (uovo) stile outline come le icone del sito */
-function EasterEggIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M12 2.6c-3.7 0-6.7 5.1-6.7 10.5 0 5.7 3 8.4 6.7 8.4s6.7-2.7 6.7-8.4c0-5.4-3-10.5-6.7-10.5Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M7.7 12.1l1.5-1.2 1.5 1.2 1.5-1.2 1.5 1.2 1.5-1.2"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9 15.6h.01M12 16.4h.01M15 15.6h.01"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 type Pos = { top: number; left: number; width: number } | null;
 type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon?: string | null; subcategories: NavSub[] };
-type NavOcc = { slug: string; label: string };
 
-type OccasionTheme = {
-  pill: string;
-  text: string;
-  iconBg: string;
-  badge: string;
+type NavOcc = {
+  slug: string;
+  label: string;
+  dataInizio?: string | null;
+  dataFine?: string | null;
 };
 
 const STRAPI_URL =
@@ -83,7 +54,6 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!baseClean) return u;
 
   if (u.startsWith("/")) return `${baseClean}${u}`;
-  // ✅ gestisce anche "uploads/..." senza slash iniziale
   return `${baseClean}/${u.replace(/^\/+/, "")}`;
 }
 
@@ -114,10 +84,6 @@ function isNavCat(x: any): x is NavCat {
     typeof x.label === "string" &&
     Array.isArray(x.subcategories)
   );
-}
-
-function isNavOcc(x: any): x is NavOcc {
-  return x && typeof x === "object" && typeof x.slug === "string" && typeof x.label === "string";
 }
 
 function normalizeStrapiCategory(row: any): NavCat | null {
@@ -159,17 +125,56 @@ function normalizeStrapiCategory(row: any): NavCat | null {
   return { slug, label, icon: icon ?? null, subcategories };
 }
 
+function isNavOcc(x: any): x is NavOcc {
+  return x && typeof x === "object" && typeof x.slug === "string" && typeof x.label === "string";
+}
+
 function normalizeStrapiOccasion(row: any): NavOcc | null {
   const a = row?.attributes ?? row ?? {};
-
   const slugRaw = a?.slug ?? a?.documentId ?? null;
   const slug = typeof slugRaw === "string" ? slugRaw.trim() : null;
   if (!slug) return null;
-
   const labelRaw = a?.Titolo ?? a?.titolo ?? a?.title ?? a?.label ?? a?.name ?? slug;
   const label = String(labelRaw ?? slug).trim() || slug;
+  return {
+    slug,
+    label,
+    dataInizio: a?.dataInizio ?? null,
+    dataFine: a?.dataFine ?? null,
+  };
+}
 
-  return { slug, label };
+async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
+  try {
+    const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { cache: "no-store", signal });
+    if (ok) {
+      const data: any[] = Array.isArray(json?.data)
+        ? json.data
+        : Array.isArray(json?.occasions)
+          ? json.occasions
+          : Array.isArray(json)
+            ? json
+            : [];
+      return data.map(normalizeStrapiOccasion).filter(isNavOcc);
+    }
+  } catch { /* noop */ }
+  return [];
+}
+
+/** Filtra le occasioni attive in base alle date di Strapi */
+function isOccasionActive(o: NavOcc): boolean {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  if (o.dataInizio) {
+    const start = new Date(o.dataInizio);
+    if (now < start) return false;
+  }
+  if (o.dataFine) {
+    const end = new Date(o.dataFine);
+    end.setHours(23, 59, 59, 999);
+    if (now > end) return false;
+  }
+  return true;
 }
 
 async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<NavCat[]> {
@@ -190,7 +195,6 @@ async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<Na
 }
 
 async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat[]> {
-  // 1) endpoint interno (preferibile)
   try {
     const { ok, json } = await fetchJsonSafe("/api/nav/categories", { cache: "no-store", signal });
     if (ok) {
@@ -209,49 +213,7 @@ async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat
     // noop
   }
 
-  // 2) fallback diretto su Strapi
   return fetchNavbarCategoriesFromStrapi(signal);
-}
-
-async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
-  try {
-    const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { cache: "no-store", signal });
-    if (ok) {
-      const data: any[] = Array.isArray(json?.data)
-        ? json.data
-        : Array.isArray(json?.occasions)
-          ? json.occasions
-          : Array.isArray(json)
-            ? json
-            : [];
-
-      return data.map(normalizeStrapiOccasion).filter(isNavOcc);
-    }
-  } catch {
-    // noop
-  }
-  return [];
-}
-
-/** ✅ Tema visivo per le macro stagionali */
-function occasionTheme(slug: string): OccasionTheme {
-  const s = String(slug || "").toLowerCase();
-
-  if (s === "pasqua") {
-    return {
-      pill: "border-border/70 bg-[#F6E27A]/55 hover:bg-[#F6E27A]/70",
-      text: "text-text",
-      iconBg: "bg-white/70",
-      badge: "bg-primary text-primary-contrast",
-    };
-  }
-
-  return {
-    pill: "border-border/70 bg-background hover:bg-surface-2 hover:border-border hover:shadow-sm",
-    text: "text-text",
-    iconBg: "bg-surface-2",
-    badge: "bg-accent text-accent-contrast",
-  };
 }
 
 export default function Navbar() {
@@ -260,16 +222,32 @@ export default function Navbar() {
 
   const [categories, setCategories] = useState<NavCat[]>([]);
   const [loaded, setLoaded] = useState(false);
-
   const [occasions, setOccasions] = useState<NavOcc[]>([]);
 
-  // ✅ Mostriamo SOLO Pasqua (ma manteniamo fetch per non rompere nulla)
-  const displayedOccasions = useMemo(() => {
-    const list = Array.isArray(occasions) ? occasions : [];
-    return list.filter((o) => String(o.slug).toLowerCase() === "pasqua");
-  }, [occasions]);
+  // fetch occasions
+  useEffect(() => {
+    let alive = true;
+    const controller = new AbortController();
+    const t = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    (async () => {
+      try {
+        const occs = await fetchNavbarOccasionsRobust(controller.signal);
+        if (!alive) return;
+        setOccasions(Array.isArray(occs) ? occs : []);
+      } catch {
+        if (!alive) return;
+        setOccasions([]);
+      } finally {
+        window.clearTimeout(t);
+      }
+    })();
+    return () => { alive = false; window.clearTimeout(t); controller.abort(); };
+  }, []);
 
-  const shouldShowFallbackEaster = displayedOccasions.length === 0;
+  const activeOccasions = useMemo(
+    () => occasions.filter(isOccasionActive),
+    [occasions]
+  );
 
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const openElRef = useRef<HTMLButtonElement | null>(null);
@@ -283,11 +261,11 @@ export default function Navbar() {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
 
-  const { activeMacroSlug } = useMemo(() => {
+  const activeMacroSlug = (() => {
     const parts = (pathname ?? "").split("/").filter(Boolean);
-    if (parts[0] !== "categoria") return { activeMacroSlug: null };
-    return { activeMacroSlug: parts[1] ?? null };
-  }, [pathname]);
+    if (parts[0] !== "categoria") return null;
+    return parts[1] ?? null;
+  })();
 
   // chiudi dropdown quando cambi pagina
   useEffect(() => {
@@ -314,32 +292,6 @@ export default function Navbar() {
         window.clearTimeout(t);
         if (!alive) return;
         setLoaded(true);
-      }
-    })();
-
-    return () => {
-      alive = false;
-      window.clearTimeout(t);
-      controller.abort();
-    };
-  }, []);
-
-  // fetch occasions
-  useEffect(() => {
-    let alive = true;
-    const controller = new AbortController();
-    const t = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-    (async () => {
-      try {
-        const occs = await fetchNavbarOccasionsRobust(controller.signal);
-        if (!alive) return;
-        setOccasions(Array.isArray(occs) ? occs : []);
-      } catch {
-        if (!alive) return;
-        setOccasions([]);
-      } finally {
-        window.clearTimeout(t);
       }
     })();
 
@@ -426,9 +378,10 @@ export default function Navbar() {
     setIsOverflowing(el.scrollWidth > el.clientWidth + 8);
   }
 
+  // ✅ aggiunto activeOccasions.length per ricalcolare overflow quando il tasto Pasqua appare/sparisce
   useEffect(() => {
     measureOverflow();
-  }, [categories.length, occasions.length]);
+  }, [categories.length, activeOccasions.length]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -454,66 +407,32 @@ export default function Navbar() {
           aria-label="Categorie"
         >
           <ul className="flex w-max items-stretch gap-1.4 md:gap-2.4 py-1 pr-10 pl-0">
-            {/* ✅ OCCASIONE: SOLO PASQUA (con fallback se non arriva da Strapi) */}
-            {shouldShowFallbackEaster ? (
-              <li className="shrink-0">
-                <Link
-                  href="/occasione/pasqua"
-                  className={[
-                    "inline-flex items-center justify-center gap-2",
-                    "rounded-2xl border",
-                    "px-3 py-2 sm:px-4 sm:py-3",
-                    "whitespace-nowrap leading-none",
-                    "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
-                    "transition-colors transition-shadow duration-200",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-                    "border-emerald-300/60 bg-emerald-50 hover:bg-emerald-100/60 text-emerald-900",
-                  ].join(" ")}
-                  title="Pasqua"
-                  onClick={() => {
-                    setOpenSlug(null);
-                    setPos(null);
-                    openElRef.current = null;
-                  }}
-                >
-                  <span
-                    className="grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg bg-emerald-200/60"
-                    aria-hidden="true"
-                  >
-                    <EasterEggIcon className="h-5 w-5" />
-                  </span>
 
-                  <span className="max-w-[140px] md:max-w-none truncate">Pasqua</span>
-
-                  <span className="ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold bg-emerald-700 text-white">
-                    Offerte
-                  </span>
-                </Link>
-              </li>
-            ) : null}
-
-            {displayedOccasions.map((o) => {
+            {/* ✅ OCCASIONI ATTIVE DA STRAPI (filtrate per data) */}
+            {activeOccasions.map((o) => {
               const isActive = pathname.startsWith(`/occasione/${o.slug}`);
-              const t = occasionTheme(o.slug);
-              const isEasterOcc = String(o.slug).toLowerCase() === "pasqua";
-
-              const pillBase = [
-                "inline-flex items-center justify-center gap-2",
-                "rounded-full border",
-                "px-2.5 py-2 sm:px-4 sm:py-3",
-                "whitespace-nowrap leading-none",
-                "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
-                "transition-colors transition-shadow duration-200",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-              ].join(" ");
-
-              const pillState = isActive ? `${t.pill} shadow-sm ring-1 ring-primary/10` : `${t.pill}`;
+              const isPasqua = o.slug === "pasqua";
 
               return (
                 <li key={`occ-${o.slug}`} className="shrink-0">
                   <Link
                     href={`/occasione/${o.slug}`}
-                    className={`${pillBase} ${pillState} ${t.text}`}
+                    className={[
+                      "inline-flex items-center justify-center gap-2",
+                      "rounded-2xl border",
+                      "px-3 py-2 sm:px-4 sm:py-3",
+                      "whitespace-nowrap leading-none",
+                      "text-[13px] sm:text-[14px] md:text-[15px] font-bold tracking-tight",
+                      "transition-colors transition-shadow duration-200",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#DCAE54]",
+                      isPasqua
+                        ? isActive
+                          ? "border-[#DCAE54] bg-[#F5E6A3] shadow-sm text-[#5C3D00]"
+                          : "border-[#DCAE54]/70 bg-[#F5E6A3]/60 hover:bg-[#F0D980]/70 text-[#5C3D00]"
+                        : isActive
+                          ? "border-primary/30 bg-primary/5 shadow-sm text-text"
+                          : "border-border/70 bg-background hover:bg-surface-2 text-text",
+                    ].join(" ")}
                     aria-current={isActive ? "page" : undefined}
                     title={o.label}
                     onClick={() => {
@@ -522,30 +441,51 @@ export default function Navbar() {
                       openElRef.current = null;
                     }}
                   >
+                    {/* Icona */}
                     <span
-                      className={`grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg ${t.iconBg}`}
+                      className={[
+                        "grid h-[20px] w-[20px] sm:h-[22px] sm:w-[22px] place-items-center rounded-lg",
+                        isPasqua ? "bg-[#DCAE54]/40" : "bg-surface-2",
+                      ].join(" ")}
                       aria-hidden="true"
                     >
-                      {isEasterOcc ? <EasterEggIcon className="h-5 w-5" /> : "✨"}
+                      {isPasqua ? (
+                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path
+                            d="M12 2.6c-3.7 0-6.7 5.1-6.7 10.5 0 5.7 3 8.4 6.7 8.4s6.7-2.7 6.7-8.4c0-5.4-3-10.5-6.7-10.5Z"
+                            stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                          />
+                          <path
+                            d="M7.7 12.1l1.5-1.2 1.5 1.2 1.5-1.2 1.5 1.2 1.5-1.2"
+                            stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                          />
+                          <path
+                            d="M9 15.6h.01M12 16.4h.01M15 15.6h.01"
+                            stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"
+                          />
+                        </svg>
+                      ) : (
+                        <span>✨</span>
+                      )}
                     </span>
 
+                    {/* Label */}
                     <span className="max-w-[110px] sm:max-w-[140px] md:max-w-none truncate">
                       {o.label}
                     </span>
 
-                    {isEasterOcc ? (
-                      <span
-                        className={`ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold ${t.badge}`}
-                      >
+                    {/* Badge solo per Pasqua */}
+                    {isPasqua && (
+                      <span className="ml-1 rounded-full px-2 py-0.5 text-[11px] font-extrabold bg-[#8B5E00] text-[#FFF8E1]">
                         Offerte
                       </span>
-                    ) : null}
+                    )}
                   </Link>
                 </li>
               );
             })}
 
-            {/* ✅ CATEGORIE (dropdown SOLO CLICK) */}
+            {/* CATEGORIE (dropdown SOLO CLICK) */}
             {categories.map((cat) => {
               const hasSubs = cat.subcategories.length > 0;
               const isOpen = openSlug === cat.slug;
