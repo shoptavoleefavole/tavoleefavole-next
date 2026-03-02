@@ -11,34 +11,55 @@ type ShippingAddress = {
   address: string;
   city: string;
   postalCode: string;
-  province: string; // sigla o nome (server normalizza)
-  country: string; // IT
+  province: string;
+  country: string;
 };
+
+// ✅ Limiti lunghezza centralizzati
+const ADDR_LIMITS = {
+  address: 200,
+  city: 100,
+  postalCode: 6,   // 5 cifre + eventuale spazio
+  province: 24,
+  country: 2,
+} as const;
+
+// ✅ Sanitizza ogni campo: trim + truncate (usata sia in load che in save)
+function sanitizeAddress(a: ShippingAddress): ShippingAddress {
+  return {
+    address:    String(a.address    ?? "").trim().slice(0, ADDR_LIMITS.address),
+    city:       String(a.city       ?? "").trim().slice(0, ADDR_LIMITS.city),
+    postalCode: String(a.postalCode ?? "").replace(/\s+/g, "").slice(0, ADDR_LIMITS.postalCode),
+    province:   String(a.province   ?? "").trim().slice(0, ADDR_LIMITS.province),
+    country:    (String(a.country ?? "IT").trim().toUpperCase().slice(0, ADDR_LIMITS.country)) || "IT",
+  };
+}
 
 function loadAddress(): ShippingAddress | null {
   try {
     const raw = localStorage.getItem("tf_shipping_address_v1");
     if (!raw) return null;
     const j = JSON.parse(raw);
-    return {
-      address: String(j?.address ?? "").trim(),
-      city: String(j?.city ?? "").trim(),
-      postalCode: String(j?.postalCode ?? "").trim(),
-      province: String(j?.province ?? "").trim(),
-      country: String(j?.country ?? "IT").trim() || "IT",
-    };
+    // ✅ Sanitizza al caricamento (dati potrebbero essere stati manipolati)
+    return sanitizeAddress({
+      address:    String(j?.address    ?? ""),
+      city:       String(j?.city       ?? ""),
+      postalCode: String(j?.postalCode ?? ""),
+      province:   String(j?.province   ?? ""),
+      country:    String(j?.country    ?? "IT"),
+    });
   } catch {
     return null;
   }
 }
 
 function saveAddress(a: ShippingAddress) {
-  localStorage.setItem("tf_shipping_address_v1", JSON.stringify(a));
+  // ✅ Sanitizza prima di salvare: niente stringhe arbitrariamente lunghe
+  localStorage.setItem("tf_shipping_address_v1", JSON.stringify(sanitizeAddress(a)));
 }
 
 function capOk(cap: string) {
-  const c = cap.replace(/\s+/g, "");
-  return /^\d{5}$/.test(c);
+  return /^\d{5}$/.test(cap.replace(/\s+/g, ""));
 }
 
 function clampQty(v: any) {
@@ -52,6 +73,25 @@ function toIntOrNull(v: any): number | null {
   if (!Number.isFinite(n)) return null;
   const i = Math.trunc(n);
   return i > 0 ? i : null;
+}
+
+// ✅ Anti open-redirect: accetta solo URL di Stripe Checkout
+function isStripeCheckoutUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      (parsed.hostname === "checkout.stripe.com" ||
+        parsed.hostname.endsWith(".stripe.com"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ✅ Tronca messaggi di errore per evitare rendering di testi molto lunghi
+function safeErrMsg(msg: any): string {
+  return String(msg ?? "Errore inatteso.").trim().slice(0, 300);
 }
 
 export default function CheckoutIndirizzoPage() {
@@ -99,12 +139,8 @@ export default function CheckoutIndirizzoPage() {
     try {
       setBusy(true);
 
-      const clean: ShippingAddress = {
-        ...addr,
-        postalCode: addr.postalCode.replace(/\s+/g, ""),
-        province: addr.province.trim(), // può essere CA o Cagliari
-        country: "IT",
-      };
+      // ✅ Sanitizza e forza country IT prima di usare i dati
+      const clean = sanitizeAddress({ ...addr, country: "IT" });
 
       saveAddress(clean);
 
@@ -114,26 +150,26 @@ export default function CheckoutIndirizzoPage() {
           productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
           slug: it.slug,
           name: it.name,
-          price: it.price, // ignorato server-side
+          price: it.price,                              // ignorato server-side
           qty: clampQty(it.qty),
-          imageUrl: it.image,
+          imageUrl: it.imageUrl ?? it.image ?? undefined, // ✅ fallback su entrambi i campi
+          variantId: it.variantId ?? null,               // ✅ aggiunto: server lo legge
           meta: it.meta ?? undefined,
-          lineId: it.lineId,
         })),
         billingType: "PRIVATE",
         billingSnapshot: {
-          address: clean.address,
-          city: clean.city,
+          address:    clean.address,
+          city:       clean.city,
           postalCode: clean.postalCode,
-          province: clean.province,
-          country: clean.country,
+          province:   clean.province,
+          country:    clean.country,
         },
         shippingAddress: {
-          address: clean.address,
-          city: clean.city,
+          address:    clean.address,
+          city:       clean.city,
           postalCode: clean.postalCode,
-          province: clean.province,
-          country: clean.country,
+          province:   clean.province,
+          country:    clean.country,
         },
         currency: "EUR",
       };
@@ -148,19 +184,25 @@ export default function CheckoutIndirizzoPage() {
       const data = await res.json().catch(() => null);
 
       if (!res.ok || !data?.ok) {
-        setErr(data?.message || data?.error || "Checkout non riuscito.");
+        setErr(safeErrMsg(data?.message || data?.error || "Checkout non riuscito."));
         return;
       }
 
       const url = data?.url;
-      if (!url) {
+      if (!url || typeof url !== "string") {
         setErr("URL Stripe mancante.");
+        return;
+      }
+
+      // ✅ Anti open-redirect: blocca redirect verso URL non Stripe
+      if (!isStripeCheckoutUrl(url)) {
+        setErr("URL di pagamento non valido. Contattaci.");
         return;
       }
 
       window.location.href = url;
     } catch (e: any) {
-      setErr(e?.message ? String(e.message) : "Errore inatteso.");
+      setErr(safeErrMsg(e?.message || "Errore inatteso."));
     } finally {
       setBusy(false);
     }
@@ -173,7 +215,7 @@ export default function CheckoutIndirizzoPage() {
           <div>
             <h1 className="text-3xl font-extrabold text-text">Checkout</h1>
             <p className="mt-1 text-sm text-muted-text">
-              Inserisci l’indirizzo: calcoliamo spedizione e totale finali.
+              Inserisci l&apos;indirizzo: calcoliamo spedizione e totale finali.
             </p>
           </div>
           <ButtonLink href="/carrello">Torna al carrello</ButtonLink>
@@ -200,6 +242,7 @@ export default function CheckoutIndirizzoPage() {
                   onChange={(e) => setAddr((s) => ({ ...s, address: e.target.value }))}
                   placeholder="Via/Piazza e numero civico"
                   autoComplete="street-address"
+                  maxLength={ADDR_LIMITS.address}
                 />
               </label>
 
@@ -212,6 +255,7 @@ export default function CheckoutIndirizzoPage() {
                     onChange={(e) => setAddr((s) => ({ ...s, city: e.target.value }))}
                     placeholder="Città"
                     autoComplete="address-level2"
+                    maxLength={ADDR_LIMITS.city}
                   />
                 </label>
 
@@ -222,7 +266,7 @@ export default function CheckoutIndirizzoPage() {
                     value={addr.province}
                     onChange={(e) => setAddr((s) => ({ ...s, province: e.target.value }))}
                     placeholder="Es. CA oppure Cagliari"
-                    maxLength={24}
+                    maxLength={ADDR_LIMITS.province}
                     autoComplete="address-level1"
                   />
                 </label>
@@ -238,12 +282,19 @@ export default function CheckoutIndirizzoPage() {
                     placeholder="00000"
                     inputMode="numeric"
                     autoComplete="postal-code"
+                    maxLength={ADDR_LIMITS.postalCode}
                   />
                 </label>
 
                 <label className="block">
                   <div className="text-xs font-semibold text-muted-text">Paese</div>
-                  <input className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm" value="Italia" readOnly />
+                  <input
+                    className="mt-1 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+                    value="Italia"
+                    readOnly
+                    tabIndex={-1}
+                    aria-readonly="true"
+                  />
                 </label>
               </div>
 
@@ -251,7 +302,11 @@ export default function CheckoutIndirizzoPage() {
                 Consegna: <b>24/48h</b>.
               </div>
 
-              {err ? <div className="text-sm font-semibold text-red-600">{err}</div> : null}
+              {err ? (
+                <div role="alert" className="text-sm font-semibold text-red-600">
+                  {err}
+                </div>
+              ) : null}
 
               <div className="pt-2">
                 <Button className="w-full" onClick={goStripe} disabled={!canSubmit || busy}>

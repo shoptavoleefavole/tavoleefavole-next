@@ -267,23 +267,9 @@ function normalizeProduct(row: any, base: string) {
 async function fetchProductsByMacro(macroSlug: string) {
   const base = normalizedStrapiBaseUrl();
 
-  // ✅ ordine IMPORTANTISSIMO:
-  // 1) filtro corretto per il tuo modello dati: subcategory.category.slug == macroSlug
-  // 2) fallback vari (se in futuro colleghi prodotti direttamente alla category)
-
   const attempts: Array<{ label: string; build: () => URLSearchParams }> = [
     {
-      label: "subcategory.category.slug",
-      build: () => {
-        const qs = new URLSearchParams();
-        qs.set("populate", "*");
-        qs.set("pagination[pageSize]", String(PAGE_SIZE));
-        qs.set("sort[0]", "createdAt:desc");
-        qs.set("filters[subcategory][category][slug][$eq]", macroSlug);
-        return qs;
-      },
-    },
-    {
+      // ✅ PRIMO: filtro diretto category.slug (quello che funziona)
       label: "category.slug",
       build: () => {
         const qs = new URLSearchParams();
@@ -295,6 +281,19 @@ async function fetchProductsByMacro(macroSlug: string) {
       },
     },
     {
+      // SECONDO: subcategory → category (per prodotti collegati a sottocategoria)
+      label: "subcategory.category.slug",
+      build: () => {
+        const qs = new URLSearchParams();
+        qs.set("populate", "*");
+        qs.set("pagination[pageSize]", String(PAGE_SIZE));
+        qs.set("sort[0]", "createdAt:desc");
+        qs.set("filters[subcategory][category][slug][$eq]", macroSlug);
+        return qs;
+      },
+    },
+    {
+      // TERZO: categories (plurale, per compatibilità futura)
       label: "categories.slug",
       build: () => {
         const qs = new URLSearchParams();
@@ -307,23 +306,39 @@ async function fetchProductsByMacro(macroSlug: string) {
     },
   ];
 
+  const allItems: any[] = [];
+
   for (const attempt of attempts) {
     const qs = attempt.build();
     const r = await fetchStrapi(`/api/products?${qs.toString()}`);
 
-    // ✅ se è ValidationError (filtro/field non esiste), prova il prossimo tentativo
+    // ValidationError → campo non esiste in Strapi, salta
     const isValidation = r.status === 400 && r.json?.error?.name === "ValidationError";
     if (!r.ok && isValidation) continue;
 
-    // ✅ se è proprio errore (timeout/500/403 ecc) segnala unavailable
+    // Errore reale (timeout/500/403) → segnala unavailable
     if (!r.ok) return { kind: "unavailable" as const, items: [] as any[] };
 
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-    return { kind: "ok" as const, items: data.map((row) => normalizeProduct(row, base)) };
+
+    // ✅ FIX: se 0 risultati NON uscire subito, prova il tentativo successivo
+    if (data.length === 0) continue;
+
+    // ✅ Aggiungi i prodotti trovati (evita duplicati per documentId)
+    const existingIds = new Set(allItems.map((x) => x.documentId ?? x.id));
+    for (const row of data) {
+      const normalized = normalizeProduct(row, base);
+      if (!existingIds.has(normalized.documentId ?? normalized.id)) {
+        allItems.push(normalized);
+        existingIds.add(normalized.documentId ?? normalized.id);
+      }
+    }
+
+    // ✅ Se abbiamo trovato prodotti con questo tentativo, usciamo
+    if (allItems.length > 0) break;
   }
 
-  // nessun tentativo valido → nessun prodotto
-  return { kind: "ok" as const, items: [] as any[] };
+  return { kind: "ok" as const, items: allItems };
 }
 
 export default async function MacroPage({ params }: { params: Promise<{ macro: string }> }) {
