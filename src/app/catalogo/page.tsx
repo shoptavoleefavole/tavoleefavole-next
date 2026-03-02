@@ -187,11 +187,13 @@ async function fetchCategoryBySlug(slug: string) {
 
 function buildProductsQS(params: {
   categoria?: string;
+  categoryId?: number | null;
+  categoryDocumentId?: string | null;
   q?: string;
   page: number;
   pageSize: number;
   categoryFilterKey?: string;
-  categoryMode?: "rel" | "scalar";
+  categoryMode?: "rel" | "scalar" | "id" | "documentId";
 }) {
   const qs = new URLSearchParams();
   qs.set("populate", "*");
@@ -199,11 +201,15 @@ function buildProductsQS(params: {
   qs.set("pagination[page]", String(params.page));
   qs.set("pagination[pageSize]", String(params.pageSize));
 
-  if (params.categoria && params.categoryFilterKey) {
+  if (params.categoryFilterKey) {
     const key = params.categoryFilterKey;
-    if (params.categoryMode === "scalar") {
+    if (params.categoryMode === "id" && params.categoryId) {
+      qs.set(`filters[${key}][id][$eq]`, String(params.categoryId));
+    } else if (params.categoryMode === "documentId" && params.categoryDocumentId) {
+      qs.set(`filters[${key}][documentId][$eq]`, params.categoryDocumentId);
+    } else if (params.categoryMode === "scalar" && params.categoria) {
       qs.set(`filters[${key}][$eq]`, params.categoria);
-    } else {
+    } else if (params.categoryMode === "rel" && params.categoria) {
       qs.set(`filters[${key}][slug][$eq]`, params.categoria);
     }
   }
@@ -217,13 +223,16 @@ function buildProductsQS(params: {
   return qs;
 }
 
+
 async function fetchProductsOnce(params: {
   categoria?: string;
+  categoryId?: number | null;
+  categoryDocumentId?: string | null;
   q?: string;
   page: number;
   pageSize: number;
   categoryFilterKey?: string;
-  categoryMode?: "rel" | "scalar";
+  categoryMode?: "rel" | "scalar" | "id" | "documentId";
 }) {
   const qs = buildProductsQS(params);
   const url = `${STRAPI_URL}/api/products?${qs.toString()}`;
@@ -258,37 +267,84 @@ async function fetchProductsFromStrapi(params: {
   page: number;
   pageSize: number;
 }) {
-  if (!params.categoria) {
-    const r = await fetchProductsOnce({ ...params });
-    if (r.ok) return r;
-    return { ok: true as const, items: [], pagination: { page: 1, pageSize: params.pageSize, pageCount: 1, total: 0 } };
-  }
-
-  const attempts: Array<{ key: string; mode: "rel" | "scalar" }> = [
-    { key: "category", mode: "rel" },
-    { key: "categories", mode: "rel" },
-    { key: "categoria", mode: "rel" },
-    { key: "macro", mode: "rel" },
-    { key: "categorySlug", mode: "scalar" },
-    { key: "macroSlug", mode: "scalar" },
-  ];
-
-  for (const a of attempts) {
-    const r = await fetchProductsOnce({
-      ...params,
-      categoryFilterKey: a.key,
-      categoryMode: a.mode,
-    });
-    if (r.ok) return r;
-    if (!r.isValidation) break;
-  }
-
-  return {
+  const empty = {
     ok: true as const,
     items: [],
     pagination: { page: params.page, pageSize: params.pageSize, pageCount: 1, total: 0 },
   };
+
+  // Senza filtro categoria: fetch tutto
+  if (!params.categoria) {
+    const r = await fetchProductsOnce({ ...params });
+    if (r.ok) return r;
+    return empty;
+  }
+
+  // ✅ STEP 1: recupera la categoria da Strapi per ottenere id e documentId
+  const cat = await fetchCategoryBySlug(params.categoria);
+
+  // ✅ STEP 2: costruisce la lista tentativi in ordine di affidabilità
+  type Attempt = {
+    key: string;
+    mode: "id" | "documentId" | "rel" | "scalar";
+    categoryId?: number | null;
+    categoryDocumentId?: string | null;
+    categoria?: string;
+  };
+
+  const attempts: Attempt[] = [];
+
+  // Prima prova: filtra per ID numerico (più affidabile in Strapi v4/v5)
+  if (cat?.id) {
+    for (const key of ["category", "subcategory", "categoria", "macro"]) {
+      attempts.push({ key, mode: "id", categoryId: cat.id });
+    }
+  }
+
+  // Seconda prova: filtra per documentId (Strapi v5)
+  if (cat?.documentId) {
+    for (const key of ["category", "subcategory", "categoria", "macro"]) {
+      attempts.push({ key, mode: "documentId", categoryDocumentId: cat.documentId });
+    }
+  }
+
+  // Terza prova: filtra per slug annidato nella relazione
+  for (const key of ["category", "subcategory", "categories", "categoria", "macro"]) {
+    attempts.push({ key, mode: "rel", categoria: params.categoria });
+  }
+
+  // Quarta prova: filtra su campo scalare (categorySlug, macroSlug)
+  for (const key of ["categorySlug", "macroSlug", "macroAreaSlug"]) {
+    attempts.push({ key, mode: "scalar", categoria: params.categoria });
+  }
+
+  // ✅ STEP 3: prova ogni tentativo, si ferma solo se trova prodotti
+  for (const a of attempts) {
+    let r;
+    try {
+      r = await fetchProductsOnce({
+        ...params,
+        categoryFilterKey: a.key,
+        categoryMode: a.mode,
+        categoryId: a.categoryId ?? null,
+        categoryDocumentId: a.categoryDocumentId ?? null,
+        categoria: a.categoria ?? params.categoria,
+      });
+    } catch {
+      continue;
+    }
+
+    // ✅ FIX CHIAVE: continua se 0 risultati, non fermarti su HTTP 200 vuoto
+    if (r.ok && r.items.length > 0) return r;
+
+    // Errore non-validation: smetti di provare questa famiglia di chiavi
+    if (!r.ok && !r.isValidation) continue;
+  }
+
+  // Nessun tentativo ha trovato prodotti
+  return empty;
 }
+
 
 function buildCatalogHref(params: { categoria?: string; q?: string; page?: number }) {
   const sp = new URLSearchParams();
