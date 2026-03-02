@@ -1,31 +1,31 @@
-//src/app/api/auth/register/route.ts
-
+// src/app/api/auth/register/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REGISTER_VERSION = "2026-02-17-v5";
+const REGISTER_VERSION = "2026-03-02-v6";
 const BODY_LIMIT = 32 * 1024;
 
 function strapiBaseUrl() {
-  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
-
+  const raw =
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337";
   let base = raw.replace(/\/+$/, "");
-  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
-
+  const isLocal =
+    base.includes("localhost") ||
+    base.includes("127.0.0.1") ||
+    base.includes("0.0.0.0");
   if (process.env.NODE_ENV === "production" && !isLocal) {
     base = base.replace(/^http:\/\//i, "https://");
   }
   return base;
 }
 
+// ✅ SECURITY: token mai da NEXT_PUBLIC_ lato server
 const STRAPI_SERVICE_TOKEN =
-  process.env.STRAPI_API_TOKEN ||
-  process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
-  "";
+  process.env.STRAPI_API_TOKEN || process.env.STRAPI_TOKEN || "";
 
 const isDev = process.env.NODE_ENV === "development";
 
@@ -55,16 +55,13 @@ function normalizeEmail(v: any) {
 function isValidEmail(email: string) {
   if (!email || email.length > 254) return false;
   if (/\s/.test(email)) return false;
-
   const at = email.indexOf("@");
   if (at <= 0 || at !== email.lastIndexOf("@")) return false;
-
   const local = email.slice(0, at);
   const domain = email.slice(at + 1);
   if (!local || !domain) return false;
   if (domain.startsWith(".") || domain.endsWith(".")) return false;
   if (!domain.includes(".")) return false;
-
   return true;
 }
 
@@ -85,16 +82,22 @@ function sanitizeEmailMaybe(v: any) {
 }
 
 const GENERIC_RECOVERY_MSG =
-  "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l’accesso.";
-
-/* ------------------ Address (shipping + billing) ------------------ */
+  "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l'accesso.";
 
 type Address = {
   address: string;
   city: string;
   postalCode: string;
   province: string;
-  country: string; // IT
+  country: string;
+};
+
+// ✅ Campi aziendali tipizzati
+type CompanyFields = {
+  companyName: string;
+  vatNumber: string;
+  pec: string;
+  sdi: string;
 };
 
 function capOk(cap: string) {
@@ -107,9 +110,15 @@ function normAddress(input: any): Address {
   return {
     address: String(a.address ?? "").trim().slice(0, 120),
     city: String(a.city ?? "").trim().slice(0, 80),
-    postalCode: String(a.postalCode ?? "").trim().replace(/\s+/g, "").slice(0, 10),
+    postalCode: String(a.postalCode ?? "")
+      .trim()
+      .replace(/\s+/g, "")
+      .slice(0, 10),
     province: String(a.province ?? "").trim().slice(0, 24),
-    country: (String(a.country ?? "IT").trim().toUpperCase() || "IT").slice(0, 2),
+    country: (String(a.country ?? "IT").trim().toUpperCase() || "IT").slice(
+      0,
+      2
+    ),
   };
 }
 
@@ -121,8 +130,6 @@ function validateAddress(a: Address): string | null {
   if (!a.country || a.country.length < 2) return "COUNTRY_INVALID";
   return null;
 }
-
-/* ------------------ fetch helpers ------------------ */
 
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
@@ -140,13 +147,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      cache: "no-store",
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, ms: number, tries = 2) {
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  ms: number,
+  tries = 2
+) {
   let lastErr: any;
   for (let i = 0; i < tries; i++) {
     try {
@@ -160,60 +176,84 @@ async function fetchWithRetry(url: string, init: RequestInit, ms: number, tries 
   throw lastErr;
 }
 
-async function strapiPost(path: string, body: any, timeoutMs: number, token?: string) {
+async function strapiPost(
+  path: string,
+  body: any,
+  timeoutMs: number,
+  token?: string
+) {
   const base = strapiBaseUrl();
   const url = `${base}${path}`;
-
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetchWithRetry(url, { method: "POST", headers, body: JSON.stringify(body) }, timeoutMs, 2);
-
+  const res = await fetchWithRetry(
+    url,
+    { method: "POST", headers, body: JSON.stringify(body) },
+    timeoutMs,
+    2
+  );
   const text = await res.text().catch(() => "");
   const data = safeJsonParse(text);
   return { res, data, text, url };
 }
 
-async function strapiGet(pathWithQs: string, timeoutMs: number, token?: string) {
+async function strapiGet(
+  pathWithQs: string,
+  timeoutMs: number,
+  token?: string
+) {
   const base = strapiBaseUrl();
   const url = `${base}${pathWithQs}`;
-
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetchWithRetry(url, { method: "GET", headers }, timeoutMs, 2);
+  const res = await fetchWithRetry(
+    url,
+    { method: "GET", headers },
+    timeoutMs,
+    2
+  );
   const text = await res.text().catch(() => "");
   const data = safeJsonParse(text);
   return { res, data, text, url };
 }
 
-async function strapiPut(path: string, body: any, timeoutMs: number, token?: string) {
+async function strapiPut(
+  path: string,
+  body: any,
+  timeoutMs: number,
+  token?: string
+) {
   const base = strapiBaseUrl();
   const url = `${base}${path}`;
-
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetchWithRetry(url, { method: "PUT", headers, body: JSON.stringify(body) }, timeoutMs, 2);
+  const res = await fetchWithRetry(
+    url,
+    { method: "PUT", headers, body: JSON.stringify(body) },
+    timeoutMs,
+    2
+  );
   const text = await res.text().catch(() => "");
   const data = safeJsonParse(text);
   return { res, data, text, url };
 }
 
-function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
+function looksLikeAlreadyRegistered(
+  status: number,
+  strapiData: any,
+  strapiText: string
+) {
   if (!(status === 400 || status === 409)) return false;
-
   const msg =
     String(strapiData?.error?.message ?? "") ||
     String(strapiData?.message ?? "") ||
     String(strapiText ?? "");
-
   const m = msg.toLowerCase();
   return (
     m.includes("already taken") ||
@@ -225,14 +265,20 @@ function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText:
   );
 }
 
-function looksLikeUniqueViolation(status: number, strapiData: any, strapiText: string) {
+function looksLikeUniqueViolation(
+  status: number,
+  strapiData: any,
+  strapiText: string
+) {
   if (!(status === 400 || status === 409)) return false;
   const msg =
     String(strapiData?.error?.message ?? "") ||
     String(strapiData?.message ?? "") ||
     String(strapiText ?? "");
   const m = msg.toLowerCase();
-  return m.includes("unique") || m.includes("duplicate") || m.includes("already");
+  return (
+    m.includes("unique") || m.includes("duplicate") || m.includes("already")
+  );
 }
 
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
@@ -251,17 +297,11 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
   });
 }
 
-// mapping verso enum Strapi
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
   return type === "BUSINESS" ? "BUSINESS" : "PRIVATE";
 }
 
-/**
- * ✅ Upsert CustomerProfile:
- * - prova create
- * - se fallisce per unique/duplicate, trova profilo per userId e fai update
- * ✅ Ora include anche shippingAddress + billingAddress
- */
+// ✅ FIX: ora include anche i campi aziendali nel customer-profile
 async function ensureCustomerProfile(
   userId: number,
   firstName: string,
@@ -269,7 +309,8 @@ async function ensureCustomerProfile(
   type: "PERSON" | "BUSINESS",
   userJwt: string | undefined,
   shippingAddress: Address | null,
-  billingAddress: Address | null
+  billingAddress: Address | null,
+  company: CompanyFields | null  // ✅ NUOVO PARAMETRO
 ) {
   const TIMEOUT = 12_000;
 
@@ -280,31 +321,51 @@ async function ensureCustomerProfile(
     user: userId,
     ...(shippingAddress ? { shippingAddress } : {}),
     ...(billingAddress ? { billingAddress } : {}),
+    // ✅ FIX: salva i campi aziendali direttamente nel customer-profile
+    // così il profilo API li trova subito senza leggere /api/aziendes
+    ...(company?.companyName ? { companyName: company.companyName } : {}),
+    ...(company?.vatNumber ? { vatNumber: company.vatNumber } : {}),
+    ...(company?.pec ? { pec: company.pec } : {}),
+    ...(company?.sdi ? { sdi: company.sdi } : {}),
   };
 
   const tokenToUse = STRAPI_SERVICE_TOKEN || userJwt || "";
   if (!tokenToUse) return false;
 
-  // 1) prova CREATE
-  const create = await strapiPost("/api/customer-profiles", { data: patch }, TIMEOUT, tokenToUse);
-  console.warn("[register] ensureCustomerProfile create", { ok: create.res.ok, status: create.res.status });
+  // 1) Tenta CREATE
+  const create = await strapiPost(
+    "/api/customer-profiles",
+    { data: patch },
+    TIMEOUT,
+    tokenToUse
+  );
+
+  if (isDev) {
+    console.warn("[register] ensureCustomerProfile create", {
+      ok: create.res.ok,
+      status: create.res.status,
+    });
+  }
 
   if (create.res.ok) return true;
+  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text))
+    return false;
 
-  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text)) return false;
-
-  // 2) trova profilo esistente e fai UPDATE
+  // 2) Profilo già esistente → UPDATE
   const qs = new URLSearchParams();
   qs.set("pagination[pageSize]", "1");
   qs.set("filters[user][id][$eq]", String(userId));
   qs.set("publicationState", "preview");
-  const found = await strapiGet(`/api/customer-profiles?${qs.toString()}`, TIMEOUT, tokenToUse);
+
+  const found = await strapiGet(
+    `/api/customer-profiles?${qs.toString()}`,
+    TIMEOUT,
+    tokenToUse
+  );
 
   const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
   const docId = row?.documentId ? String(row.documentId) : null;
   const id = row?.id ? String(row.id) : null;
-
-  // ✅ preferisci ID numerico, poi documentId
   const key = id || docId;
   if (!key) return false;
 
@@ -315,17 +376,25 @@ async function ensureCustomerProfile(
     tokenToUse
   );
 
-  console.warn("[register] ensureCustomerProfile update", { ok: upd.res.ok, status: upd.res.status });
+  if (isDev) {
+    console.warn("[register] ensureCustomerProfile update", {
+      ok: upd.res.ok,
+      status: upd.res.status,
+    });
+  }
+
   return upd.res.ok;
 }
 
+// ✅ Mantenuto come best-effort per retrocompatibilità
+// ma ora non è più l'unico posto dove si salvano i dati aziendali
 async function createCompanyBestEffort(
   userId: number,
-  payload: { companyName: string; vatNumber: string; sdi: string; pec: string }
+  payload: CompanyFields
 ) {
   if (!STRAPI_SERVICE_TOKEN) return;
-
   const TIMEOUT = 10_000;
+
   const baseData = {
     companyName: payload.companyName || undefined,
     vatNumber: payload.vatNumber || undefined,
@@ -333,23 +402,24 @@ async function createCompanyBestEffort(
     pec: payload.pec || undefined,
   };
 
-  let r = await strapiPost(
-    "/api/aziendes",
-    { data: { ...baseData, users_permissions_users: [userId] } },
-    TIMEOUT,
-    STRAPI_SERVICE_TOKEN
-  );
-  if (r.res.ok) return;
+  // Prova le 3 varianti di relazione utente in Strapi
+  for (const userRef of [
+    { users_permissions_users: [userId] },
+    { user: userId },
+    { users: [userId] },
+  ]) {
+    const r = await strapiPost(
+      "/api/aziendes",
+      { data: { ...baseData, ...userRef } },
+      TIMEOUT,
+      STRAPI_SERVICE_TOKEN
+    );
+    if (r.res.ok) return;
+  }
 
-  r = await strapiPost(
-    "/api/aziendes",
-    { data: { ...baseData, user: userId } },
-    TIMEOUT,
-    STRAPI_SERVICE_TOKEN
-  );
-  if (r.res.ok) return;
-
-  await strapiPost("/api/aziendes", { data: { ...baseData, users: [userId] } }, TIMEOUT, STRAPI_SERVICE_TOKEN);
+  if (isDev) {
+    console.warn("[register] createCompanyBestEffort: tutti i tentativi falliti");
+  }
 }
 
 export async function GET() {
@@ -372,81 +442,119 @@ export async function POST(req: Request) {
     }
 
     const { raw, tooLarge } = await readBodyWithLimit(req);
-    if (tooLarge) return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
+    if (tooLarge)
+      return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
 
     const body = safeJsonParse(raw) ?? {};
 
     const type: "PERSON" | "BUSINESS" =
-      String(body?.type ?? "PERSON").toUpperCase() === "BUSINESS" ? "BUSINESS" : "PERSON";
+      String(body?.type ?? "PERSON").toUpperCase() === "BUSINESS"
+        ? "BUSINESS"
+        : "PERSON";
 
     const email = normalizeEmail(body?.email);
     const password = String(body?.password ?? "");
-
     const firstName = clampString(body?.firstName, 60);
     const lastName = clampString(body?.lastName, 60);
 
+    // ✅ Campi aziendali
     const companyName = clampString(body?.companyName, 140);
     const vatNumber = clampString(body?.vat ?? body?.vatNumber, 40);
-    const sdi = clampString(body?.sdi, 20);
+    const sdi = clampString(body?.sdi, 20).toUpperCase();
     const pec = sanitizeEmailMaybe(body?.pec);
 
-    if (!isValidEmail(email)) return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
-    if (!isStrongEnough(password)) return jsonNoStore({ ok: false, error: "WEAK_PASSWORD" }, 400);
+    if (!isValidEmail(email))
+      return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
+    if (!isStrongEnough(password))
+      return jsonNoStore({ ok: false, error: "WEAK_PASSWORD" }, 400);
+
     if (type === "BUSINESS") {
       if (!companyName || !vatNumber || !sdi || !pec) {
-        return jsonNoStore({ ok: false, error: "MISSING_COMPANY_FIELDS" }, 400);
+        return jsonNoStore(
+          { ok: false, error: "MISSING_COMPANY_FIELDS" },
+          400
+        );
       }
       if (!isValidEmail(pec)) {
         return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
       }
     }
 
-    // ✅ Shipping + Billing (obbligatori; billing può essere "uguale a shipping")
     const billingSameAsShipping = Boolean(body?.billingSameAsShipping);
-
     const shipIn = body?.shippingAddress;
     const billIn = body?.billingAddress;
 
-    if (!shipIn) return jsonNoStore({ ok: false, error: "SHIPPING_REQUIRED" }, 400);
+    if (!shipIn)
+      return jsonNoStore({ ok: false, error: "SHIPPING_REQUIRED" }, 400);
     const ship = normAddress(shipIn);
     const shipErr = validateAddress(ship);
-    if (shipErr) return jsonNoStore({ ok: false, error: `SHIPPING_${shipErr}` }, 400);
+    if (shipErr)
+      return jsonNoStore({ ok: false, error: `SHIPPING_${shipErr}` }, 400);
 
     let bill: Address | null = null;
     if (billingSameAsShipping) {
       bill = ship;
     } else {
-      if (!billIn) return jsonNoStore({ ok: false, error: "BILLING_REQUIRED" }, 400);
+      if (!billIn)
+        return jsonNoStore({ ok: false, error: "BILLING_REQUIRED" }, 400);
       bill = normAddress(billIn);
       const billErr = validateAddress(bill);
-      if (billErr) return jsonNoStore({ ok: false, error: `BILLING_${billErr}` }, 400);
+      if (billErr)
+        return jsonNoStore({ ok: false, error: `BILLING_${billErr}` }, 400);
     }
 
     const REG_TIMEOUT = 15_000;
     const FORGOT_TIMEOUT = 6_000;
 
-    const reg = await strapiPost("/api/auth/local/register", { email, password, username: email }, REG_TIMEOUT);
+    const reg = await strapiPost(
+      "/api/auth/local/register",
+      { email, password, username: email },
+      REG_TIMEOUT
+    );
 
     if (reg.res.ok) {
       const jwt = reg.data?.jwt as string | undefined;
       const userId = Number(reg.data?.user?.id ?? 0);
 
-      const response = jsonNoStore({ ok: true, loggedIn: Boolean(jwt), type }, 200);
+      const response = jsonNoStore(
+        { ok: true, loggedIn: Boolean(jwt), type },
+        200
+      );
       if (jwt) setAuthCookie(response, jwt);
 
       if (userId > 0) {
+        // ✅ FIX: passa i campi aziendali a ensureCustomerProfile
+        const company: CompanyFields | null =
+          type === "BUSINESS"
+            ? { companyName, vatNumber, pec, sdi }
+            : null;
+
         try {
-          const createdOrUpdated = await ensureCustomerProfile(userId, firstName, lastName, type, jwt, ship, bill);
-          console.warn("[register] ensureCustomerProfile result", { userId, createdOrUpdated });
-        } catch {
-          // noop
+          await ensureCustomerProfile(
+            userId,
+            firstName,
+            lastName,
+            type,
+            jwt,
+            ship,
+            bill,
+            company  // ✅ ora salvato in customer-profiles
+          );
+        } catch (e) {
+          if (isDev) console.warn("[register] ensureCustomerProfile error:", e);
         }
 
+        // Mantieni anche aziendes per retrocompatibilità
         if (type === "BUSINESS") {
           try {
-            await createCompanyBestEffort(userId, { companyName, vatNumber, sdi, pec });
+            await createCompanyBestEffort(userId, {
+              companyName,
+              vatNumber,
+              pec,
+              sdi,
+            });
           } catch {
-            // noop
+            // best-effort, non blocca la registrazione
           }
         }
       }
@@ -456,21 +564,36 @@ export async function POST(req: Request) {
 
     if (looksLikeAlreadyRegistered(reg.res.status, reg.data, reg.text)) {
       try {
-        await strapiPost("/api/auth/forgot-password", { email }, FORGOT_TIMEOUT);
+        await strapiPost(
+          "/api/auth/forgot-password",
+          { email },
+          FORGOT_TIMEOUT
+        );
       } catch {
         // noop
       }
-      return jsonNoStore({ ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG }, 200);
+      return jsonNoStore(
+        { ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG },
+        200
+      );
     }
 
     return jsonNoStore(
-      { ok: false, error: "REGISTER_FAILED", ...(isDev ? { debug: { status: reg.res.status } } : {}) },
+      {
+        ok: false,
+        error: "REGISTER_FAILED",
+        ...(isDev ? { debug: { status: reg.res.status } } : {}),
+      },
       502
     );
   } catch (e: any) {
     if (isRetryableFetchError(e)) {
       return jsonNoStore(
-        { ok: false, error: "UPSTREAM_TIMEOUT", message: "Servizio temporaneamente non disponibile. Riprova." },
+        {
+          ok: false,
+          error: "UPSTREAM_TIMEOUT",
+          message: "Servizio temporaneamente non disponibile. Riprova.",
+        },
         504
       );
     }

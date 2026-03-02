@@ -307,7 +307,6 @@ export default async function ProductPage({
   if (!slug) return notFound();
 
   const bySlug = (await getProductBySlug(slug)) as any as ProductLike | null;
-  console.log("[ProductPage] slug:", slug, "STRAPI_URL:", STRAPI_URL, "found:", Boolean(bySlug));
 
   if (!bySlug) {
     const byId = (await getProductById(slug)) as any as ProductLike | null;

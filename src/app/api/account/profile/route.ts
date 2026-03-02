@@ -5,30 +5,35 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const BODY_LIMIT = 32 * 1024;
+const isDev = process.env.NODE_ENV === "development";
 
 function strapiBaseUrl() {
-  const raw = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337";
+  const raw =
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337";
   let base = raw.replace(/\/+$/, "");
-  const isLocal = base.includes("localhost") || base.includes("127.0.0.1") || base.includes("0.0.0.0");
-  if (process.env.NODE_ENV === "production" && !isLocal) base = base.replace(/^http:\/\//i, "https://");
+  const isLocal =
+    base.includes("localhost") ||
+    base.includes("127.0.0.1") ||
+    base.includes("0.0.0.0");
+  if (process.env.NODE_ENV === "production" && !isLocal)
+    base = base.replace(/^http:\/\//i, "https://");
   return base;
 }
 
+// ✅ SECURITY: mai NEXT_PUBLIC_ per token server-side
 const STRAPI_SERVICE_TOKEN =
-  process.env.STRAPI_API_TOKEN ||
-  process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
-  "";
+  process.env.STRAPI_API_TOKEN || process.env.STRAPI_TOKEN || "";
 
-function jsonNoStore(data: any, status = 200, extraHeaders?: Record<string, string>) {
+function jsonNoStore(
+  data: any,
+  status = 200,
+  extraHeaders?: Record<string, string>
+) {
   return NextResponse.json(data, {
     status,
-    headers: {
-      "Cache-Control": "no-store",
-      Vary: "Cookie",
-      ...(extraHeaders || {}),
-    },
+    headers: { "Cache-Control": "no-store", Vary: "Cookie", ...(extraHeaders || {}) },
   });
 }
 
@@ -42,24 +47,41 @@ function safeJsonParse(text: string) {
 
 function sanitize(input: unknown, maxLen = 160) {
   const raw = String(input ?? "");
-  const cleaned = raw.replace(/[\u0000-\u001F\u007F]/g, "").replace(/\s+/g, " ").trim();
+  const cleaned = raw
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return "";
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
 }
 
+function sanitizeEmail(v: unknown): string {
+  const e = String(v ?? "").trim().toLowerCase();
+  if (!e || e.length > 254) return "";
+  if (/\s/.test(e)) return "";
+  const at = e.indexOf("@");
+  if (at <= 0 || at !== e.lastIndexOf("@")) return "";
+  const domain = e.slice(at + 1);
+  if (!domain || !domain.includes(".")) return "";
+  if (domain.startsWith(".") || domain.endsWith(".")) return "";
+  return e;
+}
+
 function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
-  return String(v ?? "").toUpperCase().trim() === "BUSINESS" ? "BUSINESS" : "PRIVATE";
+  return String(v ?? "").toUpperCase().trim() === "BUSINESS"
+    ? "BUSINESS"
+    : "PRIVATE";
 }
 
 type Address = {
-  address?: string;
-  city?: string;
-  postalCode?: string;
-  province?: string;
-  country?: string;
+  address: string;
+  city: string;
+  postalCode: string;
+  province: string;
+  country: string;
 };
 
-function normalizeAddress(a: any): Required<Address> {
+function normalizeAddress(a: any): Address {
   return {
     address: sanitize(a?.address, 160),
     city: sanitize(a?.city, 80),
@@ -69,19 +91,24 @@ function normalizeAddress(a: any): Required<Address> {
   };
 }
 
-function addressHasAny(a: Required<Address>) {
-  const core = [a.address, a.city, a.postalCode, a.province].some((x) => String(x || "").trim().length > 0);
+function addressHasAny(a: Address) {
+  const core = [a.address, a.city, a.postalCode, a.province].some(
+    (x) => String(x || "").trim().length > 0
+  );
   const country = String(a.country || "").trim().toUpperCase();
-  const countryMeaningful = country && country !== "IT";
-  return core || countryMeaningful;
+  return core || (Boolean(country) && country !== "IT");
 }
 
-function validateAddressIfAny(a: Required<Address>) {
+function validateAddressIfAny(a: Address) {
   if (!addressHasAny(a)) return { ok: true as const, msg: "" };
-  if (a.address.trim().length < 2) return { ok: false as const, msg: "Indirizzo non valido." };
-  if (a.city.trim().length < 2) return { ok: false as const, msg: "Città non valida." };
-  if (a.postalCode.trim().length < 3) return { ok: false as const, msg: "CAP non valido." };
-  if (a.country.trim().length !== 2) return { ok: false as const, msg: "Paese non valido (usa 2 lettere, es. IT)." };
+  if (a.address.trim().length < 2)
+    return { ok: false as const, msg: "Indirizzo non valido." };
+  if (a.city.trim().length < 2)
+    return { ok: false as const, msg: "Città non valida." };
+  if (a.postalCode.trim().length < 3)
+    return { ok: false as const, msg: "CAP non valido." };
+  if (a.country.trim().length !== 2)
+    return { ok: false as const, msg: "Paese non valido (usa 2 lettere, es. IT)." };
   return { ok: true as const, msg: "" };
 }
 
@@ -100,7 +127,11 @@ function getCookieValue(cookieHeader: string, name: string) {
 
 function getJwtFromReq(req: Request) {
   const cookieHeader = req.headers.get("cookie") || "";
-  return getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken") || "";
+  return (
+    getCookieValue(cookieHeader, "tf_token") ||
+    getCookieValue(cookieHeader, "jwtToken") ||
+    ""
+  );
 }
 
 function isRetryableFetchError(e: any) {
@@ -119,13 +150,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    return await fetch(url, {
+      ...init,
+      cache: "no-store",
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(t);
   }
 }
 
-async function fetchWithRetry(url: string, init: RequestInit, ms: number, tries = 2) {
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  ms: number,
+  tries = 2
+) {
   let lastErr: any;
   for (let i = 0; i < tries; i++) {
     try {
@@ -150,7 +190,10 @@ async function getUserFromJwt(base: string, jwt: string) {
     `${base}/api/users/me`,
     {
       method: "GET",
-      headers: { Accept: "application/json", Authorization: `Bearer ${jwt}` },
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
     },
     12_000
   );
@@ -158,11 +201,9 @@ async function getUserFromJwt(base: string, jwt: string) {
   return {
     id: Number(me.json.id),
     email: String(me.json.email ?? ""),
-    username: String(me.json.username ?? ""),
   };
 }
 
-/** v4: row.attributes, v5: flat */
 function extractAttrs(row: any) {
   if (!row || typeof row !== "object") return {};
   if (row.attributes && typeof row.attributes === "object") return row.attributes;
@@ -173,7 +214,12 @@ function extractAttrs(row: any) {
 }
 
 function pickKey(row: any): { id: string | null; documentId: string | null } {
-  const id = typeof row?.id === "number" ? String(row.id) : typeof row?.id === "string" ? row.id : null;
+  const id =
+    typeof row?.id === "number"
+      ? String(row.id)
+      : typeof row?.id === "string"
+      ? row.id
+      : null;
   const doc =
     typeof row?.documentId === "string"
       ? row.documentId
@@ -184,10 +230,17 @@ function pickKey(row: any): { id: string | null; documentId: string | null } {
 }
 
 async function findCustomerProfile(base: string, userId: number) {
-  const headers = { Accept: "application/json", Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}` };
+  const headers = {
+    Accept: "application/json",
+    Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
+  };
 
   async function tryQuery(qs: URLSearchParams) {
-    const r = await fetchJson(`${base}/api/customer-profiles?${qs.toString()}`, { method: "GET", headers }, 12_000);
+    const r = await fetchJson(
+      `${base}/api/customer-profiles?${qs.toString()}`,
+      { method: "GET", headers },
+      12_000
+    );
     const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
     if (!row) return null;
     const { id, documentId } = pickKey(row);
@@ -195,32 +248,32 @@ async function findCustomerProfile(base: string, userId: number) {
     return { row, id, documentId, attrs: extractAttrs(row) };
   }
 
-  const qs1 = new URLSearchParams();
-  qs1.set("populate", "*");
-  qs1.set("pagination[pageSize]", "1");
-  qs1.set("filters[user][id][$eq]", String(userId));
+  // ✅ FIX: costruisci URLSearchParams esplicitamente
+  // senza spread di oggetti con tipi opzionali (causa ts(2345))
+  function makeQs(filterKey: string, withPreview: boolean): URLSearchParams {
+    const qs = new URLSearchParams();
+    qs.set("populate", "*");
+    qs.set("pagination[pageSize]", "1");
+    qs.set(filterKey, String(userId));
+    if (withPreview) qs.set("publicationState", "preview");
+    return qs;
+  }
 
-  let found = await tryQuery(qs1);
-  if (found) return found;
+  // Tentativo 1: relazione user standard (con e senza preview)
+  for (const preview of [false, true]) {
+    const found = await tryQuery(
+      makeQs("filters[user][id][$eq]", preview)
+    );
+    if (found) return found;
+  }
 
-  const qs1b = new URLSearchParams(qs1);
-  qs1b.set("publicationState", "preview");
-  found = await tryQuery(qs1b);
-  if (found) return found;
-
-  // fallback legacy relations
-  const qs2 = new URLSearchParams();
-  qs2.set("populate", "*");
-  qs2.set("pagination[pageSize]", "1");
-  qs2.set("filters[users_permissions_user][id][$eq]", String(userId));
-
-  found = await tryQuery(qs2);
-  if (found) return found;
-
-  const qs2b = new URLSearchParams(qs2);
-  qs2b.set("publicationState", "preview");
-  found = await tryQuery(qs2b);
-  if (found) return found;
+  // Tentativo 2: relazione legacy users_permissions_user (con e senza preview)
+  for (const preview of [false, true]) {
+    const found = await tryQuery(
+      makeQs("filters[users_permissions_user][id][$eq]", preview)
+    );
+    if (found) return found;
+  }
 
   return null;
 }
@@ -231,21 +284,22 @@ async function createCustomerProfile(base: string, userId: number, data: any) {
     Accept: "application/json",
     Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
   };
-
-  const payload = { data: { ...data, user: userId } };
-
-  // compat Draft&Publish (se esiste)
-  if (!("publishedAt" in (data || {}))) {
-    (payload.data as any).publishedAt = new Date().toISOString();
-  }
-
-  const c = await fetchJson(`${base}/api/customer-profiles`, { method: "POST", headers, body: JSON.stringify(payload) }, 12_000);
+  const payload = {
+    data: {
+      ...data,
+      user: userId,
+      publishedAt: new Date().toISOString(),
+    },
+  };
+  const c = await fetchJson(
+    `${base}/api/customer-profiles`,
+    { method: "POST", headers, body: JSON.stringify(payload) },
+    12_000
+  );
   const row = c.json?.data ?? null;
   if (!c.res.ok || !row) return null;
-
   const { id, documentId } = pickKey(row);
   if (!id && !documentId) return null;
-
   return { row, id, documentId, attrs: extractAttrs(row) };
 }
 
@@ -255,26 +309,64 @@ async function updateCustomerProfile(base: string, key: string, patch: any) {
     Accept: "application/json",
     Authorization: `Bearer ${STRAPI_SERVICE_TOKEN}`,
   };
-
   const urls = [
     `${base}/api/customer-profiles/${encodeURIComponent(key)}`,
     `${base}/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
   ];
-
   let last: any = null;
   for (const url of urls) {
-    const r = await fetchJson(url, { method: "PUT", headers, body: JSON.stringify({ data: patch }) }, 12_000);
+    const r = await fetchJson(
+      url,
+      { method: "PUT", headers, body: JSON.stringify({ data: patch }) },
+      12_000
+    );
     last = r;
     if (r.res.ok) return r;
   }
   return last;
 }
 
+// ✅ Costruisce la risposta profilo in modo uniforme (usato da GET, PUT, CREATE)
+function buildProfileResponse(
+  attrs: any,
+  email: string,
+  fallback: {
+    firstName?: string;
+    lastName?: string;
+    companyName?: string;
+    vatNumber?: string;
+    pec?: string;
+    sdi?: string;
+    shippingAddress?: Address | null;
+    billingAddress?: Address | null;
+    customerType?: string;
+  } = {}
+) {
+  const ct = normalizeCustomerType(attrs.customerType ?? fallback.customerType);
+  return {
+    ok: true,
+    exists: true,
+    email,
+    customerType: ct,
+    firstName: String(attrs.firstName ?? fallback.firstName ?? ""),
+    lastName: String(attrs.lastName ?? fallback.lastName ?? ""),
+    // ✅ FIX: campi aziendali ora inclusi nella risposta
+    companyName: String(attrs.companyName ?? fallback.companyName ?? ""),
+    vatNumber: String(attrs.vatNumber ?? fallback.vatNumber ?? ""),
+    pec: String(attrs.pec ?? fallback.pec ?? ""),
+    sdi: String(attrs.sdi ?? fallback.sdi ?? ""),
+    shippingAddress:
+      attrs.shippingAddress ?? fallback.shippingAddress ?? null,
+    billingAddress:
+      attrs.billingAddress ?? fallback.billingAddress ?? null,
+  };
+}
+
 export async function GET(req: Request) {
   const jwt = getJwtFromReq(req);
   if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
-
-  if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
+  if (!STRAPI_SERVICE_TOKEN)
+    return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
   const base = strapiBaseUrl();
   const me = await getUserFromJwt(base, jwt);
@@ -282,6 +374,7 @@ export async function GET(req: Request) {
 
   const profile = await findCustomerProfile(base, me.id);
 
+  // Profilo non ancora creato → ritorna shell vuota
   if (!profile) {
     return jsonNoStore(
       {
@@ -291,6 +384,10 @@ export async function GET(req: Request) {
         customerType: "PRIVATE",
         firstName: "",
         lastName: "",
+        companyName: "",
+        vatNumber: "",
+        pec: "",
+        sdi: "",
         shippingAddress: null,
         billingAddress: null,
       },
@@ -298,40 +395,31 @@ export async function GET(req: Request) {
     );
   }
 
-  const attrs = profile.attrs || {};
-  return jsonNoStore(
-    {
-      ok: true,
-      exists: true,
-      email: me.email,
-      customerType: normalizeCustomerType(attrs.customerType),
-      firstName: String(attrs.firstName ?? ""),
-      lastName: String(attrs.lastName ?? ""),
-      shippingAddress: attrs.shippingAddress ?? null,
-      billingAddress: attrs.billingAddress ?? null,
-    },
-    200
-  );
+  // ✅ FIX: restituisce anche i campi aziendali
+  return jsonNoStore(buildProfileResponse(profile.attrs, me.email), 200);
 }
 
 export async function PUT(req: Request) {
   const jwt = getJwtFromReq(req);
   if (!jwt) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
-
-  if (!STRAPI_SERVICE_TOKEN) return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
+  if (!STRAPI_SERVICE_TOKEN)
+    return jsonNoStore({ ok: false, error: "SERVER_MISCONFIG" }, 500);
 
   const base = strapiBaseUrl();
   const me = await getUserFromJwt(base, jwt);
   if (!me) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
 
   const ct = req.headers.get("content-type") || "";
-  if (!ct.includes("application/json")) return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
+  if (!ct.includes("application/json"))
+    return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
 
   const { raw, tooLarge } = await readBodyWithLimit(req);
-  if (tooLarge) return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
+  if (tooLarge)
+    return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
 
   const body = safeJsonParse(raw) ?? {};
 
+  // Campi account base
   const firstName = sanitize(body?.firstName, 60);
   const lastName = sanitize(body?.lastName, 60);
 
@@ -339,47 +427,73 @@ export async function PUT(req: Request) {
     return jsonNoStore({ ok: false, error: "INVALID_NAME" }, 400);
   }
 
-  const shipping = body?.shippingAddress ? normalizeAddress(body.shippingAddress) : normalizeAddress(null);
-  const billing = body?.billingAddress ? normalizeAddress(body.billingAddress) : normalizeAddress(null);
+  // Indirizzi
+  const shipping = body?.shippingAddress
+    ? normalizeAddress(body.shippingAddress)
+    : normalizeAddress(null);
+  const billing = body?.billingAddress
+    ? normalizeAddress(body.billingAddress)
+    : normalizeAddress(null);
 
   const shipVal = validateAddressIfAny(shipping);
-  if (!shipVal.ok) return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
+  if (!shipVal.ok)
+    return jsonNoStore({ ok: false, error: "INVALID_SHIPPING", message: shipVal.msg }, 400);
 
   const billVal = validateAddressIfAny(billing);
-  if (!billVal.ok) return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
+  if (!billVal.ok)
+    return jsonNoStore({ ok: false, error: "INVALID_BILLING", message: billVal.msg }, 400);
 
+  // Profilo corrente per ricavare il customerType (non modificabile lato client)
   const profile = await findCustomerProfile(base, me.id);
+  const existingType = normalizeCustomerType(profile?.attrs?.customerType);
 
+  // ✅ FIX: campi aziendali accettati e validati se BUSINESS
+  const companyName = sanitize(body?.companyName, 140);
+  const vatNumber = sanitize(body?.vatNumber, 40);
+  const pecRaw = sanitizeEmail(body?.pec);
+  const sdi = sanitize(body?.sdi, 20).toUpperCase();
+
+  if (existingType === "BUSINESS") {
+    if (!companyName || companyName.length < 2)
+      return jsonNoStore({ ok: false, error: "INVALID_COMPANY_NAME" }, 400);
+    if (!vatNumber || vatNumber.length < 5)
+      return jsonNoStore({ ok: false, error: "INVALID_VAT_NUMBER" }, 400);
+    if (!pecRaw)
+      return jsonNoStore({ ok: false, error: "INVALID_PEC" }, 400);
+    if (!sdi || sdi.length < 3)
+      return jsonNoStore({ ok: false, error: "INVALID_SDI" }, 400);
+  }
+
+  // ✅ FIX: patch include i campi aziendali
   const patch: any = {
     firstName,
     lastName,
-    customerType: profile?.attrs?.customerType ? normalizeCustomerType(profile.attrs.customerType) : "PRIVATE",
+    customerType: existingType,
     shippingAddress: addressHasAny(shipping) ? shipping : null,
     billingAddress: addressHasAny(billing) ? billing : null,
+    ...(existingType === "BUSINESS"
+      ? {
+          companyName,
+          vatNumber,
+          pec: pecRaw,
+          sdi,
+        }
+      : {}),
   };
 
-  // CREATE
+  // CREATE (primo salvataggio profilo)
   if (!profile) {
     const created = await createCustomerProfile(base, me.id, patch);
-    if (!created) return jsonNoStore({ ok: false, error: "CREATE_FAILED" }, 502);
+    if (!created)
+      return jsonNoStore({ ok: false, error: "CREATE_FAILED" }, 502);
 
-    const attrs = created.attrs || {};
     return jsonNoStore(
-      {
-        ok: true,
-        exists: true,
-        email: me.email,
-        customerType: normalizeCustomerType(attrs.customerType ?? patch.customerType),
-        firstName: String(attrs.firstName ?? firstName),
-        lastName: String(attrs.lastName ?? lastName),
-        shippingAddress: attrs.shippingAddress ?? patch.shippingAddress ?? null,
-        billingAddress: attrs.billingAddress ?? patch.billingAddress ?? null,
-      },
+      buildProfileResponse(created.attrs, me.email, patch),
       200
     );
   }
 
-  // UPDATE: prima id, poi documentId
+  // UPDATE — prova prima id numerico, poi documentId
   const keysToTry = [profile.id, profile.documentId].filter(Boolean) as string[];
 
   let lastFail: any = null;
@@ -387,25 +501,15 @@ export async function PUT(req: Request) {
     const upd = await updateCustomerProfile(base, key, patch);
     if (upd?.res?.ok) {
       const row = upd.json?.data ?? null;
-      const attrs = extractAttrs(row);
+      const attrs = row ? extractAttrs(row) : patch;
       return jsonNoStore(
-        {
-          ok: true,
-          exists: true,
-          email: me.email,
-          customerType: normalizeCustomerType(attrs.customerType ?? patch.customerType),
-          firstName: String(attrs.firstName ?? firstName),
-          lastName: String(attrs.lastName ?? lastName),
-          shippingAddress: attrs.shippingAddress ?? patch.shippingAddress ?? null,
-          billingAddress: attrs.billingAddress ?? patch.billingAddress ?? null,
-        },
+        buildProfileResponse(attrs, me.email, patch),
         200
       );
     }
     lastFail = upd;
   }
 
-  const isDev = process.env.NODE_ENV !== "production";
   return jsonNoStore(
     {
       ok: false,

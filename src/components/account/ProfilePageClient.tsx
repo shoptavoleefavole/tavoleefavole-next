@@ -1,3 +1,4 @@
+// src/components/account/ProfilePageClient.tsx
 "use client";
 
 import type { FormEvent } from "react";
@@ -12,6 +13,7 @@ type Address = {
   country: string;
 };
 
+// ✅ FIX: aggiunto tutti i campi aziendali al tipo
 type ProfilePayload = {
   ok: boolean;
   exists?: boolean;
@@ -19,6 +21,12 @@ type ProfilePayload = {
   customerType?: "PRIVATE" | "BUSINESS";
   firstName?: string | null;
   lastName?: string | null;
+  // ✅ Campi aziendali
+  companyName?: string | null;
+  vatNumber?: string | null;
+  pec?: string | null;
+  sdi?: string | null;
+  // Indirizzi
   shippingAddress?: Address | null;
   billingAddress?: Address | null;
   error?: string;
@@ -64,20 +72,28 @@ function isEmptyAddress(a: Address) {
     (x) => String(x ?? "").trim().length > 0
   );
   const country = String(a.country ?? "").trim().toUpperCase();
-  const countryIsDefaultOrEmpty = !country || country === "IT";
-  return coreEmpty && countryIsDefaultOrEmpty;
+  return coreEmpty && (!country || country === "IT");
 }
 
 function validateAddress(a: Address) {
   if (isEmptyAddress(a)) return { ok: true, msg: "" };
-
   if (a.address.trim().length < 2) return { ok: false, msg: "Indirizzo non valido." };
   if (a.city.trim().length < 2) return { ok: false, msg: "Città non valida." };
   if (a.postalCode.trim().length < 3) return { ok: false, msg: "CAP non valido." };
   if (toCountry2(a.country).trim().length !== 2)
     return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
-
   return { ok: true, msg: "" };
+}
+
+// ✅ Validazione PEC
+function isValidEmail(v: string) {
+  const e = v.trim().toLowerCase();
+  if (!e || e.length > 254) return false;
+  if (/\s/.test(e)) return false;
+  const at = e.indexOf("@");
+  if (at <= 0 || at !== e.lastIndexOf("@")) return false;
+  const domain = e.slice(at + 1);
+  return Boolean(domain && domain.includes(".") && !domain.startsWith(".") && !domain.endsWith("."));
 }
 
 function firstToken(full: string) {
@@ -91,16 +107,58 @@ function preferNonEmpty(current: string, incoming: unknown): string {
   return next ? next : current;
 }
 
-function applyAddressFromServer(current: Address, incoming: Address | null | undefined): Address {
+function applyAddressFromServer(
+  current: Address,
+  incoming: Address | null | undefined
+): Address {
   if (incoming === undefined) return current;
   if (incoming === null) return { ...EMPTY_ADDRESS };
-
   const inc = normalizeAddress(incoming);
   const incN: Address = { ...inc, country: toCountry2(inc.country || "IT") };
-
   if (isEmptyAddress(incN)) return { ...EMPTY_ADDRESS };
-
   return incN;
+}
+
+// ✅ Sezione campo riutilizzabile
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+  readOnly = false,
+  disabled = false,
+  autoComplete,
+  inputMode,
+  maxLength,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange?: (v: string) => void;
+  type?: string;
+  readOnly?: boolean;
+  disabled?: boolean;
+  autoComplete?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  maxLength?: number;
+  className?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-sm font-medium">{label}</label>
+      <input
+        className={`mt-1 w-full rounded-md border p-3 ${readOnly || disabled ? "bg-surface text-text/60" : ""} ${className}`}
+        value={value}
+        onChange={onChange ? (e) => onChange(e.target.value) : undefined}
+        type={type}
+        readOnly={readOnly}
+        disabled={disabled}
+        autoComplete={autoComplete}
+        inputMode={inputMode}
+        maxLength={maxLength}
+      />
+    </div>
+  );
 }
 
 export default function ProfilePageClient() {
@@ -110,12 +168,19 @@ export default function ProfilePageClient() {
   const [email, setEmail] = useState("");
   const [customerType, setCustomerType] = useState<"PRIVATE" | "BUSINESS">("PRIVATE");
 
+  // Dati account
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
+  // ✅ FIX: stato per i campi aziendali
+  const [companyName, setCompanyName] = useState("");
+  const [vatNumber, setVatNumber] = useState("");
+  const [pec, setPec] = useState("");
+  const [sdi, setSdi] = useState("");
+
+  // Indirizzi
   const [shippingAddress, setShippingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
   const [billingAddress, setBillingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
-
   const [sameAsShipping, setSameAsShipping] = useState(false);
 
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -127,19 +192,44 @@ export default function ProfilePageClient() {
 
   useEffect(() => {
     aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
+    return () => { aliveRef.current = false; };
   }, []);
 
   const nameOk = useMemo(
     () => firstName.trim().length >= 2 && lastName.trim().length >= 2,
     [firstName, lastName]
   );
+
+  // ✅ Validazioni aziendali (solo per BUSINESS)
+  const companyOk = useMemo(
+    () => customerType !== "BUSINESS" || companyName.trim().length >= 2,
+    [customerType, companyName]
+  );
+  const vatOk = useMemo(
+    () => customerType !== "BUSINESS" || vatNumber.trim().length >= 5,
+    [customerType, vatNumber]
+  );
+  const pecOk = useMemo(
+    () => customerType !== "BUSINESS" || isValidEmail(pec),
+    [customerType, pec]
+  );
+  const sdiOk = useMemo(
+    () => customerType !== "BUSINESS" || sdi.trim().length >= 3,
+    [customerType, sdi]
+  );
+
   const shipVal = useMemo(() => validateAddress(shippingAddress), [shippingAddress]);
   const billVal = useMemo(() => validateAddress(billingAddress), [billingAddress]);
 
-  const canSave = nameOk && shipVal.ok && billVal.ok && !saving;
+  const canSave =
+    nameOk &&
+    companyOk &&
+    vatOk &&
+    pecOk &&
+    sdiOk &&
+    shipVal.ok &&
+    billVal.ok &&
+    !saving;
 
   useEffect(() => {
     if (!didLoadRef.current) return;
@@ -147,12 +237,18 @@ export default function ProfilePageClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shippingAddress, sameAsShipping]);
 
+  // ✅ FIX: applyProfile ora gestisce anche i campi aziendali
   const applyProfileNonDestructive = useCallback((data: ProfilePayload) => {
     setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
     setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
-
     setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
     setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
+
+    // ✅ Campi aziendali
+    setCompanyName((cur) => preferNonEmpty(cur, data.companyName ?? ""));
+    setVatNumber((cur) => preferNonEmpty(cur, data.vatNumber ?? ""));
+    setPec((cur) => preferNonEmpty(cur, data.pec ?? ""));
+    setSdi((cur) => preferNonEmpty(cur, data.sdi ?? ""));
 
     setShippingAddress((cur) => applyAddressFromServer(cur, data.shippingAddress));
     setBillingAddress((cur) => applyAddressFromServer(cur, data.billingAddress));
@@ -160,14 +256,12 @@ export default function ProfilePageClient() {
     if (data.shippingAddress !== undefined && data.billingAddress !== undefined) {
       const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
       const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
-
       const same =
         (ship === null && bill === null) ||
         (ship !== null &&
           bill !== null &&
           JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
             JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
-
       setSameAsShipping(Boolean(same));
     }
   }, []);
@@ -180,22 +274,20 @@ export default function ProfilePageClient() {
         credentials: "include",
         headers: { Accept: "application/json" },
       });
-
       const data = (await res.json().catch(() => null)) as ProfilePayload | null;
       if (!aliveRef.current) return;
-
       if (!res.ok) {
         if (res.status === 401) window.location.href = LOGIN_REDIRECT;
         return;
       }
       if (!data?.ok) return;
-
       applyProfileNonDestructive(data);
     } catch {
       // best-effort
     }
   }, [applyProfileNonDestructive]);
 
+  // Caricamento iniziale
   useEffect(() => {
     let canceled = false;
 
@@ -228,24 +320,27 @@ export default function ProfilePageClient() {
           return;
         }
 
+        // ✅ FIX: carica tutti i campi inclusi quelli aziendali
         setEmail(String(data.email ?? ""));
         setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
         setFirstName(String(data.firstName ?? ""));
         setLastName(String(data.lastName ?? ""));
+        setCompanyName(String(data.companyName ?? ""));
+        setVatNumber(String(data.vatNumber ?? ""));
+        setPec(String(data.pec ?? ""));
+        setSdi(String(data.sdi ?? ""));
 
         setShippingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.shippingAddress));
         setBillingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.billingAddress));
 
         const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
         const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
-
         const same =
           (ship === null && bill === null) ||
           (ship !== null &&
             bill !== null &&
             JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
               JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
-
         setSameAsShipping(Boolean(same));
       } catch {
         if (canceled || !aliveRef.current) return;
@@ -257,9 +352,7 @@ export default function ProfilePageClient() {
       }
     })();
 
-    return () => {
-      canceled = true;
-    };
+    return () => { canceled = true; };
   }, []);
 
   async function onSave(e: FormEvent) {
@@ -270,6 +363,10 @@ export default function ProfilePageClient() {
 
     if (!canSave) {
       if (!nameOk) setErrorMsg("Inserisci nome e cognome (minimo 2 caratteri).");
+      else if (!companyOk) setErrorMsg("Inserisci la ragione sociale.");
+      else if (!vatOk) setErrorMsg("Inserisci la Partita IVA.");
+      else if (!pecOk) setErrorMsg("Inserisci una PEC valida.");
+      else if (!sdiOk) setErrorMsg("Inserisci il codice SDI.");
       else if (!shipVal.ok) setErrorMsg(shipVal.msg);
       else if (!billVal.ok) setErrorMsg(billVal.msg);
       return;
@@ -288,7 +385,6 @@ export default function ProfilePageClient() {
       };
 
       const billBase = sameAsShipping ? ship : billingAddress;
-
       const bill: Address = {
         address: clamp(billBase.address, 160),
         city: clamp(billBase.city, 80),
@@ -297,11 +393,20 @@ export default function ProfilePageClient() {
         country: toCountry2(billBase.country || "IT"),
       };
 
-      const payload = {
+      // ✅ FIX: payload include campi aziendali
+      const payload: Record<string, any> = {
         firstName: clamp(firstName, 60),
         lastName: clamp(lastName, 60),
         shippingAddress: isEmptyAddress(ship) ? null : ship,
         billingAddress: isEmptyAddress(bill) ? null : bill,
+        ...(customerType === "BUSINESS"
+          ? {
+              companyName: clamp(companyName, 140),
+              vatNumber: clamp(vatNumber, 40),
+              pec: pec.trim().toLowerCase().slice(0, 254),
+              sdi: sdi.trim().toUpperCase().slice(0, 20),
+            }
+          : {}),
       };
 
       const res = await fetch("/api/account/profile", {
@@ -324,23 +429,8 @@ export default function ProfilePageClient() {
         return;
       }
 
-      setFirstName(payload.firstName);
-      setLastName(payload.lastName);
-
-      const nextShip = payload.shippingAddress ? { ...payload.shippingAddress } : { ...EMPTY_ADDRESS };
-      const nextBill =
-        payload.billingAddress
-          ? { ...payload.billingAddress }
-          : sameAsShipping
-            ? { ...nextShip }
-            : { ...EMPTY_ADDRESS };
-
-      setShippingAddress(nextShip);
-      setBillingAddress(nextBill);
-
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
-
       applyProfileNonDestructive(data);
       void reloadProfile();
     } catch {
@@ -355,13 +445,15 @@ export default function ProfilePageClient() {
       <div className="mx-auto max-w-3xl p-6">
         <div className="h-8 w-40 rounded bg-surface animate-pulse" />
         <div className="mt-6 space-y-3">
-          <div className="h-12 rounded bg-surface animate-pulse" />
-          <div className="h-12 rounded bg-surface animate-pulse" />
-          <div className="h-12 rounded bg-surface animate-pulse" />
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-12 rounded bg-surface animate-pulse" />
+          ))}
         </div>
       </div>
     );
   }
+
+  const isBusiness = customerType === "BUSINESS";
 
   return (
     <div className="mx-auto max-w-3xl p-6">
@@ -372,120 +464,166 @@ export default function ProfilePageClient() {
         </Link>
       </div>
 
-      <p className="mt-2 text-sm text-muted-text">
-        {customerType === "BUSINESS"
+      <p className="mt-2 text-sm text-text/70">
+        {isBusiness
           ? "Completa i dati aziendali e gli indirizzi di spedizione e fatturazione."
           : "Completa i tuoi dati e gli indirizzi di spedizione e fatturazione."}
       </p>
 
-      <form onSubmit={onSave} className="mt-6 space-y-6">
+      <form onSubmit={onSave} className="mt-6 space-y-6" noValidate>
+
+        {/* ✅ Sezione dati aziendali (solo BUSINESS) */}
+        {isBusiness && (
+          <section className="rounded-2xl border border-border bg-white p-5">
+            <h2 className="text-lg font-bold">Dati azienda</h2>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Field
+                  label="Ragione sociale"
+                  value={companyName}
+                  onChange={setCompanyName}
+                  maxLength={140}
+                  autoComplete="organization"
+                />
+                {companyName.length > 0 && !companyOk && (
+                  <p className="mt-1 text-sm text-red-600">Inserisci la ragione sociale.</p>
+                )}
+              </div>
+
+              <div>
+                <Field
+                  label="Partita IVA"
+                  value={vatNumber}
+                  onChange={setVatNumber}
+                  maxLength={40}
+                />
+                {vatNumber.length > 0 && !vatOk && (
+                  <p className="mt-1 text-sm text-red-600">Partita IVA non valida.</p>
+                )}
+              </div>
+
+              <div>
+                <Field
+                  label="Codice SDI"
+                  value={sdi}
+                  onChange={(v) => setSdi(v.toUpperCase())}
+                  maxLength={20}
+                  className="uppercase"
+                />
+                {sdi.length > 0 && !sdiOk && (
+                  <p className="mt-1 text-sm text-red-600">Inserisci il codice SDI.</p>
+                )}
+              </div>
+
+              <div className="sm:col-span-2">
+                <Field
+                  label="PEC"
+                  value={pec}
+                  onChange={(v) => setPec(v.toLowerCase())}
+                  type="email"
+                  maxLength={254}
+                  autoComplete="email"
+                />
+                {pec.length > 0 && !pecOk && (
+                  <p className="mt-1 text-sm text-red-600">Inserisci una PEC valida.</p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Dati account */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Dati account</h2>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="block text-sm font-medium">Email</label>
-              <input className="mt-1 w-full rounded-md border p-3 bg-surface" value={email} readOnly />
+            <div className="sm:col-span-2">
+              <Field label="Email" value={email} readOnly />
             </div>
 
-            <div className="hidden sm:block" />
-
             <div>
-              <label className="block text-sm font-medium">Nome</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
+              <Field
+                label="Nome"
                 value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
+                onChange={setFirstName}
                 autoComplete="given-name"
-                required
+                maxLength={60}
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium">Cognome</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
+              <Field
+                label="Cognome"
                 value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
+                onChange={setLastName}
                 autoComplete="family-name"
-                required
+                maxLength={60}
               />
             </div>
           </div>
 
-          {!nameOk ? (
-            <p className="mt-2 text-sm text-amber-700">Inserisci nome e cognome (minimo 2 caratteri).</p>
-          ) : null}
+          {!nameOk && (firstName.length > 0 || lastName.length > 0) && (
+            <p className="mt-2 text-sm text-amber-700">
+              Inserisci nome e cognome (minimo 2 caratteri).
+            </p>
+          )}
 
-          <p className="mt-3 text-sm text-muted-text">
+          <p className="mt-3 text-sm text-text/70">
             Anteprima header: <span className="font-semibold">Ciao,</span>{" "}
             {firstToken(firstName) || "Account"}
           </p>
         </section>
 
+        {/* Indirizzo spedizione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Indirizzo di spedizione</h2>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <label className="block text-sm font-medium">Indirizzo</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
+              <Field
+                label="Indirizzo"
                 value={shippingAddress.address}
-                onChange={(e) => setShippingAddress((p) => ({ ...p, address: e.target.value }))}
+                onChange={(v) => setShippingAddress((p) => ({ ...p, address: v }))}
                 autoComplete="shipping street-address"
               />
             </div>
-
-            <div>
-              <label className="block text-sm font-medium">Città</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={shippingAddress.city}
-                onChange={(e) => setShippingAddress((p) => ({ ...p, city: e.target.value }))}
-                autoComplete="shipping address-level2"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">CAP</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={shippingAddress.postalCode}
-                onChange={(e) => setShippingAddress((p) => ({ ...p, postalCode: e.target.value }))}
-                autoComplete="shipping postal-code"
-                inputMode="numeric"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">Provincia</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={shippingAddress.province}
-                onChange={(e) => setShippingAddress((p) => ({ ...p, province: e.target.value }))}
-                autoComplete="shipping address-level1"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">Paese (2 lettere)</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3 uppercase"
-                value={shippingAddress.country}
-                onChange={(e) => setShippingAddress((p) => ({ ...p, country: e.target.value }))}
-                autoComplete="shipping country"
-              />
-            </div>
+            <Field
+              label="Città"
+              value={shippingAddress.city}
+              onChange={(v) => setShippingAddress((p) => ({ ...p, city: v }))}
+              autoComplete="shipping address-level2"
+            />
+            <Field
+              label="CAP"
+              value={shippingAddress.postalCode}
+              onChange={(v) => setShippingAddress((p) => ({ ...p, postalCode: v }))}
+              autoComplete="shipping postal-code"
+              inputMode="numeric"
+            />
+            <Field
+              label="Provincia"
+              value={shippingAddress.province}
+              onChange={(v) => setShippingAddress((p) => ({ ...p, province: v }))}
+              autoComplete="shipping address-level1"
+            />
+            <Field
+              label="Paese (2 lettere)"
+              value={shippingAddress.country}
+              onChange={(v) => setShippingAddress((p) => ({ ...p, country: v }))}
+              autoComplete="shipping country"
+              className="uppercase"
+            />
           </div>
 
-          {!shipVal.ok ? <p className="mt-2 text-sm text-red-700">{shipVal.msg}</p> : null}
+          {!shipVal.ok && (
+            <p className="mt-2 text-sm text-red-700">{shipVal.msg}</p>
+          )}
         </section>
 
+        {/* Dati di fatturazione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <div className="flex items-start justify-between gap-3">
             <h2 className="text-lg font-bold">Dati di fatturazione</h2>
-
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -500,83 +638,70 @@ export default function ProfilePageClient() {
             </label>
           </div>
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <label className="block text-sm font-medium">Indirizzo</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={sameAsShipping ? shippingAddress.address : billingAddress.address}
-                onChange={(e) => setBillingAddress((p) => ({ ...p, address: e.target.value }))}
-                autoComplete="billing street-address"
-                disabled={sameAsShipping}
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">Città</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={sameAsShipping ? shippingAddress.city : billingAddress.city}
-                onChange={(e) => setBillingAddress((p) => ({ ...p, city: e.target.value }))}
+          {sameAsShipping ? (
+            <p className="mt-3 text-sm text-text/70">
+              Useremo lo stesso indirizzo della spedizione.
+            </p>
+          ) : (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Field
+                  label="Indirizzo"
+                  value={billingAddress.address}
+                  onChange={(v) => setBillingAddress((p) => ({ ...p, address: v }))}
+                  autoComplete="billing street-address"
+                />
+              </div>
+              <Field
+                label="Città"
+                value={billingAddress.city}
+                onChange={(v) => setBillingAddress((p) => ({ ...p, city: v }))}
                 autoComplete="billing address-level2"
-                disabled={sameAsShipping}
               />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">CAP</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={sameAsShipping ? shippingAddress.postalCode : billingAddress.postalCode}
-                onChange={(e) => setBillingAddress((p) => ({ ...p, postalCode: e.target.value }))}
+              <Field
+                label="CAP"
+                value={billingAddress.postalCode}
+                onChange={(v) => setBillingAddress((p) => ({ ...p, postalCode: v }))}
                 autoComplete="billing postal-code"
                 inputMode="numeric"
-                disabled={sameAsShipping}
               />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">Provincia</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3"
-                value={sameAsShipping ? shippingAddress.province : billingAddress.province}
-                onChange={(e) => setBillingAddress((p) => ({ ...p, province: e.target.value }))}
+              <Field
+                label="Provincia"
+                value={billingAddress.province}
+                onChange={(v) => setBillingAddress((p) => ({ ...p, province: v }))}
                 autoComplete="billing address-level1"
-                disabled={sameAsShipping}
               />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium">Paese (2 lettere)</label>
-              <input
-                className="mt-1 w-full rounded-md border p-3 uppercase"
-                value={sameAsShipping ? shippingAddress.country : billingAddress.country}
-                onChange={(e) => setBillingAddress((p) => ({ ...p, country: e.target.value }))}
+              <Field
+                label="Paese (2 lettere)"
+                value={billingAddress.country}
+                onChange={(v) => setBillingAddress((p) => ({ ...p, country: v }))}
                 autoComplete="billing country"
-                disabled={sameAsShipping}
+                className="uppercase"
               />
             </div>
-          </div>
+          )}
 
-          {!billVal.ok ? <p className="mt-2 text-sm text-red-700">{billVal.msg}</p> : null}
+          {!billVal.ok && (
+            <p className="mt-2 text-sm text-red-700">{billVal.msg}</p>
+          )}
         </section>
 
-        {errorMsg ? (
+        {errorMsg && (
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
             {errorMsg}
-            {debugMsg ? (
+            {debugMsg && (
               <pre className="mt-3 max-h-64 overflow-auto rounded bg-white/60 p-3 text-xs text-red-900">
                 {debugMsg}
               </pre>
-            ) : null}
+            )}
           </div>
-        ) : null}
+        )}
 
-        {successMsg ? (
+        {successMsg && (
           <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
             {successMsg}
           </div>
-        ) : null}
+        )}
 
         <button
           type="submit"
