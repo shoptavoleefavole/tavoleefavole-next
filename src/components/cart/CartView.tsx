@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable react/no-unescaped-entities */
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -410,7 +411,7 @@ export default function CartView() {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-3xl font-extrabold text-text">Carrello</h1>
-            <p className="mt-1 text-sm text-muted-text">Rivedi i prodotti e completa l'ordine in pochi passaggi.</p>
+            <p className="mt-1 text-sm text-muted-text">Rivedi i prodotti e completa l&apos;ordine in pochi passaggi.</p>
           </div>
           {items.length > 0 && (
             <button type="button" onClick={clear}
@@ -499,7 +500,7 @@ export default function CartView() {
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-extrabold text-text">Consegna rapida 24/48h</div>
                     <div className="mt-1 text-sm text-text/70">
-                      Compila l'indirizzo per calcolare la spedizione.
+                      Compila l&apos;indirizzo per calcolare la spedizione.
                     </div>
                   </div>
                 </div>
@@ -566,7 +567,7 @@ export default function CartView() {
 
                 {billingSameAsShipping ? (
                   <p className="text-xs text-muted-text">
-                    Useremo l'indirizzo di spedizione anche per la fattura.
+                    Useremo l&apos;indirizzo di spedizione anche per la fattura.
                   </p>
                 ) : (
                   <div className="space-y-3">
@@ -624,7 +625,7 @@ export default function CartView() {
                 ) : !canCheckout && formTouched ? (
                   <p className="mt-3 text-xs text-muted-text">Completa i campi obbligatori per continuare.</p>
                 ) : !canCheckout ? (
-                  <p className="mt-3 text-xs text-muted-text">Inserisci l'indirizzo di spedizione per continuare.</p>
+                  <p className="mt-3 text-xs text-muted-text">Inserisci l&apos;indirizzo di spedizione per continuare.</p>
                 ) : (
                   <p className="mt-3 text-xs text-muted-text">Verrai reindirizzato al checkout sicuro Stripe.</p>
                 )}

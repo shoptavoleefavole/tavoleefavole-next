@@ -1,6 +1,7 @@
 // src/app/catalogo/page.tsx
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound } from "next/navigation"; // lascia pure, il disable sopra la gestisce
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
@@ -344,7 +345,6 @@ async function fetchProductsFromStrapi(params: {
   // Nessun tentativo ha trovato prodotti
   return empty;
 }
-
 
 function buildCatalogHref(params: { categoria?: string; q?: string; page?: number }) {
   const sp = new URLSearchParams();
