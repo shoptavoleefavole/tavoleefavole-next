@@ -1,3 +1,4 @@
+// src/app/catalogo/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -20,10 +21,11 @@ type CatalogoSearchParams = {
 
 const PAGE_SIZE = 24;
 
-const STRAPI_URL = (process.env.NEXT_PUBLIC_STRAPI_URL || process.env.STRAPI_URL || "http://localhost:1337").replace(
-  /\/+$/,
-  ""
-);
+const STRAPI_URL = (
+  process.env.NEXT_PUBLIC_STRAPI_URL ||
+  process.env.STRAPI_URL ||
+  "http://localhost:1337"
+).replace(/\/+$/, "");
 
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
@@ -43,7 +45,6 @@ function safeText(input: unknown, maxLen: number) {
 
 function safeSlug(input: unknown) {
   const s = safeText(input, 80).toLowerCase();
-  // accetta solo slug classico
   if (!s) return "";
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s)) return "";
   return s;
@@ -148,28 +149,40 @@ function normalizeStrapiProduct(row: any) {
 }
 
 async function fetchCategoryBySlug(slug: string) {
-  const qs = new URLSearchParams();
-  qs.set("filters[slug][$eq]", slug);
-  qs.set("pagination[pageSize]", "1");
-  qs.set("populate", "*");
+  try {
+    const qs = new URLSearchParams();
+    qs.set("filters[slug][$eq]", slug);
+    qs.set("pagination[pageSize]", "1");
+    qs.set("populate", "*");
 
-  const url = `${STRAPI_URL}/api/categories?${qs.toString()}`;
+    const url = `${STRAPI_URL}/api/categories?${qs.toString()}`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8_000);
 
-  const res = await fetch(url, { headers: getHeaders(), next: { revalidate: 30 } });
-  if (!res.ok) return null;
+    const res = await fetch(url, {
+      headers: getHeaders(),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    clearTimeout(t);
 
-  const text = await res.text().catch(() => "");
-  const json = safeJsonParse(text);
-  const data: any[] = Array.isArray(json?.data) ? json.data : [];
-  if (!data.length) return null;
+    if (!res.ok) return null;
 
-  const a = data[0]?.attributes ?? data[0] ?? {};
-  return {
-    id: data[0]?.id ?? null,
-    documentId: data[0]?.documentId ?? null,
-    slug: String(a?.slug ?? slug),
-    label: String(a?.label ?? a?.name ?? a?.title ?? slug),
-  };
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+    const data: any[] = Array.isArray(json?.data) ? json.data : [];
+    if (!data.length) return null;
+
+    const a = data[0]?.attributes ?? data[0] ?? {};
+    return {
+      id: data[0]?.id ?? null,
+      documentId: data[0]?.documentId ?? null,
+      slug: String(a?.slug ?? slug),
+      label: String(a?.label ?? a?.name ?? a?.title ?? slug),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function buildProductsQS(params: {
@@ -213,7 +226,6 @@ async function fetchProductsOnce(params: {
   categoryMode?: "rel" | "scalar";
 }) {
   const qs = buildProductsQS(params);
-
   const url = `${STRAPI_URL}/api/products?${qs.toString()}`;
   const res = await fetch(url, { headers: getHeaders(), next: { revalidate: 30 } });
 
@@ -267,14 +279,10 @@ async function fetchProductsFromStrapi(params: {
       categoryFilterKey: a.key,
       categoryMode: a.mode,
     });
-
     if (r.ok) return r;
-
-    // se non è validation error, non ha senso continuare
     if (!r.isValidation) break;
   }
 
-  // fallback safe: non rompiamo la pagina
   return {
     ok: true as const,
     items: [],
@@ -302,8 +310,9 @@ export default async function CatalogoPage({
   const q = safeText(sp.q, 80);
   const pageRequested = toInt(sp.page, 1);
 
-  const macro = categoria ? await fetchCategoryBySlug(categoria) : null;
-  if (categoria && !macro) return notFound();
+  // ✅ Fix: unica dichiarazione, fallback su slug se Strapi non risponde — mai 404
+  const macroFromStrapi = categoria ? await fetchCategoryBySlug(categoria) : null;
+  const macro = macroFromStrapi ?? (categoria ? { id: null, documentId: null, slug: categoria, label: categoria } : null);
 
   const res = await fetchProductsFromStrapi({
     categoria,
@@ -329,7 +338,6 @@ export default async function CatalogoPage({
     pagination = res2.pagination;
   }
 
-  // Availability: non deve mai rompere la pagina
   const skus: string[] = Array.from(
     new Set(
       items
@@ -350,7 +358,6 @@ export default async function CatalogoPage({
     const sku = getDefaultSku(p);
     const row = sku ? bySku?.[sku] ?? null : null;
     const available = Number(row?.available ?? 0);
-
     return {
       ...p,
       inStock: sku ? available > 0 : p?.inStock,
@@ -361,7 +368,6 @@ export default async function CatalogoPage({
 
   const total = Number(pagination.total ?? 0);
   const pageCount = Math.max(1, Number(pagination.pageCount ?? 1));
-
   const prevPage = safePage > 1 ? safePage - 1 : null;
   const nextPage = safePage < pageCount ? safePage + 1 : null;
 
@@ -380,7 +386,8 @@ export default async function CatalogoPage({
             {macro ? `Catalogo · ${macro.label}` : "Catalogo"}
           </h1>
           <p className="mt-1 text-sm text-text/70">
-            {total} prodotti{macro ? " nella macroarea selezionata" : ""}.{q ? ` Ricerca: “${q}”.` : ""}
+            {total} prodotti{macro ? " nella macroarea selezionata" : ""}.
+            {q ? ` Ricerca: "${q}".` : ""}
           </p>
         </div>
 

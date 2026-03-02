@@ -4,12 +4,21 @@ import { notFound } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
-export default async function OccasionPage({ params }) {
-  const slug = String(params?.slug || "").trim().toLowerCase();
-  if (!slug) return notFound();
+const bgStyle = {
+  backgroundImage:
+    "radial-gradient(circle at 10px 10px, rgba(34,197,94,0.35) 1px, transparent 1px)," +
+    "radial-gradient(circle at 28px 18px, rgba(244,63,94,0.25) 1px, transparent 1px)",
+  backgroundSize: "40px 34px",
+};
 
-  // ✅ Per ora abilitiamo solo /occasione/pasqua (così non rompiamo niente)
-  if (slug !== "pasqua") return notFound();
+export default async function OccasionPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  const { slug: slugParam } = await params;
+  const slug = String(slugParam ?? "").trim().toLowerCase();
+  if (!slug || slug !== "pasqua") return notFound();
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-10">
@@ -17,12 +26,7 @@ export default async function OccasionPage({ params }) {
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 opacity-[0.10]"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 10px 10px, rgba(34,197,94,0.35) 1px, transparent 1px)," +
-              "radial-gradient(circle at 28px 18px, rgba(244,63,94,0.25) 1px, transparent 1px)",
-            backgroundSize: "40px 34px",
-          }}
+          style={bgStyle}
         />
 
         <div className="relative">
@@ -35,7 +39,7 @@ export default async function OccasionPage({ params }) {
           </div>
 
           <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-[#2B1B14] sm:text-4xl">
-            Pasqua “premium cioccolato”
+            Pasqua &quot;premium cioccolato&quot;
           </h1>
 
           <p className="mt-2 max-w-2xl text-sm font-semibold text-[#2B1B14]/70">
@@ -74,7 +78,7 @@ export default async function OccasionPage({ params }) {
                 </span>
                 <div className="min-w-0">
                   <div className="truncate text-sm font-extrabold text-[#2B1B14]">Uova di Pasqua</div>
-                  <div className="text-xs font-semibold text-[#2B1B14]/65">classiche & premium</div>
+                  <div className="text-xs font-semibold text-[#2B1B14]/65">classiche &amp; premium</div>
                 </div>
               </div>
             </Link>
@@ -103,8 +107,8 @@ export default async function OccasionPage({ params }) {
                   🍫
                 </span>
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-extrabold text-[#2B1B14]">Ovetti & mini</div>
-                  <div className="text-xs font-semibold text-[#2B1B14]/65">assaggi & mix</div>
+                  <div className="truncate text-sm font-extrabold text-[#2B1B14]">Ovetti &amp; mini</div>
+                  <div className="text-xs font-semibold text-[#2B1B14]/65">assaggi &amp; mix</div>
                 </div>
               </div>
             </Link>

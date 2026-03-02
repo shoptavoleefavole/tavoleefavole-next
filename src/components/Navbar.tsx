@@ -27,8 +27,8 @@ type NavCat = { slug: string; label: string; icon?: string | null; subcategories
 type NavOcc = {
   slug: string;
   label: string;
-  dataInizio?: string | null;
-  dataFine?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
 };
 
 const STRAPI_URL =
@@ -139,12 +139,13 @@ function normalizeStrapiOccasion(row: any): NavOcc | null {
   return {
     slug,
     label,
-    dataInizio: a?.dataInizio ?? null,
-    dataFine: a?.dataFine ?? null,
+    startDate: a?.startDate ?? null,
+    endDate: a?.endDate ?? null,
   };
 }
 
 async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
+  // 1) Rotta interna Next.js
   try {
     const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { cache: "no-store", signal });
     if (ok) {
@@ -155,22 +156,40 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
           : Array.isArray(json)
             ? json
             : [];
-      return data.map(normalizeStrapiOccasion).filter(isNavOcc);
+      const normalized = data.map(normalizeStrapiOccasion).filter(isNavOcc);
+      if (normalized.length) return normalized;
     }
   } catch { /* noop */ }
-  return [];
+
+  // 2) Fallback diretto su Strapi
+  if (!STRAPI_URL) return [];
+
+  // ✅ Fix: qs dichiarato fuori dal try per chiarezza di scope
+  const strapiQs = new URLSearchParams();
+  strapiQs.set("pagination[pageSize]", "50");
+  strapiQs.set("sort[0]", "createdAt:asc");
+  const strapiUrl = `${STRAPI_URL.replace(/\/$/, "")}/api/occasions?${strapiQs.toString()}`;
+
+  try {
+    const { ok, json } = await fetchJsonSafe(strapiUrl, { cache: "no-store", signal });
+    if (!ok) return [];
+    const data: any[] = Array.isArray(json?.data) ? json.data : [];
+    return data.map(normalizeStrapiOccasion).filter(isNavOcc);
+  } catch {
+    return [];
+  }
 }
 
 /** Filtra le occasioni attive in base alle date di Strapi */
 function isOccasionActive(o: NavOcc): boolean {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  if (o.dataInizio) {
-    const start = new Date(o.dataInizio);
+  if (o.startDate) {
+    const start = new Date(o.startDate);
     if (now < start) return false;
   }
-  if (o.dataFine) {
-    const end = new Date(o.dataFine);
+  if (o.endDate) {
+    const end = new Date(o.endDate);
     end.setHours(23, 59, 59, 999);
     if (now > end) return false;
   }
@@ -486,7 +505,7 @@ export default function Navbar() {
             })}
 
             {/* CATEGORIE (dropdown SOLO CLICK) */}
-            {categories.map((cat) => {
+            {categories.filter((cat) => String(cat.slug).toLowerCase() !== "pasqua").map((cat) => {
               const hasSubs = cat.subcategories.length > 0;
               const isOpen = openSlug === cat.slug;
               const isActive =

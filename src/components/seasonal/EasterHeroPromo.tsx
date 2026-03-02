@@ -110,7 +110,7 @@ export default function EasterHeroPromo({
                   Pagamenti sicuri
                 </span>
                 <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-extrabold text-text">
-                  Resi semplici
+                  Prodotti di Qualità
                 </span>
                 <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-extrabold text-text">
                   Assistenza reale
@@ -127,9 +127,9 @@ export default function EasterHeroPromo({
                 </Link>
 
                 <Link
-                  href="/catalogo?occasione=pasqua"
-                  className="inline-flex h-11 items-center justify-center rounded-xl bg-white/90 px-5 text-sm font-extrabold text-text hover:bg-white"
-                >
+                  href="/occasione/pasqua"
+                    className="inline-flex h-11 items-center justify-center rounded-xl bg-white/90 px-5 text-sm font-extrabold text-text hover:bg-white"
+                  >
                   Vedi tutti i prodotti
                 </Link>
               </div>
