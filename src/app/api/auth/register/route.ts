@@ -4,30 +4,43 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REGISTER_VERSION = "2026-03-02-v6";
+const REGISTER_VERSION = "2026-03-02-v7";
 const BODY_LIMIT = 32 * 1024;
+
+/* ------------------------------------------------------------------ */
+/*  Strapi base URL                                                   */
+/* ------------------------------------------------------------------ */
 
 function strapiBaseUrl() {
   const raw =
     process.env.STRAPI_URL ||
     process.env.NEXT_PUBLIC_STRAPI_URL ||
     "http://localhost:1337";
+
   let base = raw.replace(/\/+$/, "");
   const isLocal =
     base.includes("localhost") ||
     base.includes("127.0.0.1") ||
     base.includes("0.0.0.0");
+
   if (process.env.NODE_ENV === "production" && !isLocal) {
     base = base.replace(/^http:\/\//i, "https://");
   }
   return base;
 }
 
-// ✅ SECURITY: token mai da NEXT_PUBLIC_ lato server
+/**
+ * Token di servizio usato SOLO lato server.
+ * Mai leggere da variabili NEXT_PUBLIC (non sono segrete).
+ */
 const STRAPI_SERVICE_TOKEN =
   process.env.STRAPI_API_TOKEN || process.env.STRAPI_TOKEN || "";
 
 const isDev = process.env.NODE_ENV === "development";
+
+/* ------------------------------------------------------------------ */
+/*  Helpers risposta JSON                                             */
+/* ------------------------------------------------------------------ */
 
 function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, {
@@ -48,20 +61,27 @@ function safeJsonParse(text: string) {
   }
 }
 
-function normalizeEmail(v: any) {
+/* ------------------------------------------------------------------ */
+/*  Validazioni input                                                 */
+/* ------------------------------------------------------------------ */
+
+function normalizeEmail(v: unknown) {
   return String(v ?? "").trim().toLowerCase();
 }
 
 function isValidEmail(email: string) {
   if (!email || email.length > 254) return false;
   if (/\s/.test(email)) return false;
+
   const at = email.indexOf("@");
   if (at <= 0 || at !== email.lastIndexOf("@")) return false;
+
   const local = email.slice(0, at);
   const domain = email.slice(at + 1);
   if (!local || !domain) return false;
   if (domain.startsWith(".") || domain.endsWith(".")) return false;
   if (!domain.includes(".")) return false;
+
   return true;
 }
 
@@ -69,13 +89,13 @@ function isStrongEnough(pw: string) {
   return typeof pw === "string" && pw.length >= 8 && pw.length <= 200;
 }
 
-function clampString(v: any, max = 120) {
+function clampString(v: unknown, max = 120) {
   const s = String(v ?? "").trim();
   if (!s) return "";
   return s.length > max ? s.slice(0, max) : s;
 }
 
-function sanitizeEmailMaybe(v: any) {
+function sanitizeEmailMaybe(v: unknown) {
   const e = normalizeEmail(v);
   if (!e) return "";
   return isValidEmail(e) ? e : "";
@@ -83,6 +103,10 @@ function sanitizeEmailMaybe(v: any) {
 
 const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l'accesso.";
+
+/* ------------------------------------------------------------------ */
+/*  Tipi                                                              */
+/* ------------------------------------------------------------------ */
 
 type Address = {
   address: string;
@@ -92,7 +116,6 @@ type Address = {
   country: string;
 };
 
-// ✅ Campi aziendali tipizzati
 type CompanyFields = {
   companyName: string;
   vatNumber: string;
@@ -100,13 +123,17 @@ type CompanyFields = {
   sdi: string;
 };
 
+/* ------------------------------------------------------------------ */
+/*  Address helpers                                                   */
+/* ------------------------------------------------------------------ */
+
 function capOk(cap: string) {
   const c = String(cap || "").replace(/\s+/g, "");
   return /^\d{5}$/.test(c);
 }
 
-function normAddress(input: any): Address {
-  const a = input && typeof input === "object" ? input : {};
+function normAddress(input: unknown): Address {
+  const a = input && typeof input === "object" ? (input as any) : {};
   return {
     address: String(a.address ?? "").trim().slice(0, 120),
     city: String(a.city ?? "").trim().slice(0, 80),
@@ -131,6 +158,10 @@ function validateAddress(a: Address): string | null {
   return null;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Fetch helpers (con retry e timeout)                               */
+/* ------------------------------------------------------------------ */
+
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
   return (
@@ -143,9 +174,14 @@ function isRetryableFetchError(e: any) {
   );
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  ms: number
+): Promise<Response> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
+
   try {
     return await fetch(url, {
       ...init,
@@ -162,7 +198,7 @@ async function fetchWithRetry(
   init: RequestInit,
   ms: number,
   tries = 2
-) {
+): Promise<Response> {
   let lastErr: any;
   for (let i = 0; i < tries; i++) {
     try {
@@ -189,6 +225,7 @@ async function strapiPost(
     Accept: "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+
   const res = await fetchWithRetry(
     url,
     { method: "POST", headers, body: JSON.stringify(body) },
@@ -209,6 +246,7 @@ async function strapiGet(
   const url = `${base}${pathWithQs}`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
+
   const res = await fetchWithRetry(
     url,
     { method: "GET", headers },
@@ -233,6 +271,7 @@ async function strapiPut(
     Accept: "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+
   const res = await fetchWithRetry(
     url,
     { method: "PUT", headers, body: JSON.stringify(body) },
@@ -244,17 +283,23 @@ async function strapiPut(
   return { res, data, text, url };
 }
 
+/* ------------------------------------------------------------------ */
+/*  Deduplicazione errori Strapi                                      */
+/* ------------------------------------------------------------------ */
+
 function looksLikeAlreadyRegistered(
   status: number,
   strapiData: any,
   strapiText: string
 ) {
   if (!(status === 400 || status === 409)) return false;
+
   const msg =
     String(strapiData?.error?.message ?? "") ||
     String(strapiData?.message ?? "") ||
     String(strapiText ?? "");
   const m = msg.toLowerCase();
+
   return (
     m.includes("already taken") ||
     m.includes("already exists") ||
@@ -271,15 +316,18 @@ function looksLikeUniqueViolation(
   strapiText: string
 ) {
   if (!(status === 400 || status === 409)) return false;
+
   const msg =
     String(strapiData?.error?.message ?? "") ||
     String(strapiData?.message ?? "") ||
     String(strapiText ?? "");
   const m = msg.toLowerCase();
-  return (
-    m.includes("unique") || m.includes("duplicate") || m.includes("already")
-  );
+  return m.includes("unique") || m.includes("duplicate") || m.includes("already");
 }
+
+/* ------------------------------------------------------------------ */
+/*  Body reading limit                                                */
+/* ------------------------------------------------------------------ */
 
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   const raw = await req.text().catch(() => "");
@@ -287,21 +335,36 @@ async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   return { raw, tooLarge: false };
 }
 
+/* ------------------------------------------------------------------ */
+/*  Cookie                                                            */
+/* ------------------------------------------------------------------ */
+
 function setAuthCookie(resp: NextResponse, jwt: string) {
   resp.cookies.set("tf_token", jwt, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7,
+    maxAge: 60 * 60 * 24 * 7, // 7 giorni
   });
 }
+
+/* ------------------------------------------------------------------ */
+/*  Mapping tipo cliente                                              */
+/* ------------------------------------------------------------------ */
 
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
   return type === "BUSINESS" ? "BUSINESS" : "PRIVATE";
 }
 
-// ✅ FIX: ora include anche i campi aziendali nel customer-profile
+/* ------------------------------------------------------------------ */
+/*  CustomerProfile + Azienda                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Crea o aggiorna il CustomerProfile collegandolo all'Azienda (se presente).
+ * Non scrive più i campi aziendali nel profilo: restano in `aziendes`.
+ */
 async function ensureCustomerProfile(
   userId: number,
   firstName: string,
@@ -310,29 +373,25 @@ async function ensureCustomerProfile(
   userJwt: string | undefined,
   shippingAddress: Address | null,
   billingAddress: Address | null,
-  company: CompanyFields | null  // ✅ NUOVO PARAMETRO
+  aziendeId: number | null
 ) {
   const TIMEOUT = 12_000;
 
   const patch: any = {
-    firstName: firstName || undefined,
-    lastName: lastName || undefined,
+    // Placeholder "-" se Strapi ha firstName/lastName required
+    firstName: firstName || "-",
+    lastName: lastName || "-",
     customerType: toStrapiCustomerType(type),
     user: userId,
     ...(shippingAddress ? { shippingAddress } : {}),
     ...(billingAddress ? { billingAddress } : {}),
-    // ✅ FIX: salva i campi aziendali direttamente nel customer-profile
-    // così il profilo API li trova subito senza leggere /api/aziendes
-    ...(company?.companyName ? { companyName: company.companyName } : {}),
-    ...(company?.vatNumber ? { vatNumber: company.vatNumber } : {}),
-    ...(company?.pec ? { pec: company.pec } : {}),
-    ...(company?.sdi ? { sdi: company.sdi } : {}),
+    ...(aziendeId ? { azienda: aziendeId } : {}),
   };
 
   const tokenToUse = STRAPI_SERVICE_TOKEN || userJwt || "";
   if (!tokenToUse) return false;
 
-  // 1) Tenta CREATE
+  // 1) Tentativo CREATE
   const create = await strapiPost(
     "/api/customer-profiles",
     { data: patch },
@@ -348,8 +407,9 @@ async function ensureCustomerProfile(
   }
 
   if (create.res.ok) return true;
-  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text))
+  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text)) {
     return false;
+  }
 
   // 2) Profilo già esistente → UPDATE
   const qs = new URLSearchParams();
@@ -364,8 +424,8 @@ async function ensureCustomerProfile(
   );
 
   const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
-  const docId = row?.documentId ? String(row.documentId) : null;
   const id = row?.id ? String(row.id) : null;
+  const docId = row?.documentId ? String(row.documentId) : null;
   const key = id || docId;
   if (!key) return false;
 
@@ -386,15 +446,17 @@ async function ensureCustomerProfile(
   return upd.res.ok;
 }
 
-// ✅ Mantenuto come best-effort per retrocompatibilità
-// ma ora non è più l'unico posto dove si salvano i dati aziendali
+/**
+ * Crea una Azienda associata all'utente.
+ * Ritorna l'ID numerico se creata correttamente, altrimenti null.
+ */
 async function createCompanyBestEffort(
   userId: number,
   payload: CompanyFields
-) {
-  if (!STRAPI_SERVICE_TOKEN) return;
-  const TIMEOUT = 10_000;
+): Promise<number | null> {
+  if (!STRAPI_SERVICE_TOKEN) return null;
 
+  const TIMEOUT = 10_000;
   const baseData = {
     companyName: payload.companyName || undefined,
     vatNumber: payload.vatNumber || undefined,
@@ -402,7 +464,7 @@ async function createCompanyBestEffort(
     pec: payload.pec || undefined,
   };
 
-  // Prova le 3 varianti di relazione utente in Strapi
+  // Prova varie relazioni per compatibilità con schemi diversi
   for (const userRef of [
     { users_permissions_users: [userId] },
     { user: userId },
@@ -414,13 +476,23 @@ async function createCompanyBestEffort(
       TIMEOUT,
       STRAPI_SERVICE_TOKEN
     );
-    if (r.res.ok) return;
+    if (r.res.ok) {
+      const id = r.data?.data?.id ?? r.data?.id ?? null;
+      return id ? Number(id) : null;
+    }
   }
 
   if (isDev) {
-    console.warn("[register] createCompanyBestEffort: tutti i tentativi falliti");
+    console.warn(
+      "[register] createCompanyBestEffort: tutti i tentativi di creazione azienda sono falliti"
+    );
   }
+  return null;
 }
+
+/* ------------------------------------------------------------------ */
+/*  Handlers HTTP                                                     */
+/* ------------------------------------------------------------------ */
 
 export async function GET() {
   return jsonNoStore(
@@ -442,8 +514,9 @@ export async function POST(req: Request) {
     }
 
     const { raw, tooLarge } = await readBodyWithLimit(req);
-    if (tooLarge)
+    if (tooLarge) {
       return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
+    }
 
     const body = safeJsonParse(raw) ?? {};
 
@@ -457,16 +530,18 @@ export async function POST(req: Request) {
     const firstName = clampString(body?.firstName, 60);
     const lastName = clampString(body?.lastName, 60);
 
-    // ✅ Campi aziendali
+    // Campi aziendali
     const companyName = clampString(body?.companyName, 140);
     const vatNumber = clampString(body?.vat ?? body?.vatNumber, 40);
     const sdi = clampString(body?.sdi, 20).toUpperCase();
     const pec = sanitizeEmailMaybe(body?.pec);
 
-    if (!isValidEmail(email))
+    if (!isValidEmail(email)) {
       return jsonNoStore({ ok: false, error: "INVALID_INPUT" }, 400);
-    if (!isStrongEnough(password))
+    }
+    if (!isStrongEnough(password)) {
       return jsonNoStore({ ok: false, error: "WEAK_PASSWORD" }, 400);
+    }
 
     if (type === "BUSINESS") {
       if (!companyName || !vatNumber || !sdi || !pec) {
@@ -484,23 +559,33 @@ export async function POST(req: Request) {
     const shipIn = body?.shippingAddress;
     const billIn = body?.billingAddress;
 
-    if (!shipIn)
+    if (!shipIn) {
       return jsonNoStore({ ok: false, error: "SHIPPING_REQUIRED" }, 400);
+    }
     const ship = normAddress(shipIn);
     const shipErr = validateAddress(ship);
-    if (shipErr)
-      return jsonNoStore({ ok: false, error: `SHIPPING_${shipErr}` }, 400);
+    if (shipErr) {
+      return jsonNoStore(
+        { ok: false, error: `SHIPPING_${shipErr}` },
+        400
+      );
+    }
 
     let bill: Address | null = null;
     if (billingSameAsShipping) {
       bill = ship;
     } else {
-      if (!billIn)
+      if (!billIn) {
         return jsonNoStore({ ok: false, error: "BILLING_REQUIRED" }, 400);
+      }
       bill = normAddress(billIn);
       const billErr = validateAddress(bill);
-      if (billErr)
-        return jsonNoStore({ ok: false, error: `BILLING_${billErr}` }, 400);
+      if (billErr) {
+        return jsonNoStore(
+          { ok: false, error: `BILLING_${billErr}` },
+          400
+        );
+      }
     }
 
     const REG_TIMEOUT = 15_000;
@@ -523,12 +608,32 @@ export async function POST(req: Request) {
       if (jwt) setAuthCookie(response, jwt);
 
       if (userId > 0) {
-        // ✅ FIX: passa i campi aziendali a ensureCustomerProfile
-        const company: CompanyFields | null =
-          type === "BUSINESS"
-            ? { companyName, vatNumber, pec, sdi }
-            : null;
+        // 1) Crea Azienda (se BUSINESS) per avere l'ID da collegare
+        let aziendeId: number | null = null;
+        if (type === "BUSINESS") {
+          try {
+            aziendeId = await createCompanyBestEffort(userId, {
+              companyName,
+              vatNumber,
+              pec,
+              sdi,
+            });
+            if (isDev) {
+              console.warn("[register] createCompanyBestEffort result", {
+                aziendeId,
+              });
+            }
+          } catch (e) {
+            if (isDev) {
+              console.warn(
+                "[register] createCompanyBestEffort error (best-effort)",
+                e
+              );
+            }
+          }
+        }
 
+        // 2) Crea/aggiorna CustomerProfile con indirizzi e link azienda
         try {
           await ensureCustomerProfile(
             userId,
@@ -538,23 +643,11 @@ export async function POST(req: Request) {
             jwt,
             ship,
             bill,
-            company  // ✅ ora salvato in customer-profiles
+            aziendeId
           );
         } catch (e) {
-          if (isDev) console.warn("[register] ensureCustomerProfile error:", e);
-        }
-
-        // Mantieni anche aziendes per retrocompatibilità
-        if (type === "BUSINESS") {
-          try {
-            await createCompanyBestEffort(userId, {
-              companyName,
-              vatNumber,
-              pec,
-              sdi,
-            });
-          } catch {
-            // best-effort, non blocca la registrazione
+          if (isDev) {
+            console.warn("[register] ensureCustomerProfile error (best-effort)", e);
           }
         }
       }
@@ -562,6 +655,7 @@ export async function POST(req: Request) {
       return response;
     }
 
+    // Email già registrata → avvia flusso forgot-password
     if (looksLikeAlreadyRegistered(reg.res.status, reg.data, reg.text)) {
       try {
         await strapiPost(
@@ -570,7 +664,7 @@ export async function POST(req: Request) {
           FORGOT_TIMEOUT
         );
       } catch {
-        // noop
+        // best-effort, non esponiamo dettagli
       }
       return jsonNoStore(
         { ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG },
@@ -578,6 +672,7 @@ export async function POST(req: Request) {
       );
     }
 
+    // Altri errori da Strapi
     return jsonNoStore(
       {
         ok: false,
@@ -596,6 +691,10 @@ export async function POST(req: Request) {
         },
         504
       );
+    }
+    // In produzione non esponiamo il dettaglio dell'eccezione
+    if (isDev) {
+      console.error("[register] UNHANDLED ERROR", e);
     }
     return jsonNoStore({ ok: false, error: "UNHANDLED" }, 500);
   }
