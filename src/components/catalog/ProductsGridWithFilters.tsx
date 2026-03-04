@@ -367,7 +367,7 @@ export default function ProductsGridWithFilters({
                     inStock={inStock}
                     disabled={isDisabled}
                     disabledLabel={notBuyable ? "Non acquistabile" : "Esaurito"}
-                    className="h-11 w-full rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="h-11 w-full rounded-xl bg-primary px-4 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
                     stockQty={typeof p.stockQty === "number" ? p.stockQty : undefined}
                     trackInventory={typeof p.trackInventory === "boolean" ? p.trackInventory : undefined}
                   />

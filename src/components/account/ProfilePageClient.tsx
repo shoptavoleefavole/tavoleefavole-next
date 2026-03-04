@@ -2,7 +2,13 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 
 type Address = {
@@ -13,7 +19,6 @@ type Address = {
   country: string;
 };
 
-// ✅ FIX: aggiunto tutti i campi aziendali al tipo
 type ProfilePayload = {
   ok: boolean;
   exists?: boolean;
@@ -21,12 +26,12 @@ type ProfilePayload = {
   customerType?: "PRIVATE" | "BUSINESS";
   firstName?: string | null;
   lastName?: string | null;
-  // ✅ Campi aziendali
+  // campi azienda
   companyName?: string | null;
   vatNumber?: string | null;
   pec?: string | null;
   sdi?: string | null;
-  // Indirizzi
+  // indirizzi
   shippingAddress?: Address | null;
   billingAddress?: Address | null;
   error?: string;
@@ -36,6 +41,7 @@ type ProfilePayload = {
 
 const AUTH_EVENT = "tf:auth-changed";
 const LOGIN_REDIRECT = "/accedi?next=/account/profilo";
+
 const EMPTY_ADDRESS: Address = {
   address: "",
   city: "",
@@ -72,28 +78,37 @@ function isEmptyAddress(a: Address) {
     (x) => String(x ?? "").trim().length > 0
   );
   const country = String(a.country ?? "").trim().toUpperCase();
-  return coreEmpty && (!country || country === "IT");
+  const countryIsDefaultOrEmpty = !country || country === "IT";
+  return coreEmpty && countryIsDefaultOrEmpty;
 }
 
 function validateAddress(a: Address) {
   if (isEmptyAddress(a)) return { ok: true, msg: "" };
-  if (a.address.trim().length < 2) return { ok: false, msg: "Indirizzo non valido." };
-  if (a.city.trim().length < 2) return { ok: false, msg: "Città non valida." };
-  if (a.postalCode.trim().length < 3) return { ok: false, msg: "CAP non valido." };
+  if (a.address.trim().length < 2)
+    return { ok: false, msg: "Indirizzo non valido." };
+  if (a.city.trim().length < 2)
+    return { ok: false, msg: "Città non valida." };
+  if (a.postalCode.trim().length < 3)
+    return { ok: false, msg: "CAP non valido." };
   if (toCountry2(a.country).trim().length !== 2)
-    return { ok: false, msg: "Paese non valido (usa 2 lettere, es. IT)." };
+    return {
+      ok: false,
+      msg: "Paese non valido (usa 2 lettere, es. IT).",
+    };
   return { ok: true, msg: "" };
 }
 
-// ✅ Validazione PEC
-function isValidEmail(v: string) {
-  const e = v.trim().toLowerCase();
+function isValidEmail(email: string) {
+  const e = email.trim().toLowerCase();
   if (!e || e.length > 254) return false;
   if (/\s/.test(e)) return false;
   const at = e.indexOf("@");
   if (at <= 0 || at !== e.lastIndexOf("@")) return false;
   const domain = e.slice(at + 1);
-  return Boolean(domain && domain.includes(".") && !domain.startsWith(".") && !domain.endsWith("."));
+  if (!domain || !domain.includes(".") || domain.startsWith(".") || domain.endsWith(".")) {
+    return false;
+  }
+  return true;
 }
 
 function firstToken(full: string) {
@@ -119,19 +134,11 @@ function applyAddressFromServer(
   return incN;
 }
 
-// ✅ Sezione campo riutilizzabile
-function Field({
-  label,
-  value,
-  onChange,
-  type = "text",
-  readOnly = false,
-  disabled = false,
-  autoComplete,
-  inputMode,
-  maxLength,
-  className = "",
-}: {
+/* ------------------------------------------------------------------ */
+/*  Campo riutilizzabile                                              */
+/* ------------------------------------------------------------------ */
+
+function Field(props: {
   label: string;
   value: string;
   onChange?: (v: string) => void;
@@ -143,11 +150,26 @@ function Field({
   maxLength?: number;
   className?: string;
 }) {
+  const {
+    label,
+    value,
+    onChange,
+    type = "text",
+    readOnly,
+    disabled,
+    autoComplete,
+    inputMode,
+    maxLength,
+    className = "",
+  } = props;
+
   return (
     <div>
       <label className="block text-sm font-medium">{label}</label>
       <input
-        className={`mt-1 w-full rounded-md border p-3 ${readOnly || disabled ? "bg-surface text-text/60" : ""} ${className}`}
+        className={`mt-1 w-full rounded-md border p-3 ${
+          readOnly || disabled ? "bg-surface text-text/60" : ""
+        } ${className}`}
         value={value}
         onChange={onChange ? (e) => onChange(e.target.value) : undefined}
         type={type}
@@ -161,26 +183,32 @@ function Field({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Componente principale                                             */
+/* ------------------------------------------------------------------ */
+
 export default function ProfilePageClient() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   const [email, setEmail] = useState("");
-  const [customerType, setCustomerType] = useState<"PRIVATE" | "BUSINESS">("PRIVATE");
+  const [customerType, setCustomerType] =
+    useState<"PRIVATE" | "BUSINESS">("PRIVATE");
 
-  // Dati account
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  // ✅ FIX: stato per i campi aziendali
+  // dati azienda (solo se BUSINESS)
   const [companyName, setCompanyName] = useState("");
   const [vatNumber, setVatNumber] = useState("");
   const [pec, setPec] = useState("");
   const [sdi, setSdi] = useState("");
 
-  // Indirizzi
-  const [shippingAddress, setShippingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
-  const [billingAddress, setBillingAddress] = useState<Address>({ ...EMPTY_ADDRESS });
+  const [shippingAddress, setShippingAddress] =
+    useState<Address>({ ...EMPTY_ADDRESS });
+  const [billingAddress, setBillingAddress] =
+    useState<Address>({ ...EMPTY_ADDRESS });
+
   const [sameAsShipping, setSameAsShipping] = useState(false);
 
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -192,7 +220,9 @@ export default function ProfilePageClient() {
 
   useEffect(() => {
     aliveRef.current = true;
-    return () => { aliveRef.current = false; };
+    return () => {
+      aliveRef.current = false;
+    };
   }, []);
 
   const nameOk = useMemo(
@@ -200,26 +230,33 @@ export default function ProfilePageClient() {
     [firstName, lastName]
   );
 
-  // ✅ Validazioni aziendali (solo per BUSINESS)
+  const isBusiness = customerType === "BUSINESS";
+
   const companyOk = useMemo(
-    () => customerType !== "BUSINESS" || companyName.trim().length >= 2,
-    [customerType, companyName]
+    () => !isBusiness || companyName.trim().length >= 2,
+    [isBusiness, companyName]
   );
   const vatOk = useMemo(
-    () => customerType !== "BUSINESS" || vatNumber.trim().length >= 5,
-    [customerType, vatNumber]
+    () => !isBusiness || vatNumber.trim().length >= 5,
+    [isBusiness, vatNumber]
   );
   const pecOk = useMemo(
-    () => customerType !== "BUSINESS" || isValidEmail(pec),
-    [customerType, pec]
+    () => !isBusiness || isValidEmail(pec),
+    [isBusiness, pec]
   );
   const sdiOk = useMemo(
-    () => customerType !== "BUSINESS" || sdi.trim().length >= 3,
-    [customerType, sdi]
+    () => !isBusiness || sdi.trim().length >= 3,
+    [isBusiness, sdi]
   );
 
-  const shipVal = useMemo(() => validateAddress(shippingAddress), [shippingAddress]);
-  const billVal = useMemo(() => validateAddress(billingAddress), [billingAddress]);
+  const shipVal = useMemo(
+    () => validateAddress(shippingAddress),
+    [shippingAddress]
+  );
+  const billVal = useMemo(
+    () => validateAddress(billingAddress),
+    [billingAddress]
+  );
 
   const canSave =
     nameOk &&
@@ -231,37 +268,55 @@ export default function ProfilePageClient() {
     billVal.ok &&
     !saving;
 
+  // Se l'utente spunta "coincide con spedizione", copia i valori
   useEffect(() => {
     if (!didLoadRef.current) return;
     if (sameAsShipping) setBillingAddress(shippingAddress);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shippingAddress, sameAsShipping]);
 
-  // ✅ FIX: applyProfile ora gestisce anche i campi aziendali
   const applyProfileNonDestructive = useCallback((data: ProfilePayload) => {
     setEmail((cur) => preferNonEmpty(cur, data.email ?? ""));
-    setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+    setCustomerType(
+      data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE"
+    );
+
     setFirstName((cur) => preferNonEmpty(cur, data.firstName ?? ""));
     setLastName((cur) => preferNonEmpty(cur, data.lastName ?? ""));
 
-    // ✅ Campi aziendali
     setCompanyName((cur) => preferNonEmpty(cur, data.companyName ?? ""));
     setVatNumber((cur) => preferNonEmpty(cur, data.vatNumber ?? ""));
     setPec((cur) => preferNonEmpty(cur, data.pec ?? ""));
     setSdi((cur) => preferNonEmpty(cur, data.sdi ?? ""));
 
-    setShippingAddress((cur) => applyAddressFromServer(cur, data.shippingAddress));
-    setBillingAddress((cur) => applyAddressFromServer(cur, data.billingAddress));
+    setShippingAddress((cur) =>
+      applyAddressFromServer(cur, data.shippingAddress)
+    );
+    setBillingAddress((cur) =>
+      applyAddressFromServer(cur, data.billingAddress)
+    );
 
     if (data.shippingAddress !== undefined && data.billingAddress !== undefined) {
-      const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
-      const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
+      const ship = data.shippingAddress
+        ? normalizeAddress(data.shippingAddress)
+        : null;
+      const bill = data.billingAddress
+        ? normalizeAddress(data.billingAddress)
+        : null;
+
       const same =
         (ship === null && bill === null) ||
         (ship !== null &&
           bill !== null &&
-          JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
-            JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
+          JSON.stringify({
+            ...ship,
+            country: toCountry2(ship.country || "IT"),
+          }) ===
+            JSON.stringify({
+              ...bill,
+              country: toCountry2(bill.country || "IT"),
+            }));
+
       setSameAsShipping(Boolean(same));
     }
   }, []);
@@ -274,7 +329,10 @@ export default function ProfilePageClient() {
         credentials: "include",
         headers: { Accept: "application/json" },
       });
-      const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+
+      const data = (await res.json().catch(() => null)) as
+        | ProfilePayload
+        | null;
       if (!aliveRef.current) return;
       if (!res.ok) {
         if (res.status === 401) window.location.href = LOGIN_REDIRECT;
@@ -305,7 +363,9 @@ export default function ProfilePageClient() {
           headers: { Accept: "application/json" },
         });
 
-        const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+        const data = (await res.json().catch(() => null)) as
+          | ProfilePayload
+          | null;
         if (canceled || !aliveRef.current) return;
 
         if (!res.ok) {
@@ -320,27 +380,45 @@ export default function ProfilePageClient() {
           return;
         }
 
-        // ✅ FIX: carica tutti i campi inclusi quelli aziendali
         setEmail(String(data.email ?? ""));
-        setCustomerType(data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE");
+        setCustomerType(
+          data.customerType === "BUSINESS" ? "BUSINESS" : "PRIVATE"
+        );
         setFirstName(String(data.firstName ?? ""));
         setLastName(String(data.lastName ?? ""));
+
         setCompanyName(String(data.companyName ?? ""));
         setVatNumber(String(data.vatNumber ?? ""));
         setPec(String(data.pec ?? ""));
         setSdi(String(data.sdi ?? ""));
 
-        setShippingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.shippingAddress));
-        setBillingAddress(applyAddressFromServer({ ...EMPTY_ADDRESS }, data.billingAddress));
+        setShippingAddress(
+          applyAddressFromServer({ ...EMPTY_ADDRESS }, data.shippingAddress)
+        );
+        setBillingAddress(
+          applyAddressFromServer({ ...EMPTY_ADDRESS }, data.billingAddress)
+        );
 
-        const ship = data.shippingAddress ? normalizeAddress(data.shippingAddress) : null;
-        const bill = data.billingAddress ? normalizeAddress(data.billingAddress) : null;
+        const ship = data.shippingAddress
+          ? normalizeAddress(data.shippingAddress)
+          : null;
+        const bill = data.billingAddress
+          ? normalizeAddress(data.billingAddress)
+          : null;
+
         const same =
           (ship === null && bill === null) ||
           (ship !== null &&
             bill !== null &&
-            JSON.stringify({ ...ship, country: toCountry2(ship.country || "IT") }) ===
-              JSON.stringify({ ...bill, country: toCountry2(bill.country || "IT") }));
+            JSON.stringify({
+              ...ship,
+              country: toCountry2(ship.country || "IT"),
+            }) ===
+              JSON.stringify({
+                ...bill,
+                country: toCountry2(bill.country || "IT"),
+              }));
+
         setSameAsShipping(Boolean(same));
       } catch {
         if (canceled || !aliveRef.current) return;
@@ -352,7 +430,9 @@ export default function ProfilePageClient() {
       }
     })();
 
-    return () => { canceled = true; };
+    return () => {
+      canceled = true;
+    };
   }, []);
 
   async function onSave(e: FormEvent) {
@@ -362,11 +442,16 @@ export default function ProfilePageClient() {
     setDebugMsg(null);
 
     if (!canSave) {
-      if (!nameOk) setErrorMsg("Inserisci nome e cognome (minimo 2 caratteri).");
-      else if (!companyOk) setErrorMsg("Inserisci la ragione sociale.");
-      else if (!vatOk) setErrorMsg("Inserisci la Partita IVA.");
-      else if (!pecOk) setErrorMsg("Inserisci una PEC valida.");
-      else if (!sdiOk) setErrorMsg("Inserisci il codice SDI.");
+      if (!nameOk)
+        setErrorMsg("Inserisci nome e cognome (minimo 2 caratteri).");
+      else if (!companyOk)
+        setErrorMsg("Inserisci la ragione sociale.");
+      else if (!vatOk)
+        setErrorMsg("Inserisci una Partita IVA valida.");
+      else if (!pecOk)
+        setErrorMsg("Inserisci una PEC valida.");
+      else if (!sdiOk)
+        setErrorMsg("Inserisci il codice SDI.");
       else if (!shipVal.ok) setErrorMsg(shipVal.msg);
       else if (!billVal.ok) setErrorMsg(billVal.msg);
       return;
@@ -393,31 +478,34 @@ export default function ProfilePageClient() {
         country: toCountry2(billBase.country || "IT"),
       };
 
-      // ✅ FIX: payload include campi aziendali
       const payload: Record<string, any> = {
         firstName: clamp(firstName, 60),
         lastName: clamp(lastName, 60),
         shippingAddress: isEmptyAddress(ship) ? null : ship,
         billingAddress: isEmptyAddress(bill) ? null : bill,
-        ...(customerType === "BUSINESS"
-          ? {
-              companyName: clamp(companyName, 140),
-              vatNumber: clamp(vatNumber, 40),
-              pec: pec.trim().toLowerCase().slice(0, 254),
-              sdi: sdi.trim().toUpperCase().slice(0, 20),
-            }
-          : {}),
       };
+
+      if (isBusiness) {
+        payload.companyName = clamp(companyName, 140);
+        payload.vatNumber = clamp(vatNumber, 40);
+        payload.pec = pec.trim().toLowerCase().slice(0, 254);
+        payload.sdi = sdi.trim().toUpperCase().slice(0, 20);
+      }
 
       const res = await fetch("/api/account/profile", {
         method: "PUT",
         cache: "no-store",
         credentials: "include",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify(payload),
       });
 
-      const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+      const data = (await res.json().catch(() => null)) as
+        | ProfilePayload
+        | null;
 
       if (!res.ok || !data?.ok) {
         if (res.status === 401) {
@@ -431,6 +519,7 @@ export default function ProfilePageClient() {
 
       window.dispatchEvent(new Event(AUTH_EVENT));
       setSuccessMsg("Salvato ✅");
+
       applyProfileNonDestructive(data);
       void reloadProfile();
     } catch {
@@ -445,15 +534,13 @@ export default function ProfilePageClient() {
       <div className="mx-auto max-w-3xl p-6">
         <div className="h-8 w-40 rounded bg-surface animate-pulse" />
         <div className="mt-6 space-y-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-12 rounded bg-surface animate-pulse" />
-          ))}
+          <div className="h-12 rounded bg-surface animate-pulse" />
+          <div className="h-12 rounded bg-surface animate-pulse" />
+          <div className="h-12 rounded bg-surface animate-pulse" />
         </div>
       </div>
     );
   }
-
-  const isBusiness = customerType === "BUSINESS";
 
   return (
     <div className="mx-auto max-w-3xl p-6">
@@ -471,11 +558,11 @@ export default function ProfilePageClient() {
       </p>
 
       <form onSubmit={onSave} className="mt-6 space-y-6" noValidate>
-
-        {/* ✅ Sezione dati aziendali (solo BUSINESS) */}
+        {/* Dati azienda (solo BUSINESS) */}
         {isBusiness && (
           <section className="rounded-2xl border border-border bg-white p-5">
             <h2 className="text-lg font-bold">Dati azienda</h2>
+
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <Field
@@ -486,7 +573,9 @@ export default function ProfilePageClient() {
                   autoComplete="organization"
                 />
                 {companyName.length > 0 && !companyOk && (
-                  <p className="mt-1 text-sm text-red-600">Inserisci la ragione sociale.</p>
+                  <p className="mt-1 text-sm text-red-600">
+                    Inserisci la ragione sociale.
+                  </p>
                 )}
               </div>
 
@@ -498,7 +587,9 @@ export default function ProfilePageClient() {
                   maxLength={40}
                 />
                 {vatNumber.length > 0 && !vatOk && (
-                  <p className="mt-1 text-sm text-red-600">Partita IVA non valida.</p>
+                  <p className="mt-1 text-sm text-red-600">
+                    Partita IVA non valida.
+                  </p>
                 )}
               </div>
 
@@ -511,7 +602,9 @@ export default function ProfilePageClient() {
                   className="uppercase"
                 />
                 {sdi.length > 0 && !sdiOk && (
-                  <p className="mt-1 text-sm text-red-600">Inserisci il codice SDI.</p>
+                  <p className="mt-1 text-sm text-red-600">
+                    Inserisci il codice SDI.
+                  </p>
                 )}
               </div>
 
@@ -525,7 +618,9 @@ export default function ProfilePageClient() {
                   autoComplete="email"
                 />
                 {pec.length > 0 && !pecOk && (
-                  <p className="mt-1 text-sm text-red-600">Inserisci una PEC valida.</p>
+                  <p className="mt-1 text-sm text-red-600">
+                    Inserisci una PEC valida.
+                  </p>
                 )}
               </div>
             </div>
@@ -574,7 +669,7 @@ export default function ProfilePageClient() {
           </p>
         </section>
 
-        {/* Indirizzo spedizione */}
+        {/* Indirizzo di spedizione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Indirizzo di spedizione</h2>
 
@@ -583,33 +678,47 @@ export default function ProfilePageClient() {
               <Field
                 label="Indirizzo"
                 value={shippingAddress.address}
-                onChange={(v) => setShippingAddress((p) => ({ ...p, address: v }))}
+                onChange={(v) =>
+                  setShippingAddress((p) => ({ ...p, address: v }))
+                }
                 autoComplete="shipping street-address"
               />
             </div>
+
             <Field
               label="Città"
               value={shippingAddress.city}
-              onChange={(v) => setShippingAddress((p) => ({ ...p, city: v }))}
+              onChange={(v) =>
+                setShippingAddress((p) => ({ ...p, city: v }))
+              }
               autoComplete="shipping address-level2"
             />
+
             <Field
               label="CAP"
               value={shippingAddress.postalCode}
-              onChange={(v) => setShippingAddress((p) => ({ ...p, postalCode: v }))}
+              onChange={(v) =>
+                setShippingAddress((p) => ({ ...p, postalCode: v }))
+              }
               autoComplete="shipping postal-code"
               inputMode="numeric"
             />
+
             <Field
               label="Provincia"
               value={shippingAddress.province}
-              onChange={(v) => setShippingAddress((p) => ({ ...p, province: v }))}
+              onChange={(v) =>
+                setShippingAddress((p) => ({ ...p, province: v }))
+              }
               autoComplete="shipping address-level1"
             />
+
             <Field
               label="Paese (2 lettere)"
               value={shippingAddress.country}
-              onChange={(v) => setShippingAddress((p) => ({ ...p, country: v }))}
+              onChange={(v) =>
+                setShippingAddress((p) => ({ ...p, country: v }))
+              }
               autoComplete="shipping country"
               className="uppercase"
             />
@@ -648,33 +757,47 @@ export default function ProfilePageClient() {
                 <Field
                   label="Indirizzo"
                   value={billingAddress.address}
-                  onChange={(v) => setBillingAddress((p) => ({ ...p, address: v }))}
+                  onChange={(v) =>
+                    setBillingAddress((p) => ({ ...p, address: v }))
+                  }
                   autoComplete="billing street-address"
                 />
               </div>
+
               <Field
                 label="Città"
                 value={billingAddress.city}
-                onChange={(v) => setBillingAddress((p) => ({ ...p, city: v }))}
+                onChange={(v) =>
+                  setBillingAddress((p) => ({ ...p, city: v }))
+                }
                 autoComplete="billing address-level2"
               />
+
               <Field
                 label="CAP"
                 value={billingAddress.postalCode}
-                onChange={(v) => setBillingAddress((p) => ({ ...p, postalCode: v }))}
+                onChange={(v) =>
+                  setBillingAddress((p) => ({ ...p, postalCode: v }))
+                }
                 autoComplete="billing postal-code"
                 inputMode="numeric"
               />
+
               <Field
                 label="Provincia"
                 value={billingAddress.province}
-                onChange={(v) => setBillingAddress((p) => ({ ...p, province: v }))}
+                onChange={(v) =>
+                  setBillingAddress((p) => ({ ...p, province: v }))
+                }
                 autoComplete="billing address-level1"
               />
+
               <Field
                 label="Paese (2 lettere)"
                 value={billingAddress.country}
-                onChange={(v) => setBillingAddress((p) => ({ ...p, country: v }))}
+                onChange={(v) =>
+                  setBillingAddress((p) => ({ ...p, country: v }))
+                }
                 autoComplete="billing country"
                 className="uppercase"
               />
