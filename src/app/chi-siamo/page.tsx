@@ -23,17 +23,17 @@ export default function ChiSiamoPage() {
       </header>
 
       <section className="mt-8 overflow-hidden rounded-3xl border border-border bg-surface">
-        <div className="relative aspect-[16/9] w-full">
+        <div className="relative w-full aspect-[16/9] overflow-hidden rounded-2xl">
           <Image
-            // ✅ Se hai messo l’immagine qui: /public/brand/chi-siamo.webp
-            src="/brand/chi-siamo.webp"
+            src="/chi-siamo/chi-siamo-negozio.webp"
             alt="Tavole & Favole - illustrazione del negozio"
             fill
-            sizes="(min-width: 1024px) 1024px, 100vw"
+            sizes="(max-width: 768px) 100vw, 800px"
             className="object-cover"
             priority
           />
         </div>
+
 
         <div className="p-6 sm:p-8">
           <h2 className="text-lg font-semibold">Una selezione fatta con cura</h2>
