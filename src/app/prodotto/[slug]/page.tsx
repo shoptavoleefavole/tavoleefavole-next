@@ -1,10 +1,12 @@
+// src/app/prodotto/[slug]/page.tsx
+
 export const dynamic = "force-dynamic";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { cookies } from "next/headers";
 
 import AddToCartButton from "@/components/cart/AddToCartButton";
-// ✅ lasciamo import per debug, ma non è più source of truth
 import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 
@@ -25,6 +27,11 @@ const STRAPI_URL =
   process.env.STRAPI_URL ||
   "http://localhost:1337";
 
+const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://tavoleefavole-next-t7pd.vercel.app"
+).replace(/\/+$/, "");
+
 type CategoryRef = { slug: string; label: string };
 
 type ProductLike = {
@@ -34,6 +41,7 @@ type ProductLike = {
   name: string;
   price?: number | null;
   compareAtPrice?: number | null;
+  priceAziende?: number | null;        // ← AGGIUNTO
   shortDescription?: string | null;
   description?: any;
   specs?: any;
@@ -48,11 +56,11 @@ type ProductLike = {
   seoDescription?: string | null;
   seoImage?: string | null;
   isNew?: boolean;
-
-  // ✅ STOCK (Strapi)
   stockQty?: number | null;
   trackInventory?: boolean | null;
 };
+
+// ─── utils ────────────────────────────────────────────────────────────────────
 
 function safeDecode(v: unknown): string {
   const s = String(v ?? "").trim();
@@ -75,10 +83,8 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
 
 function extractMediaUrls(base: string, media: any): string[] {
   if (!media) return [];
-
   const data = media?.data ?? media;
   const arr = Array.isArray(data) ? data : [data];
-
   return arr
     .map((node) => {
       const u =
@@ -93,7 +99,6 @@ function extractMediaUrls(base: string, media: any): string[] {
         node?.formats?.small?.url ??
         node?.formats?.thumbnail?.url ??
         null;
-
       return absUrl(base, u) || "";
     })
     .filter(Boolean);
@@ -105,15 +110,11 @@ function getImages(product: ProductLike): string[] {
     if (typeof first === "string") return (product as any).images as string[];
     return extractMediaUrls(STRAPI_URL, (product as any).images);
   }
-
   const fromMedia = extractMediaUrls(STRAPI_URL, (product as any)?.images);
   if (fromMedia.length) return fromMedia;
-
   if (typeof product?.image === "string" && product.image) return [product.image];
-
   const fromImage = extractMediaUrls(STRAPI_URL, (product as any)?.image);
   if (fromImage.length) return fromImage;
-
   return [];
 }
 
@@ -126,7 +127,6 @@ function clampText(s: unknown, max = 160): string {
 function richTextToPlainText(value: any): string {
   if (!value) return "";
   if (typeof value === "string") return value;
-
   if (Array.isArray(value)) {
     const parts: string[] = [];
     for (const block of value) {
@@ -140,12 +140,7 @@ function richTextToPlainText(value: any): string {
     }
     return parts.join("\n\n").trim();
   }
-
-  try {
-    return String(value);
-  } catch {
-    return "";
-  }
+  try { return String(value); } catch { return ""; }
 }
 
 function toNumber(v: unknown): number | null {
@@ -157,7 +152,6 @@ function getDefaultSku(p: ProductLike): string | null {
   return p?.variants?.[0]?.sku ?? p?.variant?.sku ?? null;
 }
 
-// ✅ chiave robusta per preferiti (Strapi 5: documentId)
 function favoriteKey(p: { documentId?: any; id?: any; slug?: any }) {
   return String(p?.documentId ?? p?.id ?? p?.slug ?? "").trim();
 }
@@ -165,11 +159,9 @@ function favoriteKey(p: { documentId?: any; id?: any; slug?: any }) {
 type StockStatus = "in" | "out" | "unknown";
 
 function getStockStatus(trackInventory?: boolean | null, stockQty?: number | null): StockStatus {
-  // trackInventory === false => sempre acquistabile
   if (trackInventory === false) return "in";
-
   const n = typeof stockQty === "number" && Number.isFinite(stockQty) ? stockQty : null;
-  if (n === null) return "unknown"; // fallback permissivo
+  if (n === null) return "unknown";
   return n > 0 ? "in" : "out";
 }
 
@@ -178,6 +170,30 @@ function stockBadge(status: StockStatus) {
   if (status === "out") return { text: "Esaurito", cls: "border-red-200 text-red-600" };
   return { text: "Disponibilità da verificare", cls: "border-border text-text/70" };
 }
+
+// ─── Business user check ──────────────────────────────────────────────────────
+
+async function checkIsBusiness(): Promise<boolean> {
+  try {
+    const cookieStore = await cookies();
+    const tf = cookieStore.get("tf_token")?.value ?? null;
+    if (!tf) return false;
+
+    const res = await fetch(`${SITE_URL}/api/account/type`, {
+      cache: "no-store",
+      headers: { Cookie: cookieStore.toString() },
+    });
+    if (!res.ok) return false;
+
+    const json = await res.json().catch(() => null);
+    const ct = String(json?.customerType ?? "").toUpperCase();
+    return ct === "AZIENDE" || ct === "BUSINESS";
+  } catch {
+    return false;
+  }
+}
+
+// ─── Metadata ─────────────────────────────────────────────────────────────────
 
 export async function generateMetadata({
   params,
@@ -228,74 +244,44 @@ export async function generateMetadata({
   };
 }
 
+// ─── TrustRow ─────────────────────────────────────────────────────────────────
+
 function TrustRow() {
   return (
     <div className="mt-4 grid gap-2">
       <div className="flex items-start gap-2 text-sm text-text/80">
         <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path
-              d="M6.5 10.2l2.1 2.2 5-5.6"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M6.5 10.2l2.1 2.2 5-5.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
-        <span>
-          <b>Spedizione rapida</b> e imballo curato.
-        </span>
+        <span><b>Spedizione rapida</b> e imballo curato.</span>
       </div>
 
       <div className="flex items-start gap-2 text-sm text-text/80">
         <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path
-              d="M10 3.6a6.4 6.4 0 106.4 6.4"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-            />
-            <path
-              d="M10 6.2v4.1l2.8 1.7"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M10 3.6a6.4 6.4 0 106.4 6.4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+            <path d="M10 6.2v4.1l2.8 1.7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
-        <span>
-          <b>Reso facile</b> se cambi idea.
-        </span>
+        <span><b>Reso facile</b> se cambi idea.</span>
       </div>
 
       <div className="flex items-start gap-2 text-sm text-text/80">
         <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path
-              d="M10 2.5l6 2.6V10c0 4.4-3.1 7.3-6 8.4C7.1 17.3 4 14.4 4 10V5.1l6-2.6z"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M7.4 10.1l1.7 1.8 3.6-4"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M10 2.5l6 2.6V10c0 4.4-3.1 7.3-6 8.4C7.1 17.3 4 14.4 4 10V5.1l6-2.6z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+            <path d="M7.4 10.1l1.7 1.8 3.6-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </span>
-        <span>
-          <b>Pagamenti sicuri</b> e assistenza dedicata.
-        </span>
+        <span><b>Pagamenti sicuri</b> e assistenza dedicata.</span>
       </div>
     </div>
   );
 }
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function ProductPage({
   params,
@@ -316,12 +302,22 @@ export default async function ProductPage({
 
   const product = bySlug;
   const images = getImages(product);
-
   const favId = favoriteKey(product);
 
-  // ✅ SOURCE OF TRUTH: Strapi stock fields
+  // ─── Business check ──────────────────────────────────────────────────────
+  const isBusiness = await checkIsBusiness();
+
+  const rawPriceAziende = toNumber((product as any)?.priceAziende);
+  const priceAziende =
+    isBusiness && rawPriceAziende !== null && rawPriceAziende > 0
+      ? rawPriceAziende
+      : null;
+
+  // ─── Stock ───────────────────────────────────────────────────────────────
   const stockQty =
-    typeof product?.stockQty === "number" && Number.isFinite(product.stockQty) ? product.stockQty : null;
+    typeof product?.stockQty === "number" && Number.isFinite(product.stockQty)
+      ? product.stockQty
+      : null;
 
   const trackInventory =
     typeof product?.trackInventory === "boolean" ? product.trackInventory : null;
@@ -329,29 +325,24 @@ export default async function ProductPage({
   const status = getStockStatus(trackInventory, stockQty);
   const badge = stockBadge(status);
 
-  // ✅ quantità da mostrare in UI (solo se inventario tracciato)
   const stockQtyUi =
     trackInventory === true && stockQty != null ? Math.max(0, stockQty) : null;
 
-  // (Debug) Availability via inventory API - non decide lo stock, solo info in dev
   const defaultSku = getDefaultSku(product);
   const availability = defaultSku
     ? await getAvailability({ skus: [defaultSku], warehouse: "MAIN" })
     : null;
-
   const row = defaultSku ? (availability as any)?.data?.MAIN?.[defaultSku] ?? null : null;
 
-  // Category/Subcategory
+  // ─── Category ────────────────────────────────────────────────────────────
   const catSlug = product?.category?.slug ?? null;
   const subSlug = product?.subcategory?.slug ?? null;
-
   const macro = catSlug ? await getMacroBySlug(catSlug) : null;
   const sub = catSlug && subSlug ? await getSubBySlug(catSlug, subSlug) : null;
-
   const catLabel = product?.category?.label ?? macro?.label ?? catSlug ?? "";
   const subLabel = product?.subcategory?.label ?? sub?.label ?? subSlug ?? "";
 
-  // Related
+  // ─── Related ─────────────────────────────────────────────────────────────
   const related = (await getRelatedProducts(product as any, 8)) as any[];
 
   const price = toNumber(product?.price) ?? 0;
@@ -365,6 +356,9 @@ export default async function ProductPage({
 
   const cartId = String(product?.documentId ?? product?.id ?? product?.slug);
   const cartImage = (images?.[0] ?? product?.image ?? null) || undefined;
+
+  // Prezzo effettivo da passare al carrello (aziende → priceAziende)
+  const effectivePrice = priceAziende ?? price;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 lg:py-8">
@@ -384,7 +378,6 @@ export default async function ProductPage({
         <div className="lg:col-span-7">
           <div className="relative">
             <ProductGallery images={images} alt={product.name} />
-
             {favId ? (
               <div className="absolute bottom-3 right-3 z-30 rounded-full bg-white/90 p-2 shadow">
                 <FavoriteToggleButton productId={favId} />
@@ -394,17 +387,11 @@ export default async function ProductPage({
 
           <div className="mt-4 flex flex-wrap gap-2">
             {product.isNew ? (
-              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold">
-                Novità
-              </span>
+              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold">Novità</span>
             ) : null}
-
             {hasSale ? (
-              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold">
-                Offerta
-              </span>
+              <span className="rounded-full border border-border px-3 py-1 text-xs font-semibold">Offerta</span>
             ) : null}
-
             <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badge.cls}`}>
               {badge.text}
             </span>
@@ -419,16 +406,36 @@ export default async function ProductPage({
               <p className="mt-3 text-sm text-text/70 md:text-base">{shortDesc}</p>
             ) : null}
 
-            <div className="mt-4 flex items-baseline gap-3">
-              {price > 0 ? (
-                <div className="text-3xl font-extrabold">€ {price.toFixed(2)}</div>
+            {/* ─── Prezzo ───────────────────────────────────────────────── */}
+            <div className="mt-4">
+              {priceAziende !== null ? (
+                // Prezzo riservato aziende
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-baseline gap-3">
+                    <div className="text-3xl font-extrabold text-primary">
+                      € {priceAziende.toFixed(2)}
+                    </div>
+                    <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary/80">
+                      Prezzo azienda
+                    </span>
+                  </div>
+                  {price > 0 ? (
+                    <div className="text-sm text-text/50 line-through">
+                      Prezzo listino: € {price.toFixed(2)}
+                    </div>
+                  ) : null}
+                </div>
+              ) : price > 0 ? (
+                // Prezzo normale
+                <div className="flex items-baseline gap-3">
+                  <div className="text-3xl font-extrabold">€ {price.toFixed(2)}</div>
+                  {hasSale ? (
+                    <div className="text-sm text-text/60 line-through">€ {compareAt!.toFixed(2)}</div>
+                  ) : null}
+                </div>
               ) : (
                 <div className="text-lg font-extrabold text-text/60">Prezzo non disponibile</div>
               )}
-
-              {hasSale ? (
-                <div className="text-sm text-text/60 line-through">€ {compareAt!.toFixed(2)}</div>
-              ) : null}
             </div>
 
             <div className="mt-3 text-sm text-text/70">
@@ -452,7 +459,6 @@ export default async function ProductPage({
                 </div>
               </div>
 
-              {/* ✅ Quantità disponibile (solo se trackInventory=true e qty valida) */}
               {stockQtyUi != null ? (
                 <div className="mt-2 flex items-center justify-between text-sm">
                   <span className="text-text/70">Quantità disponibile</span>
@@ -462,17 +468,16 @@ export default async function ProductPage({
 
               <p className="mt-2 text-sm text-text/70">
                 {status === "in"
-                  ? "Spedizione veloce: prepariamo l’ordine appena confermato."
+                  ? "Spedizione veloce: prepariamo l'ordine appena confermato."
                   : status === "out"
                     ? "Puoi comunque salvare il prodotto e tornare più tardi."
-                    : "La disponibilità verrà confermata durante l’ordine."}
+                    : "La disponibilità verrà confermata durante l'ordine."}
               </p>
 
               {process.env.NODE_ENV !== "production" ? (
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-text/60">
                   <span className="rounded-full border border-border px-3 py-1">
-                    trackInventory:{" "}
-                    <b className="text-text">{String(trackInventory ?? "null")}</b>
+                    trackInventory: <b className="text-text">{String(trackInventory ?? "null")}</b>
                   </span>
                   <span className="rounded-full border border-border px-3 py-1">
                     stockQty: <b className="text-text">{String(stockQty ?? "null")}</b>
@@ -502,22 +507,19 @@ export default async function ProductPage({
             <div className="mt-6 rounded-2xl border border-border bg-background p-4">
               <div className="text-sm font-extrabold">Acquisto</div>
 
-              {price > 0 ? (
+              {effectivePrice > 0 ? (
                 <div className="mt-3">
                   <AddToCartButton
                     id={cartId}
                     slug={product.slug}
                     name={product.name}
                     image={cartImage}
-                    price={price}
+                    price={effectivePrice}
                     qty={1}
-                    // ✅ stock da Strapi
                     stockQty={stockQty}
                     trackInventory={trackInventory ?? undefined}
-                    // ✅ legacy fallback (se unknown -> true)
                     inStock={status !== "out"}
                     disabledLabel="Non disponibile"
-                    // ✅ blocco solo se OUT. Unknown non blocca.
                     disabled={status === "out"}
                   />
                 </div>
@@ -538,7 +540,7 @@ export default async function ProductPage({
 
               {favId ? (
                 <div className="mt-3 text-xs text-text/60">
-                  Salva nei preferiti per ritrovarlo nell’area personale.
+                  Salva nei preferiti per ritrovarlo nell'area personale.
                 </div>
               ) : null}
             </div>
@@ -561,10 +563,10 @@ export default async function ProductPage({
         specs={Array.isArray(product.specs) ? product.specs : null}
       />
 
+      {/* ─── Prodotti correlati ─────────────────────────────────────────── */}
       <section className="mt-12">
         <div className="flex items-end justify-between gap-3">
           <h2 className="text-xl font-extrabold">Ti suggeriamo anche…</h2>
-
           {catSlug ? (
             <Link
               href={`/catalogo?categoria=${encodeURIComponent(catSlug)}`}
@@ -586,6 +588,8 @@ export default async function ProductPage({
 
             const pPrice = toNumber(pRel?.price) ?? 0;
             const pCompare = toNumber(pRel?.compareAtPrice);
+            const pPriceAziende =
+              isBusiness ? toNumber(pRel?.priceAziende) : null;
 
             const relFavId = favoriteKey({
               documentId: pRel?.documentId,
@@ -619,16 +623,36 @@ export default async function ProductPage({
 
                   <div className="mt-3">
                     <div className="text-sm font-semibold line-clamp-2">{pRel.name}</div>
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-sm font-bold">
-                        {pPrice > 0 ? `€ ${pPrice.toFixed(2)}` : "—"}
-                      </span>
-                      {pCompare && pCompare > pPrice && pPrice > 0 ? (
-                        <span className="text-xs line-through text-text/50">
-                          € {pCompare.toFixed(2)}
+
+                    {/* Prezzo correlati con supporto aziende */}
+                    {pPriceAziende !== null && pPriceAziende > 0 ? (
+                      <div className="mt-2 flex flex-col gap-0.5">
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-sm font-bold text-primary">
+                            € {pPriceAziende.toFixed(2)}
+                          </span>
+                          <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-semibold text-primary/80">
+                            Azienda
+                          </span>
+                        </div>
+                        {pPrice > 0 ? (
+                          <span className="text-xs line-through text-text/50">
+                            € {pPrice.toFixed(2)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span className="text-sm font-bold">
+                          {pPrice > 0 ? `€ ${pPrice.toFixed(2)}` : "—"}
                         </span>
-                      ) : null}
-                    </div>
+                        {pCompare && pCompare > pPrice && pPrice > 0 ? (
+                          <span className="text-xs line-through text-text/50">
+                            € {pCompare.toFixed(2)}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 </Link>
               </div>
