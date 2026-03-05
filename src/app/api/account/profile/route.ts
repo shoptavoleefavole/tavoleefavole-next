@@ -276,44 +276,46 @@ function serviceHeaders() {
 }
 
 async function findCustomerProfile(base: string, userId: number) {
-  async function tryQuery(qs: URLSearchParams) {
+  const attempts = [
+    { filter: "filters[user][id][$eq]", preview: false },
+    { filter: "filters[user][id][$eq]", preview: true },
+  ];
+
+  for (const { filter, preview } of attempts) {
+    const qs = new URLSearchParams();
+    qs.set("populate[azienda][populate]", "billingAddress");
+    qs.set("populate[shippingAddress]", "true");
+    qs.set("populate[billingAddress]", "true");
+    qs.set("pagination[pageSize]", "1");
+    qs.set(filter, String(userId));
+    if (preview) qs.set("publicationState", "preview");
+
     const r = await fetchJson(
       `${base}/api/customer-profiles?${qs.toString()}`,
       { method: "GET", headers: serviceHeaders() },
       12_000
     );
+
+    if (isDev) {
+      console.log("[findCustomerProfile] attempt", filter, preview,
+        "status:", r.res.status,
+        "count:", r.json?.data?.length ?? 0,
+        "raw:", JSON.stringify(r.json?.data?.[0])?.slice(0, 300)
+      );
+    }
+
     const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-    if (!row) return null;
+    if (!row) continue;
+
     const { id, documentId } = pickKey(row);
-    if (!id && !documentId) return null;
+    if (!id && !documentId) continue;
+
     return { row, id, documentId, attrs: extractAttrs(row) };
-  }
-
-  function makeQs(filterKey: string, preview: boolean) {
-    const qs = new URLSearchParams();
-    qs.set("populate", "azienda,shippingAddress,billingAddress");
-    qs.set("pagination[pageSize]", "1");
-    qs.set(filterKey, String(userId));
-    if (preview) qs.set("publicationState", "preview");
-    return qs;
-  }
-
-  // 1) relazione user standard
-  for (const preview of [false, true]) {
-    const found = await tryQuery(makeQs("filters[user][id][$eq]", preview));
-    if (found) return found;
-  }
-
-  // 2) fallback legacy (users_permissions_user)
-  for (const preview of [false, true]) {
-    const found = await tryQuery(
-      makeQs("filters[users_permissions_user][id][$eq]", preview)
-    );
-    if (found) return found;
   }
 
   return null;
 }
+
 
 // Azienda legata all'utente (relazione users_permissions_users)
 async function findAziendaByUserId(base: string, userId: number) {
@@ -474,6 +476,13 @@ export async function GET(req: Request) {
   if (!me) return jsonNoStore({ ok: false, error: "UNAUTHORIZED" }, 401);
 
   const profile = await findCustomerProfile(base, me.id);
+
+
+  // DEBUG TEMPORANEO - rimuovere dopo fix
+if (isDev || true) {
+  console.log("[profile GET] userId:", me.id, "profile found:", !!profile);
+}
+
 
   // Carica eventuale Azienda (prima da relazione, poi da query diretta)
   let aziendaAttrs: any = null;
