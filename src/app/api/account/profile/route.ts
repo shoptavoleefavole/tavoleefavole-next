@@ -276,45 +276,64 @@ function serviceHeaders() {
 }
 
 async function findCustomerProfile(base: string, userId: number) {
-  const attempts = [
-    { filter: "filters[user][id][$eq]", preview: false },
-    { filter: "filters[user][id][$eq]", preview: true },
-  ];
+  const qs = new URLSearchParams();
+  qs.set("filters[user][id][$eq]", String(userId));
+  qs.set("populate[0]", "shippingAddress");
+  qs.set("populate[1]", "billingAddress");
+  qs.set("populate[2]", "azienda");
+  qs.set("nested", "true");
+  qs.set("pagination[pageSize]", "1");
 
-  for (const { filter, preview } of attempts) {
-    const qs = new URLSearchParams();
-    qs.set("populate[azienda][populate]", "billingAddress");
-    qs.set("populate[shippingAddress]", "true");
-    qs.set("populate[billingAddress]", "true");
-    qs.set("pagination[pageSize]", "1");
-    qs.set(filter, String(userId));
-    if (preview) qs.set("publicationState", "preview");
+  const r = await fetchJson(
+    `${base}/api/customer-profiles?${qs.toString()}`,
+    { method: "GET", headers: serviceHeaders() },
+    12_000
+  );
 
-    const r = await fetchJson(
-      `${base}/api/customer-profiles?${qs.toString()}`,
+  if (isDev || true) {
+    console.log("[findCustomerProfile] v2 status:", r.res.status,
+      "count:", r.json?.data?.length ?? 0,
+      "first:", JSON.stringify(r.json?.data?.[0])?.slice(0, 300)
+    );
+  }
+
+  let row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+
+  // Fallback: scan manuale se il filtro non funziona (Strapi v5)
+  if (!row) {
+    const allQs = new URLSearchParams();
+    allQs.set("populate[0]", "shippingAddress");
+    allQs.set("populate[1]", "billingAddress");
+    allQs.set("populate[2]", "azienda");
+    allQs.set("populate[3]", "user");
+    allQs.set("pagination[pageSize]", "50");
+
+    const allR = await fetchJson(
+      `${base}/api/customer-profiles?${allQs.toString()}`,
       { method: "GET", headers: serviceHeaders() },
       12_000
     );
 
-    if (isDev) {
-      console.log("[findCustomerProfile] attempt", filter, preview,
-        "status:", r.res.status,
-        "count:", r.json?.data?.length ?? 0,
-        "raw:", JSON.stringify(r.json?.data?.[0])?.slice(0, 300)
-      );
+    const allRows = Array.isArray(allR.json?.data) ? allR.json.data : [];
+    row = allRows.find((r: any) => {
+      const a = extractAttrs(r);
+      const u = a?.user?.data ?? a?.user ?? null;
+      const uid = u?.id ?? u?.data?.id ?? null;
+      return Number(uid) === userId;
+    }) ?? null;
+
+    if (isDev || true) {
+      console.log("[findCustomerProfile] fallback scan rows:", allRows.length,
+        "matched:", !!row);
     }
-
-    const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-    if (!row) continue;
-
-    const { id, documentId } = pickKey(row);
-    if (!id && !documentId) continue;
-
-    return { row, id, documentId, attrs: extractAttrs(row) };
   }
 
-  return null;
+  if (!row) return null;
+  const { id, documentId } = pickKey(row);
+  if (!id && !documentId) return null;
+  return { row, id, documentId, attrs: extractAttrs(row) };
 }
+
 
 
 // Azienda legata all'utente (relazione users_permissions_users)
