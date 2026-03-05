@@ -468,7 +468,7 @@ export default async function ProductPage({
 
               <p className="mt-2 text-sm text-text/70">
                 {status === "in"
-                  ? "Spedizione veloce: prepariamo l'ordine appena confermato."
+                  ? "Spedizione veloce: prepariamo l&ordine appena confermato."
                   : status === "out"
                     ? "Puoi comunque salvare il prodotto e tornare più tardi."
                     : "La disponibilità verrà confermata durante l'ordine."}
