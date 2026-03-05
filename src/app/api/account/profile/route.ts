@@ -479,9 +479,17 @@ export async function GET(req: Request) {
 
 
   // DEBUG TEMPORANEO - rimuovere dopo fix
-if (isDev || true) {
-  console.log("[profile GET] userId:", me.id, "profile found:", !!profile);
-}
+// debug: prova query senza filtro per vedere se ci sono record
+const debugAll = await fetchJson(
+  `${base}/api/customer-profiles?pagination[pageSize]=5`,
+  { method: "GET", headers: serviceHeaders() },
+  12_000
+);
+console.log("[findCustomerProfile] DEBUG ALL records count:", 
+  debugAll.json?.data?.length ?? 0,
+  "status:", debugAll.res.status,
+  "sample:", JSON.stringify(debugAll.json?.data?.[0])?.slice(0, 400)
+);
 
 
   // Carica eventuale Azienda (prima da relazione, poi da query diretta)
