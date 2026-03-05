@@ -1,5 +1,8 @@
+// src/app/categoria/[macro]/page.tsx
+
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
@@ -23,8 +26,15 @@ const STRAPI_TOKEN =
   process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
+const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://tavoleefavole-next-t7pd.vercel.app"
+).replace(/\/+$/, "");
+
 const FETCH_TIMEOUT_MS = Number(process.env.CATEGORY_STRAPI_TIMEOUT_MS ?? 6500);
 const PAGE_SIZE = 200;
+
+// ─── utils ────────────────────────────────────────────────────────────────────
 
 function safeDecode(v: unknown) {
   const s = String(v ?? "").trim();
@@ -85,7 +95,10 @@ function toIntOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), init.timeoutMs ?? FETCH_TIMEOUT_MS);
   try {
@@ -152,9 +165,42 @@ async function fetchStrapi(pathOrUrl: string): Promise<FetchStrapiResult> {
   }
 }
 
+// ─── Business user check ──────────────────────────────────────────────────────
+
+async function checkIsBusiness(): Promise<boolean> {
+  try {
+    const cookieStore = await cookies();
+    const tf = cookieStore.get("tf_token")?.value ?? null;
+    if (!tf) return false;
+
+    // Validazione base: deve sembrare un JWT (3 parti base64)
+    const parts = tf.split(".");
+    if (parts.length !== 3) return false;
+
+    const res = await fetchWithTimeout(
+      `${SITE_URL}/api/account/type`,
+      { headers: { Cookie: cookieStore.toString() }, cache: "no-store", timeoutMs: 8000 }
+    );
+    if (!res.ok) return false;
+
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+    const ct = String(json?.customerType ?? "").toUpperCase();
+    return ct === "AZIENDE" || ct === "BUSINESS";
+  } catch {
+    return false;
+  }
+}
+
+// ─── fetch macro ──────────────────────────────────────────────────────────────
+
 async function fetchMacroBySlug(
   slug: string
-): Promise<{ kind: "found"; macro: MacroObj } | { kind: "not_found" } | { kind: "unavailable" }> {
+): Promise<
+  | { kind: "found"; macro: MacroObj }
+  | { kind: "not_found" }
+  | { kind: "unavailable" }
+> {
   const qs = new URLSearchParams();
   qs.set("filters[slug][$eq]", slug);
   qs.set("pagination[pageSize]", "1");
@@ -174,13 +220,14 @@ async function fetchMacroBySlug(
   const subsData = a?.subcategories?.data ?? a?.subcategories ?? [];
 
   const subcategories: Subcat[] = Array.isArray(subsData)
-    ? subsData
-        .flatMap((s: any) => {
-          const sa = s?.attributes ?? s ?? {};
-          const sSlug = safeStr(sa?.slug);
-          if (!sSlug) return [];
-          return [{ slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) }];
-        })
+    ? subsData.flatMap((s: any) => {
+        const sa = s?.attributes ?? s ?? {};
+        const sSlug = safeStr(sa?.slug);
+        if (!sSlug) return [];
+        return [
+          { slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) },
+        ];
+      })
     : [];
 
   return {
@@ -192,6 +239,8 @@ async function fetchMacroBySlug(
     },
   };
 }
+
+// ─── helpers prodotto ─────────────────────────────────────────────────────────
 
 function getDefaultSku(item: any): string | null {
   return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
@@ -237,14 +286,27 @@ function normalizeProduct(row: any, base: string) {
     null;
 
   const firstImage = Array.isArray(imagesData) ? imagesData[0] : imagesData;
-  const bestRaw = pickBestMediaUrl(firstImage) ?? (typeof a?.imageUrl === "string" ? a.imageUrl : null);
+  const bestRaw =
+    pickBestMediaUrl(firstImage) ??
+    (typeof a?.imageUrl === "string" ? a.imageUrl : null);
   const imageUrl = absUrl(base, bestRaw);
 
   const stockQty = toIntOrNull(a?.stockQty);
-  const trackInventory = typeof a?.trackInventory === "boolean" ? a.trackInventory : null;
+  const trackInventory =
+    typeof a?.trackInventory === "boolean" ? a.trackInventory : null;
 
   const slug = safeStr(a?.slug);
-  const id = safeStr(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id, slug || "0");
+  const id = safeStr(
+    row?.documentId ?? row?.id ?? a?.documentId ?? a?.id,
+    slug || "0"
+  );
+
+  // priceAziende: incluso qui, filtrato server-side prima di passare al client
+  const rawPriceAziende = a?.priceAziende ?? null;
+  const priceAziende =
+    rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
+      ? Number(rawPriceAziende)
+      : null;
 
   return {
     id: String(id),
@@ -253,6 +315,7 @@ function normalizeProduct(row: any, base: string) {
     slug,
     price: toNumberOrNull(a?.price),
     compareAtPrice: toNumberOrNull(a?.compareAtPrice),
+    priceAziende, // nascosto se utente non Business — vedi itemsWithStock
     shortDescription: a?.shortDescription ?? "",
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
     stockQty,
@@ -264,12 +327,13 @@ function normalizeProduct(row: any, base: string) {
   };
 }
 
+// ─── fetch prodotti per macro ─────────────────────────────────────────────────
+
 async function fetchProductsByMacro(macroSlug: string) {
   const base = normalizedStrapiBaseUrl();
 
   const attempts: Array<{ label: string; build: () => URLSearchParams }> = [
     {
-      // ✅ PRIMO: filtro diretto category.slug (quello che funziona)
       label: "category.slug",
       build: () => {
         const qs = new URLSearchParams();
@@ -281,7 +345,6 @@ async function fetchProductsByMacro(macroSlug: string) {
       },
     },
     {
-      // SECONDO: subcategory → category (per prodotti collegati a sottocategoria)
       label: "subcategory.category.slug",
       build: () => {
         const qs = new URLSearchParams();
@@ -293,7 +356,6 @@ async function fetchProductsByMacro(macroSlug: string) {
       },
     },
     {
-      // TERZO: categories (plurale, per compatibilità futura)
       label: "categories.slug",
       build: () => {
         const qs = new URLSearchParams();
@@ -312,19 +374,14 @@ async function fetchProductsByMacro(macroSlug: string) {
     const qs = attempt.build();
     const r = await fetchStrapi(`/api/products?${qs.toString()}`);
 
-    // ValidationError → campo non esiste in Strapi, salta
-    const isValidation = r.status === 400 && r.json?.error?.name === "ValidationError";
+    const isValidation =
+      r.status === 400 && r.json?.error?.name === "ValidationError";
     if (!r.ok && isValidation) continue;
-
-    // Errore reale (timeout/500/403) → segnala unavailable
     if (!r.ok) return { kind: "unavailable" as const, items: [] as any[] };
 
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-
-    // ✅ FIX: se 0 risultati NON uscire subito, prova il tentativo successivo
     if (data.length === 0) continue;
 
-    // ✅ Aggiungi i prodotti trovati (evita duplicati per documentId)
     const existingIds = new Set(allItems.map((x) => x.documentId ?? x.id));
     for (const row of data) {
       const normalized = normalizeProduct(row, base);
@@ -334,19 +391,29 @@ async function fetchProductsByMacro(macroSlug: string) {
       }
     }
 
-    // ✅ Se abbiamo trovato prodotti con questo tentativo, usciamo
     if (allItems.length > 0) break;
   }
 
   return { kind: "ok" as const, items: allItems };
 }
 
-export default async function MacroPage({ params }: { params: Promise<{ macro: string }> }) {
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default async function MacroPage({
+  params,
+}: {
+  params: Promise<{ macro: string }>;
+}) {
   const { macro } = await params;
   const macroSlug = safeDecode(macro);
   if (!macroSlug) return notFound();
 
-  const macroRes = await fetchMacroBySlug(macroSlug);
+  // Esegui in parallelo: macro + check business + prodotti
+  const [macroRes, isBusiness] = await Promise.all([
+    fetchMacroBySlug(macroSlug),
+    checkIsBusiness(),
+  ]);
+
   if (macroRes.kind === "not_found") return notFound();
 
   const macroObj: MacroObj =
@@ -358,7 +425,7 @@ export default async function MacroPage({ params }: { params: Promise<{ macro: s
   const items = prodRes.items ?? [];
 
   const needsExternalAvailability = items.some((it: any) => {
-    const track = it?.trackInventory !== false; // default true
+    const track = it?.trackInventory !== false;
     const hasQty = typeof it?.stockQty === "number";
     return track && !hasQty;
   });
@@ -368,21 +435,25 @@ export default async function MacroPage({ params }: { params: Promise<{ macro: s
         new Set(
           items
             .map((x: any) => getDefaultSku(x))
-            .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
+            .filter(
+              (s: unknown): s is string => typeof s === "string" && s.length > 0
+            )
         )
       )
     : [];
 
   let bySku: any = {};
   try {
-    const availability = skus.length ? await getAvailability({ skus, warehouse: "MAIN" }) : null;
+    const availability = skus.length
+      ? await getAvailability({ skus, warehouse: "MAIN" })
+      : null;
     bySku = (availability as any)?.data?.MAIN ?? {};
   } catch {
     bySku = {};
   }
 
   const itemsWithStock = items.map((it: any) => {
-    const track = it?.trackInventory !== false; // default true
+    const track = it?.trackInventory !== false;
     const hasQty = typeof it?.stockQty === "number";
     const sku = getDefaultSku(it);
 
@@ -400,11 +471,19 @@ export default async function MacroPage({ params }: { params: Promise<{ macro: s
               ? it.inStock
               : true;
 
-    return { ...it, inStock: computedInStock, inventory: row, sku };
+    return {
+      ...it,
+      inStock: computedInStock,
+      inventory: row,
+      sku,
+      // SICUREZZA: priceAziende esposto SOLO se utente Business verificato server-side
+      priceAziende: isBusiness ? (it?.priceAziende ?? null) : null,
+    };
   });
 
   const hasProducts = itemsWithStock.length > 0;
-  const strapiDown = macroRes.kind === "unavailable" || prodRes.kind === "unavailable";
+  const strapiDown =
+    macroRes.kind === "unavailable" || prodRes.kind === "unavailable";
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8">
@@ -421,18 +500,25 @@ export default async function MacroPage({ params }: { params: Promise<{ macro: s
           <h1 className="text-2xl font-extrabold">{macroObj.label}</h1>
           <p className="mt-1 text-sm text-text/70">
             Esplora la macroarea e filtra i prodotti{" "}
-            {macroObj.subcategories?.length ? "oppure scegli una sottocategoria." : "."}
+            {macroObj.subcategories?.length
+              ? "oppure scegli una sottocategoria."
+              : "."}
           </p>
         </div>
 
-        <Link href="/catalogo" className="text-sm font-semibold text-link hover:text-link-hover">
+        <Link
+          href="/catalogo"
+          className="text-sm font-semibold text-link hover:text-link-hover"
+        >
           Torna al catalogo
         </Link>
       </div>
 
       {strapiDown ? (
         <div className="mt-6 rounded-2xl border border-border bg-surface p-5">
-          <p className="text-sm font-semibold">Catalogo momentaneamente non disponibile.</p>
+          <p className="text-sm font-semibold">
+            Catalogo momentaneamente non disponibile.
+          </p>
           <p className="mt-2 text-sm text-text/70">
             Stiamo riattivando il servizio. Puoi comunque tornare al catalogo.
           </p>
@@ -477,9 +563,12 @@ export default async function MacroPage({ params }: { params: Promise<{ macro: s
 
         {!hasProducts ? (
           <div className="mt-4 rounded-2xl border border-border bg-surface p-5">
-            <p className="text-sm font-semibold">Nessun prodotto disponibile in questa macroarea.</p>
-            <p className="mt-2 text-sm text-text/70">Prova un’altra categoria oppure torna al catalogo completo.</p>
-
+            <p className="text-sm font-semibold">
+              Nessun prodotto disponibile in questa macroarea.
+            </p>
+            <p className="mt-2 text-sm text-text/70">
+              Prova un&apos;altra categoria oppure torna al catalogo completo.
+            </p>
             <Link
               href="/catalogo"
               className="mt-4 inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
