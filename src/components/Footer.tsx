@@ -39,7 +39,7 @@ const columns = [
 
 export default function Footer() {
   return (
-    <footer className="border-t border-border bg-surface-1 text-sm text-muted-text">
+    <footer className="border-t border-border bg-pink-50 text-sm text-muted-text">
       <Container>
         <div className="grid grid-cols-2 gap-8 py-10 md:grid-cols-4">
           {columns.map((col) => (
