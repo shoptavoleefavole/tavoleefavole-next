@@ -1,3 +1,5 @@
+//src/components/catalog/ProductGridWithFilters
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -13,19 +15,15 @@ type Product = {
   name: string;
   price: number | string;
   compareAtPrice?: number | string | null;
+  priceAziende?: number | null;    
   image?: string;
   imageUrl?: string;
   isNew?: boolean;
-
-  // legacy/fallback
   inStock?: boolean;
-
-  // inventario
   stockQty?: number | null;
   trackInventory?: boolean | null;
-
   popularity?: number;
-  createdAt?: string; // ISO string
+  createdAt?: string;
 };
 
 type SortValue = "popularity" | "price_asc" | "price_desc" | "newest";
@@ -337,10 +335,26 @@ export default function ProductsGridWithFilters({
                   </div>
                 </Link>
 
-                <div className="mt-2 flex items-baseline gap-2">
-                  <span className="text-sm font-bold">{formatEUR(price)}</span>
-                  {hasSale ? <span className="text-xs line-through text-text/50">{formatEUR(compare!)}</span> : null}
-                </div>
+                {/* ─── Prezzo azienda ─── */}
+                {(p as any).priceAziende != null && Number.isFinite(Number((p as any).priceAziende)) ? (
+                  <div className="mt-2 flex flex-col gap-0.5">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-bold text-primary">
+                        {formatEUR((p as any).priceAziende)}
+                      </span>
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary/80">
+                        Prezzo azienda
+                      </span>
+                    </div>
+                    <span className="text-xs text-text/50 line-through">{formatEUR(price)}</span>
+                  </div>
+                ) : (
+                  <div className="mt-2 flex items-baseline gap-2">
+                    <span className="text-sm font-bold">{formatEUR(price)}</span>
+                    {hasSale ? <span className="text-xs line-through text-text/50">{formatEUR(compare!)}</span> : null}
+                  </div>
+                )}
+
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   {p.isNew ? (

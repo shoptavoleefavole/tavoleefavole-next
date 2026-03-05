@@ -1,3 +1,5 @@
+//src/lib/catalog
+
 import type { Product, TaxonomyRef, ProductVariant } from "@/lib/types";
 
 type AnyObj = Record<string, unknown>;

@@ -290,13 +290,6 @@ async function findCustomerProfile(base: string, userId: number) {
     12_000
   );
 
-  if (isDev || true) {
-    console.log("[findCustomerProfile] v2 status:", r.res.status,
-      "count:", r.json?.data?.length ?? 0,
-      "first:", JSON.stringify(r.json?.data?.[0])?.slice(0, 300)
-    );
-  }
-
   let row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
 
   // Fallback: scan manuale se il filtro non funziona (Strapi v5)
@@ -321,11 +314,6 @@ async function findCustomerProfile(base: string, userId: number) {
       const uid = u?.id ?? u?.data?.id ?? null;
       return Number(uid) === userId;
     }) ?? null;
-
-    if (isDev || true) {
-      console.log("[findCustomerProfile] fallback scan rows:", allRows.length,
-        "matched:", !!row);
-    }
   }
 
   if (!row) return null;
