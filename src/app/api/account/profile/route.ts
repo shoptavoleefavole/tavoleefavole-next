@@ -436,15 +436,18 @@ function buildProfileResponse(
     customerType: ct as "PRIVATE" | "BUSINESS",
     firstName: cleanPlaceholder(attrs.firstName ?? fallback.firstName ?? ""),
     lastName: cleanPlaceholder(attrs.lastName ?? fallback.lastName ?? ""),
-    // Dati aziendali da collection Aziende
+    
+    // Dati aziendali da Aziende
     companyName: String(aziendaAttrs?.companyName ?? ""),
     vatNumber: String(aziendaAttrs?.vatNumber ?? ""),
     pec: String(aziendaAttrs?.pec ?? ""),
     sdi: String(aziendaAttrs?.sdi ?? ""),
-    shippingAddress:
-      attrs.shippingAddress ?? fallback.shippingAddress ?? null,
-    billingAddress:
-      attrs.billingAddress ?? fallback.billingAddress ?? null,
+    
+    // ✅ Indirizzi: fallback da Aziende.billingAddress se CustomerProfile è vuoto
+    shippingAddress: attrs.shippingAddress ?? fallback.shippingAddress ?? null,
+    billingAddress: attrs.billingAddress ?? 
+                     normalizeAddress(aziendaAttrs?.billingAddress) ?? 
+                     fallback.billingAddress ?? null,
   };
 }
 

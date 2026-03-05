@@ -121,6 +121,7 @@ type CompanyFields = {
   vatNumber: string;
   pec: string;
   sdi: string;
+  billingAddress?: Address;
 };
 
 /* ------------------------------------------------------------------ */
@@ -455,13 +456,15 @@ async function createCompanyBestEffort(
   payload: CompanyFields
 ): Promise<number | null> {
   if (!STRAPI_SERVICE_TOKEN) return null;
-
   const TIMEOUT = 10_000;
+
   const baseData = {
     companyName: payload.companyName || undefined,
     vatNumber: payload.vatNumber || undefined,
     sdi: payload.sdi || undefined,
     pec: payload.pec || undefined,
+    // ✅ AGGIUNGI QUESTA RIGA:
+    billingAddress: payload.billingAddress || undefined, // copia indirizzo fatturazione
   };
 
   // Prova varie relazioni per compatibilità con schemi diversi
@@ -617,6 +620,7 @@ export async function POST(req: Request) {
               vatNumber,
               pec,
               sdi,
+              billingAddress: bill ?? undefined,
             });
             if (isDev) {
               console.warn("[register] createCompanyBestEffort result", {
