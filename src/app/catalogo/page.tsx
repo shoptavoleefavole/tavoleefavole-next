@@ -30,7 +30,6 @@ const STRAPI_URL = (
   "http://localhost:1337"
 ).replace(/\/+$/, "");
 
-// ✅ STRAPI_TOKEN solo da variabili server-side (mai NEXT_PUBLIC_ per sicurezza)
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
@@ -139,12 +138,16 @@ function normalizeStrapiProduct(row: any) {
     a?.macroAreaSlug ??
     null;
 
-  // ✅ priceAziende incluso — verrà filtrato server-side prima di passarlo al client
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
     rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
       ? Number(rawPriceAziende)
       : null;
+
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  if (priceAziende !== null) {
+    console.log("[normalizeStrapiProduct] prodotto:", String(a?.slug ?? ""), "priceAziende raw:", rawPriceAziende, "→ normalizzato:", priceAziende);
+  }
 
   return {
     id: row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? null,
@@ -159,7 +162,6 @@ function normalizeStrapiProduct(row: any) {
     image: imageUrl,
     imageUrl,
     categorySlug,
-    // ✅ incluso ma nascosto se utente non è Business (vedi itemsWithStock)
     priceAziende,
     __raw: a,
   };
@@ -167,13 +169,12 @@ function normalizeStrapiProduct(row: any) {
 
 // ─── Business user check ──────────────────────────────────────────────────────
 
-/**
- * Verifica server-side se l'utente loggato è di tipo AZIENDE.
- * Il JWT viene letto dal cookie HttpOnly — mai esposto al client.
- * Il priceAziende viene incluso nei prodotti SOLO se questo ritorna true.
- */
 async function isBusinessUser(cookieHeader: string): Promise<boolean> {
-  // ✅ Estrai JWT dal cookie in modo sicuro
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  console.log("[isBusinessUser] START - cookieHeader length:", cookieHeader.length);
+  console.log("[isBusinessUser] cookie contiene tf_token:", cookieHeader.includes("tf_token="));
+  console.log("[isBusinessUser] STRAPI_TOKEN presente:", !!STRAPI_TOKEN);
+
   const jwt = cookieHeader
     .split(";")
     .map((c) => c.trim())
@@ -181,33 +182,52 @@ async function isBusinessUser(cookieHeader: string): Promise<boolean> {
     ?.slice("tf_token=".length)
     ?.trim();
 
-  // Validazione base del token: deve sembrare un JWT (3 parti base64)
-  if (!jwt || !STRAPI_TOKEN) return false;
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  console.log("[isBusinessUser] jwt trovato:", !!jwt, "| lunghezza:", jwt?.length ?? 0, "| parti JWT:", jwt?.split(".")?.length ?? 0);
+
+  if (!jwt || !STRAPI_TOKEN) {
+    console.log("[isBusinessUser] STOP → jwt mancante:", !jwt, "| STRAPI_TOKEN mancante:", !STRAPI_TOKEN);
+    return false;
+  }
+
   const jwtParts = jwt.split(".");
-  if (jwtParts.length !== 3) return false;
+  if (jwtParts.length !== 3) {
+    console.log("[isBusinessUser] STOP → JWT non valido, parti:", jwtParts.length);
+    return false;
+  }
 
   try {
-    // Step 1: verifica identità utente tramite JWT
+    // Step 1 — verifica identità utente
     const ctrl1 = new AbortController();
     const t1 = setTimeout(() => ctrl1.abort(), 6_000);
 
     const res = await fetch(`${STRAPI_URL}/api/users/me`, {
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-        Accept: "application/json",
-      },
+      headers: { Authorization: `Bearer ${jwt}`, Accept: "application/json" },
       signal: ctrl1.signal,
       cache: "no-store",
     });
     clearTimeout(t1);
 
-    if (!res.ok) return false;
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] /users/me → status:", res.status, "ok:", res.ok);
+
+    if (!res.ok) {
+      console.log("[isBusinessUser] STOP → /users/me non ok");
+      return false;
+    }
 
     const me = await res.json().catch(() => null);
     const userId = typeof me?.id === "number" ? me.id : null;
-    if (!userId) return false;
 
-    // Step 2: cerca CustomerProfile tramite service token (non JWT utente)
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] userId:", userId, "| email:", me?.email ?? "N/A");
+
+    if (!userId) {
+      console.log("[isBusinessUser] STOP → userId non trovato nel payload JWT");
+      return false;
+    }
+
+    // Step 2 — cerca CustomerProfile
     const qs = new URLSearchParams();
     qs.set("filters[user][id][$eq]", String(userId));
     qs.set("fields[0]", "customerType");
@@ -219,24 +239,34 @@ async function isBusinessUser(cookieHeader: string): Promise<boolean> {
     const r2 = await fetch(
       `${STRAPI_URL}/api/customer-profiles?${qs.toString()}`,
       {
-        headers: {
-          Authorization: `Bearer ${STRAPI_TOKEN}`,
-          Accept: "application/json",
-        },
+        headers: { Authorization: `Bearer ${STRAPI_TOKEN}`, Accept: "application/json" },
         signal: ctrl2.signal,
         cache: "no-store",
       }
     );
     clearTimeout(t2);
 
-    if (!r2.ok) return false;
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] customer-profiles (filtro diretto) → status:", r2.status, "ok:", r2.ok);
+
+    if (!r2.ok) {
+      console.log("[isBusinessUser] STOP → customer-profiles non ok");
+      return false;
+    }
 
     const data = await r2.json().catch(() => null);
     const rows: any[] = Array.isArray(data?.data) ? data.data : [];
 
-    // Fallback scan: se il filtro non restituisce risultati, cerca manualmente
-    // (workaround per bug Strapi v5 con filtri su relazioni)
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] rows trovati con filtro:", rows.length);
+    if (rows.length > 0) {
+      console.log("[isBusinessUser] primo row customerType:", rows[0]?.customerType ?? rows[0]?.attributes?.customerType ?? "N/A");
+    }
+
+    // Fallback scan
     if (rows.length === 0) {
+      console.log("[isBusinessUser] filtro diretto vuoto → avvio fallback scan...");
+
       const qsAll = new URLSearchParams();
       qsAll.set("fields[0]", "customerType");
       qsAll.set("populate[user][fields][0]", "id");
@@ -248,20 +278,29 @@ async function isBusinessUser(cookieHeader: string): Promise<boolean> {
       const r3 = await fetch(
         `${STRAPI_URL}/api/customer-profiles?${qsAll.toString()}`,
         {
-          headers: {
-            Authorization: `Bearer ${STRAPI_TOKEN}`,
-            Accept: "application/json",
-          },
+          headers: { Authorization: `Bearer ${STRAPI_TOKEN}`, Accept: "application/json" },
           signal: ctrl3.signal,
           cache: "no-store",
         }
       );
       clearTimeout(t3);
 
+      // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+      console.log("[isBusinessUser] fallback scan → status:", r3.status, "ok:", r3.ok);
+
       if (!r3.ok) return false;
 
       const dataAll = await r3.json().catch(() => null);
       const allRows: any[] = Array.isArray(dataAll?.data) ? dataAll.data : [];
+
+      // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+      console.log("[isBusinessUser] fallback scan → totale profili trovati:", allRows.length);
+      allRows.forEach((row: any, i: number) => {
+        const attrs = row?.attributes ?? row ?? {};
+        const relUser = attrs?.user?.data ?? attrs?.user ?? null;
+        const relId = relUser?.id ?? relUser?.data?.id ?? null;
+        console.log(`[isBusinessUser] fallback profilo[${i}] userId relazione:`, relId, "| customerType:", attrs?.customerType ?? "N/A");
+      });
 
       const matched = allRows.find((row: any) => {
         const attrs = row?.attributes ?? row ?? {};
@@ -270,25 +309,35 @@ async function isBusinessUser(cookieHeader: string): Promise<boolean> {
         return Number(relId) === userId;
       });
 
-      if (!matched) return false;
+      // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+      console.log("[isBusinessUser] fallback matched:", !!matched);
+
+      if (!matched) {
+        console.log("[isBusinessUser] STOP → nessun profilo trovato per userId:", userId);
+        return false;
+      }
 
       const ctFallback = String(
-        matched?.customerType ??
-        matched?.attributes?.customerType ??
-        ""
+        matched?.customerType ?? matched?.attributes?.customerType ?? ""
       ).toUpperCase();
+
+      // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+      console.log("[isBusinessUser] fallback customerType:", ctFallback, "→ isBusiness:", ctFallback === "AZIENDE" || ctFallback === "BUSINESS");
 
       return ctFallback === "AZIENDE" || ctFallback === "BUSINESS";
     }
 
     const ct = String(
-      rows[0]?.customerType ??
-      rows[0]?.attributes?.customerType ??
-      ""
+      rows[0]?.customerType ?? rows[0]?.attributes?.customerType ?? ""
     ).toUpperCase();
 
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] customerType finale:", ct, "→ isBusiness:", ct === "AZIENDE" || ct === "BUSINESS");
+
     return ct === "AZIENDE" || ct === "BUSINESS";
-  } catch {
+  } catch (e: any) {
+    // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+    console.log("[isBusinessUser] ECCEZIONE:", e?.message ?? String(e));
     return false;
   }
 }
@@ -503,13 +552,17 @@ export default async function CatalogoPage({
   const q = safeText(sp.q, 80);
   const pageRequested = toInt(sp.page, 1);
 
-  // ✅ Verifica Business user server-side — cookie HttpOnly, mai esposto al client
   const cookieStore = await cookies();
   const cookieHeader = cookieStore.toString();
+
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  console.log("[catalogo] PAGE START - cookieHeader length:", cookieHeader.length);
+  console.log("[catalogo] PAGE START - cookie keys:", cookieHeader.split(";").map(c => c.trim().split("=")[0]).join(", "));
+
   const isBusiness = await isBusinessUser(cookieHeader);
 
-  console.log("[catalogo:debug] isBusiness:", isBusiness, "| cookieLen:", cookieHeader.length, "| hasTfToken:", cookieHeader.includes("tf_token="));
-
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  console.log("[catalogo] isBusiness risultato finale:", isBusiness);
 
   const macroFromStrapi = categoria ? await fetchCategoryBySlug(categoria) : null;
   const macro =
@@ -565,11 +618,13 @@ export default async function CatalogoPage({
       inStock: sku ? available > 0 : p?.inStock,
       inventory: row,
       sku,
-      // ✅ SICUREZZA: priceAziende esposto SOLO se utente Business verificato server-side
-      // Per tutti gli altri (guest, PRIVATE) viene sempre rimosso qui
       priceAziende: isBusiness ? (p?.priceAziende ?? null) : null,
     };
   });
+
+  // 🔍 LOG DEBUG - ELIMINARE DOPO I TEST
+  console.log("[catalogo] itemsWithStock count:", itemsWithStock.length);
+  console.log("[catalogo] primo prodotto → slug:", itemsWithStock[0]?.slug ?? "N/A", "| priceAziende:", itemsWithStock[0]?.priceAziende ?? "N/A", "| price:", itemsWithStock[0]?.price ?? "N/A");
 
   const total = Number(pagination.total ?? 0);
   const pageCount = Math.max(1, Number(pagination.pageCount ?? 1));
