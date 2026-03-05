@@ -1,3 +1,5 @@
+//src/components/productCard
+
 import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -123,9 +125,24 @@ export default function ProductCard({
           <div className="line-clamp-2 min-h-[2.75rem] font-semibold">{name || "Prodotto"}</div>
         </Link>
 
-        <div className="mt-2 flex items-baseline gap-2">
-          <div className="font-bold">{formatEUR(p?.price)}</div>
+        <div className="mt-2 flex flex-col gap-1">
+          {p?.priceAziende ? (
+            <>
+              <div className="flex items-baseline gap-2">
+                <div className="font-bold text-primary">{formatEUR(p.priceAziende)}</div>
+                <div className="text-xs font-medium text-primary/70 bg-primary/10 px-2 py-0.5 rounded-full">
+                  Prezzo azienda
+                </div>
+              </div>
+              <div className="text-xs text-text/50 line-through">
+                {formatEUR(p?.price)}
+              </div>
+            </>
+          ) : (
+            <div className="font-bold">{formatEUR(p?.price)}</div>
+          )}
         </div>
+
 
         {/* ✅ Se in futuro vuoi mettere qui il bottone "Aggiungi al carrello",
             questo footer resta sempre allineato in basso */}

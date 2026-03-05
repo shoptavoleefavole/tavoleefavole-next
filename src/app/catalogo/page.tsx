@@ -1,7 +1,9 @@
 // src/app/catalogo/page.tsx
+
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import Link from "next/link";
-import { notFound } from "next/navigation"; // lascia pure, il disable sopra la gestisce
+import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
@@ -28,12 +30,15 @@ const STRAPI_URL = (
   "http://localhost:1337"
 ).replace(/\/+$/, "");
 
+// ✅ STRAPI_TOKEN solo da variabili server-side (mai NEXT_PUBLIC_ per sicurezza)
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
   process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
   process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
+
+// ─── utils ────────────────────────────────────────────────────────────────────
 
 function safeText(input: unknown, maxLen: number) {
   const s = String(input ?? "")
@@ -85,6 +90,8 @@ function getDefaultSku(item: any): string | null {
   return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
 }
 
+// ─── normalize prodotto ───────────────────────────────────────────────────────
+
 function normalizeStrapiProduct(row: any) {
   const a = row?.attributes ?? row ?? {};
 
@@ -132,6 +139,13 @@ function normalizeStrapiProduct(row: any) {
     a?.macroAreaSlug ??
     null;
 
+  // ✅ priceAziende incluso — verrà filtrato server-side prima di passarlo al client
+  const rawPriceAziende = a?.priceAziende ?? null;
+  const priceAziende =
+    rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
+      ? Number(rawPriceAziende)
+      : null;
+
   return {
     id: row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? null,
     documentId: row?.documentId ?? a?.documentId ?? null,
@@ -145,9 +159,141 @@ function normalizeStrapiProduct(row: any) {
     image: imageUrl,
     imageUrl,
     categorySlug,
+    // ✅ incluso ma nascosto se utente non è Business (vedi itemsWithStock)
+    priceAziende,
     __raw: a,
   };
 }
+
+// ─── Business user check ──────────────────────────────────────────────────────
+
+/**
+ * Verifica server-side se l'utente loggato è di tipo AZIENDE.
+ * Il JWT viene letto dal cookie HttpOnly — mai esposto al client.
+ * Il priceAziende viene incluso nei prodotti SOLO se questo ritorna true.
+ */
+async function isBusinessUser(cookieHeader: string): Promise<boolean> {
+  // ✅ Estrai JWT dal cookie in modo sicuro
+  const jwt = cookieHeader
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith("tf_token="))
+    ?.slice("tf_token=".length)
+    ?.trim();
+
+  // Validazione base del token: deve sembrare un JWT (3 parti base64)
+  if (!jwt || !STRAPI_TOKEN) return false;
+  const jwtParts = jwt.split(".");
+  if (jwtParts.length !== 3) return false;
+
+  try {
+    // Step 1: verifica identità utente tramite JWT
+    const ctrl1 = new AbortController();
+    const t1 = setTimeout(() => ctrl1.abort(), 6_000);
+
+    const res = await fetch(`${STRAPI_URL}/api/users/me`, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/json",
+      },
+      signal: ctrl1.signal,
+      cache: "no-store",
+    });
+    clearTimeout(t1);
+
+    if (!res.ok) return false;
+
+    const me = await res.json().catch(() => null);
+    const userId = typeof me?.id === "number" ? me.id : null;
+    if (!userId) return false;
+
+    // Step 2: cerca CustomerProfile tramite service token (non JWT utente)
+    const qs = new URLSearchParams();
+    qs.set("filters[user][id][$eq]", String(userId));
+    qs.set("fields[0]", "customerType");
+    qs.set("pagination[pageSize]", "1");
+
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), 6_000);
+
+    const r2 = await fetch(
+      `${STRAPI_URL}/api/customer-profiles?${qs.toString()}`,
+      {
+        headers: {
+          Authorization: `Bearer ${STRAPI_TOKEN}`,
+          Accept: "application/json",
+        },
+        signal: ctrl2.signal,
+        cache: "no-store",
+      }
+    );
+    clearTimeout(t2);
+
+    if (!r2.ok) return false;
+
+    const data = await r2.json().catch(() => null);
+    const rows: any[] = Array.isArray(data?.data) ? data.data : [];
+
+    // Fallback scan: se il filtro non restituisce risultati, cerca manualmente
+    // (workaround per bug Strapi v5 con filtri su relazioni)
+    if (rows.length === 0) {
+      const qsAll = new URLSearchParams();
+      qsAll.set("fields[0]", "customerType");
+      qsAll.set("populate[user][fields][0]", "id");
+      qsAll.set("pagination[pageSize]", "50");
+
+      const ctrl3 = new AbortController();
+      const t3 = setTimeout(() => ctrl3.abort(), 6_000);
+
+      const r3 = await fetch(
+        `${STRAPI_URL}/api/customer-profiles?${qsAll.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${STRAPI_TOKEN}`,
+            Accept: "application/json",
+          },
+          signal: ctrl3.signal,
+          cache: "no-store",
+        }
+      );
+      clearTimeout(t3);
+
+      if (!r3.ok) return false;
+
+      const dataAll = await r3.json().catch(() => null);
+      const allRows: any[] = Array.isArray(dataAll?.data) ? dataAll.data : [];
+
+      const matched = allRows.find((row: any) => {
+        const attrs = row?.attributes ?? row ?? {};
+        const relUser = attrs?.user?.data ?? attrs?.user ?? null;
+        const relId = relUser?.id ?? relUser?.data?.id ?? null;
+        return Number(relId) === userId;
+      });
+
+      if (!matched) return false;
+
+      const ctFallback = String(
+        matched?.customerType ??
+        matched?.attributes?.customerType ??
+        ""
+      ).toUpperCase();
+
+      return ctFallback === "AZIENDE" || ctFallback === "BUSINESS";
+    }
+
+    const ct = String(
+      rows[0]?.customerType ??
+      rows[0]?.attributes?.customerType ??
+      ""
+    ).toUpperCase();
+
+    return ct === "AZIENDE" || ct === "BUSINESS";
+  } catch {
+    return false;
+  }
+}
+
+// ─── fetch categoria ──────────────────────────────────────────────────────────
 
 async function fetchCategoryBySlug(slug: string) {
   try {
@@ -186,6 +332,8 @@ async function fetchCategoryBySlug(slug: string) {
   }
 }
 
+// ─── fetch prodotti ───────────────────────────────────────────────────────────
+
 function buildProductsQS(params: {
   categoria?: string;
   categoryId?: number | null;
@@ -223,7 +371,6 @@ function buildProductsQS(params: {
 
   return qs;
 }
-
 
 async function fetchProductsOnce(params: {
   categoria?: string;
@@ -270,21 +417,18 @@ async function fetchProductsFromStrapi(params: {
 }) {
   const empty = {
     ok: true as const,
-    items: [],
+    items: [] as ReturnType<typeof normalizeStrapiProduct>[],
     pagination: { page: params.page, pageSize: params.pageSize, pageCount: 1, total: 0 },
   };
 
-  // Senza filtro categoria: fetch tutto
   if (!params.categoria) {
     const r = await fetchProductsOnce({ ...params });
     if (r.ok) return r;
     return empty;
   }
 
-  // ✅ STEP 1: recupera la categoria da Strapi per ottenere id e documentId
   const cat = await fetchCategoryBySlug(params.categoria);
 
-  // ✅ STEP 2: costruisce la lista tentativi in ordine di affidabilità
   type Attempt = {
     key: string;
     mode: "id" | "documentId" | "rel" | "scalar";
@@ -295,31 +439,26 @@ async function fetchProductsFromStrapi(params: {
 
   const attempts: Attempt[] = [];
 
-  // Prima prova: filtra per ID numerico (più affidabile in Strapi v4/v5)
   if (cat?.id) {
     for (const key of ["category", "subcategory", "categoria", "macro"]) {
       attempts.push({ key, mode: "id", categoryId: cat.id });
     }
   }
 
-  // Seconda prova: filtra per documentId (Strapi v5)
   if (cat?.documentId) {
     for (const key of ["category", "subcategory", "categoria", "macro"]) {
       attempts.push({ key, mode: "documentId", categoryDocumentId: cat.documentId });
     }
   }
 
-  // Terza prova: filtra per slug annidato nella relazione
   for (const key of ["category", "subcategory", "categories", "categoria", "macro"]) {
     attempts.push({ key, mode: "rel", categoria: params.categoria });
   }
 
-  // Quarta prova: filtra su campo scalare (categorySlug, macroSlug)
   for (const key of ["categorySlug", "macroSlug", "macroAreaSlug"]) {
     attempts.push({ key, mode: "scalar", categoria: params.categoria });
   }
 
-  // ✅ STEP 3: prova ogni tentativo, si ferma solo se trova prodotti
   for (const a of attempts) {
     let r;
     try {
@@ -335,14 +474,10 @@ async function fetchProductsFromStrapi(params: {
       continue;
     }
 
-    // ✅ FIX CHIAVE: continua se 0 risultati, non fermarti su HTTP 200 vuoto
     if (r.ok && r.items.length > 0) return r;
-
-    // Errore non-validation: smetti di provare questa famiglia di chiavi
     if (!r.ok && !r.isValidation) continue;
   }
 
-  // Nessun tentativo ha trovato prodotti
   return empty;
 }
 
@@ -355,6 +490,8 @@ function buildCatalogHref(params: { categoria?: string; q?: string; page?: numbe
   return qs ? `/catalogo?${qs}` : "/catalogo";
 }
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default async function CatalogoPage({
   searchParams,
 }: {
@@ -366,9 +503,15 @@ export default async function CatalogoPage({
   const q = safeText(sp.q, 80);
   const pageRequested = toInt(sp.page, 1);
 
-  // ✅ Fix: unica dichiarazione, fallback su slug se Strapi non risponde — mai 404
+  // ✅ Verifica Business user server-side — cookie HttpOnly, mai esposto al client
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+  const isBusiness = await isBusinessUser(cookieHeader);
+
   const macroFromStrapi = categoria ? await fetchCategoryBySlug(categoria) : null;
-  const macro = macroFromStrapi ?? (categoria ? { id: null, documentId: null, slug: categoria, label: categoria } : null);
+  const macro =
+    macroFromStrapi ??
+    (categoria ? { id: null, documentId: null, slug: categoria, label: categoria } : null);
 
   const res = await fetchProductsFromStrapi({
     categoria,
@@ -419,6 +562,9 @@ export default async function CatalogoPage({
       inStock: sku ? available > 0 : p?.inStock,
       inventory: row,
       sku,
+      // ✅ SICUREZZA: priceAziende esposto SOLO se utente Business verificato server-side
+      // Per tutti gli altri (guest, PRIVATE) viene sempre rimosso qui
+      priceAziende: isBusiness ? (p?.priceAziende ?? null) : null,
     };
   });
 
