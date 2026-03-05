@@ -1,5 +1,8 @@
+// src/app/page.tsx
+
 import Link from "next/link";
 import Image from "next/image";
+import { cookies } from "next/headers";
 
 import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getAvailability } from "@/lib/inventory.server";
@@ -17,14 +20,13 @@ type HomeProduct = {
   name: string;
   price: number;
   compareAtPrice?: number | null;
+  priceAziende?: number | null; // ← AGGIUNTO
   image?: string;
   images: string[];
   shortDescription?: string;
   sku?: string | null;
-
   stockQty?: number | null;
   trackInventory?: boolean | null;
-
   inStock?: boolean;
 };
 
@@ -53,7 +55,6 @@ function waUrl(text: string) {
 
 /* ---------------- Strapi env ---------------- */
 
-// ✅ Fix: in produzione evita di costruire URL verso localhost se manca env
 const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL ||
   process.env.STRAPI_URL ||
@@ -68,6 +69,11 @@ const STRAPI_TOKEN =
   process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
+const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://tavoleefavole-next-t7pd.vercel.app"
+).replace(/\/+$/, "");
+
 /* ---------------- Utils ---------------- */
 
 function baseStrapiUrl() {
@@ -80,7 +86,6 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (!u) return null;
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
-  // ✅ Fix: gestisci anche "uploads/..." senza slash iniziale
   return `${base.replace(/\/$/, "")}/${u.replace(/^\/+/, "")}`;
 }
 
@@ -153,12 +158,14 @@ function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
 
 /* ---------------- Fetch robusto ---------------- */
 
-async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}) {
-  const timeoutMs = init.timeoutMs ?? 10_000;
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+) {
+  const timeoutMs = init.timeoutMs ?? 10000;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
-  // ✅ evita conflitto cache + revalidate
   const hasRevalidate = Boolean((init as any)?.next?.revalidate);
   const hasExplicitCache = typeof (init as any)?.cache === "string";
 
@@ -183,7 +190,7 @@ async function fetchStrapi(
   pathOrUrl: string,
   opts: { revalidate?: number; timeoutMs?: number } = {}
 ): Promise<FetchStrapiResult> {
-  const { revalidate = 60, timeoutMs = 10_000 } = opts;
+  const { revalidate = 60, timeoutMs = 10000 } = opts;
   const base = baseStrapiUrl();
 
   const fullUrl =
@@ -241,7 +248,9 @@ async function fetchStrapi(
       ok: false,
       status: isAbort ? 504 : 500,
       json: null,
-      text: isAbort ? "Timeout Strapi (cold start o rete lenta)" : String(e?.message || "fetch failed"),
+      text: isAbort
+        ? "Timeout Strapi (cold start o rete lenta)"
+        : String(e?.message || "fetch failed"),
     };
   }
 }
@@ -254,10 +263,8 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   if (!slug) return null;
 
   const name = safeLabel(a?.name ?? a?.title, slug);
-
   const price = toNumber(a?.price) ?? 0;
   const compareAtPrice = a?.compareAtPrice == null ? null : toNumber(a?.compareAtPrice);
-
   const strapiId = typeof row?.id === "number" ? row.id : toNumber(row?.id) ?? null;
 
   const base = baseStrapiUrl();
@@ -275,9 +282,15 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   const image = imgs[0] ?? undefined;
   const id = String(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id ?? slug);
   const sku = getDefaultSku(a);
-
   const stockQty = toInt(a?.stockQty);
   const trackInventory = toBool(a?.trackInventory);
+
+  // priceAziende: incluso qui, filtrato server-side in Home() prima di passarlo alla UI
+  const rawPriceAziende = a?.priceAziende ?? null;
+  const priceAziende =
+    rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
+      ? Number(rawPriceAziende)
+      : null;
 
   return {
     id,
@@ -286,6 +299,7 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
     name,
     price,
     compareAtPrice,
+    priceAziende,
     image,
     images: imgs,
     shortDescription: String(a?.shortDescription ?? "").trim() || undefined,
@@ -305,12 +319,16 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[4]", "shortDescription");
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
+  qs.set("fields[7]", "priceAziende"); // ← AGGIUNTO
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, { revalidate: 60, timeoutMs: 9_000 });
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9000,
+  });
   if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
@@ -325,20 +343,26 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[4]", "shortDescription");
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
+  qs.set("fields[7]", "priceAziende"); // ← AGGIUNTO
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
 
-  const r = await fetchStrapi(`/api/products?${qs.toString()}`, { revalidate: 60, timeoutMs: 9_000 });
+  const r = await fetchStrapi(`/api/products?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9000,
+  });
   if (!r.ok) return [];
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
 async function withAvailability(items: HomeProduct[]) {
-  const skus = Array.from(new Set(items.map((p) => p.sku).filter((x): x is string => !!x)));
+  const skus = Array.from(
+    new Set(items.map((p) => p.sku).filter((x): x is string => !!x))
+  );
   if (!skus.length) return items;
 
   const availability = await getAvailability({ skus, warehouse: "MAIN" }).catch(() => null);
@@ -356,7 +380,7 @@ async function withAvailability(items: HomeProduct[]) {
   });
 }
 
-async function withAvailabilitySafe(items: HomeProduct[], timeoutMs = 2_500) {
+async function withAvailabilitySafe(items: HomeProduct[], timeoutMs = 2500) {
   if (!items.length) return items;
   return withDeadline(withAvailability(items), timeoutMs, items);
 }
@@ -440,6 +464,32 @@ async function fetchEasterProducts(limit = 10): Promise<EasterProduct[]> {
   return mapped.slice(0, limit);
 }
 
+/* ---------------- Business user check ---------------- */
+
+async function checkIsBusiness(): Promise<boolean> {
+  try {
+    const cookieStore = await cookies();
+    const tf = cookieStore.get("tf_token")?.value ?? null;
+    if (!tf) return false;
+
+    // Validazione base: deve sembrare un JWT (3 parti base64)
+    if (tf.split(".").length !== 3) return false;
+
+    const res = await fetchWithTimeout(`${SITE_URL}/api/account/type`, {
+      cache: "no-store",
+      headers: { Cookie: cookieStore.toString() },
+      timeoutMs: 8000,
+    });
+    if (!res.ok) return false;
+
+    const json = await res.json().catch(() => null);
+    const ct = String(json?.customerType ?? "").toUpperCase();
+    return ct === "AZIENDE" || ct === "BUSINESS";
+  } catch {
+    return false;
+  }
+}
+
 /* ---------------- UI ---------------- */
 
 function ProductRail(props: {
@@ -448,8 +498,9 @@ function ProductRail(props: {
   rightHref: string;
   rightLabel: string;
   items: HomeProduct[];
+  isBusiness?: boolean; // ← AGGIUNTO
 }) {
-  const { title, subtitle, rightHref, rightLabel, items } = props;
+  const { title, subtitle, rightHref, rightLabel, items, isBusiness = false } = props;
 
   return (
     <section className="mt-12">
@@ -467,14 +518,23 @@ function ProductRail(props: {
       <div className="relative mt-6 -mx-4 px-4">
         <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2 scroll-smooth">
           {items.map((p) => {
+            const effectivePrice =
+              isBusiness && p.priceAziende && p.priceAziende > 0
+                ? p.priceAziende
+                : p.price;
+
             const hasSale =
-              p.compareAtPrice != null && Number(p.compareAtPrice) > Number(p.price) && p.price > 0;
+              !isBusiness &&
+              p.compareAtPrice != null &&
+              Number(p.compareAtPrice) > Number(p.price) &&
+              p.price > 0;
 
             const track = p.trackInventory !== false;
             const hasQty = typeof p.stockQty === "number";
-            const isOutOfStock = track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
+            const isOutOfStock =
+              track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
 
-            const canBuy = !isOutOfStock && p.price > 0;
+            const canBuy = !isOutOfStock && effectivePrice > 0;
 
             const favoriteProductId =
               p.strapiId ?? (Number.isFinite(Number(p.id)) ? Number(p.id) : p.id);
@@ -512,15 +572,34 @@ function ProductRail(props: {
                   <div className="mt-3">
                     <div className="text-sm font-extrabold line-clamp-2">{p.name}</div>
 
-                    <div className="mt-2 flex items-baseline gap-2">
-                      <span className="text-sm font-extrabold">
-                        {p.price > 0 ? `€ ${p.price.toFixed(2)}` : "Prezzo n.d."}
-                      </span>
-                      {hasSale ? (
-                        <span className="text-xs line-through text-text/50">
-                          € {Number(p.compareAtPrice).toFixed(2)}
-                        </span>
-                      ) : null}
+                    {/* ── Prezzo con supporto aziende ── */}
+                    <div className="mt-2 flex flex-wrap items-baseline gap-2">
+                      {isBusiness && p.priceAziende && p.priceAziende > 0 ? (
+                        <>
+                          <span className="text-sm font-extrabold text-primary">
+                            € {p.priceAziende.toFixed(2)}
+                          </span>
+                          <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-semibold text-primary/80">
+                            Azienda
+                          </span>
+                          {p.price > 0 ? (
+                            <span className="text-xs line-through text-text/50">
+                              € {p.price.toFixed(2)}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-sm font-extrabold">
+                            {p.price > 0 ? `€ ${p.price.toFixed(2)}` : "Prezzo n.d."}
+                          </span>
+                          {hasSale ? (
+                            <span className="text-xs line-through text-text/50">
+                              € {Number(p.compareAtPrice).toFixed(2)}
+                            </span>
+                          ) : null}
+                        </>
+                      )}
                     </div>
 
                     {p.shortDescription ? (
@@ -538,7 +617,7 @@ function ProductRail(props: {
                       slug={p.slug}
                       name={p.name}
                       image={p.image}
-                      price={p.price}
+                      price={effectivePrice}
                       qty={1}
                       stockQty={p.stockQty ?? null}
                       trackInventory={
@@ -553,7 +632,7 @@ function ProductRail(props: {
                       disabled
                       className="h-11 w-full rounded-xl border border-border bg-surface px-4 text-sm font-extrabold text-text/50"
                     >
-                      {p.price <= 0 ? "Non acquistabile" : "Esaurito"}
+                      {effectivePrice <= 0 ? "Non acquistabile" : "Esaurito"}
                     </button>
                   )}
                 </div>
@@ -641,8 +720,8 @@ function PersonalizedPrintsCarouselBlock() {
             </h2>
 
             <p className="mt-3 max-w-xl text-sm leading-6 text-text/70 sm:text-base">
-              Carica la tua immagine, scrivi la dedica e ottieni una stampa perfetta per torte e biscotti,
-              pronta da applicare.
+              Carica la tua immagine, scrivi la dedica e ottieni una stampa perfetta per torte e
+              biscotti, pronta da applicare.
             </p>
 
             <div className="mt-7 flex flex-wrap items-center gap-3">
@@ -661,7 +740,7 @@ function PersonalizedPrintsCarouselBlock() {
               </Link>
 
               <a
-                href={waUrl("Ciao! Vorrei info e un’anteprima per cialde/stampe personalizzate 😊")}
+                href={waUrl("Ciao! Vorrei info e un'anteprima per cialde/stampe personalizzate 😊")}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
@@ -696,24 +775,40 @@ function PersonalizedPrintsCarouselBlock() {
 /* ---------------- PAGE ---------------- */
 
 export default async function Home() {
-  const latestP = withDeadline(fetchLatestProducts(12), 9_500, []);
-  const saleP = withDeadline(fetchSaleCandidates(24), 9_500, []);
-  const easterP = withDeadline(fetchEasterProducts(10), 9_500, []);
+  const latestP = withDeadline(fetchLatestProducts(12), 9500, []);
+  const saleP = withDeadline(fetchSaleCandidates(24), 9500, []);
+  const easterP = withDeadline(fetchEasterProducts(10), 9500, []);
 
-  const [latestRaw, saleCandRaw, easterProducts] = await Promise.all([latestP, saleP, easterP]);
+  // checkIsBusiness in parallelo con i fetch prodotti — nessun overhead aggiuntivo
+  const [latestRaw, saleCandRaw, easterProducts, isBusiness] = await Promise.all([
+    latestP,
+    saleP,
+    easterP,
+    checkIsBusiness(),
+  ]);
 
   const sale = saleCandRaw
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
     .slice(0, 12);
 
   const latestStockP = withDeadline(
-    withAvailabilitySafe(latestRaw.slice(0, 12), 2_500),
-    2_800,
+    withAvailabilitySafe(latestRaw.slice(0, 12), 2500),
+    2800,
     latestRaw.slice(0, 12)
   );
-  const saleStockP = withDeadline(withAvailabilitySafe(sale, 2_500), 2_800, sale);
+  const saleStockP = withDeadline(withAvailabilitySafe(sale, 2500), 2800, sale);
 
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
+
+  // SICUREZZA: se utente non è business, azzera priceAziende su tutti i prodotti
+  const sanitize = (items: HomeProduct[]) =>
+    items.map((p) => ({
+      ...p,
+      priceAziende: isBusiness ? (p.priceAziende ?? null) : null,
+    }));
+
+  const latestSanitized = sanitize(latest);
+  const saleSanitized = sanitize(saleWithStock);
 
   return (
     <main className="mx-auto max-w-7xl px-4 pt-2 pb-10">
@@ -721,23 +816,25 @@ export default async function Home() {
 
       <PersonalizedPrintsCarouselBlock />
 
-      {saleWithStock.length > 0 ? (
+      {saleSanitized.length > 0 ? (
         <ProductRail
           title="In offerta"
           subtitle="Occasioni da non perdere: sconti selezionati."
           rightHref="/catalogo"
           rightLabel="Vedi catalogo"
-          items={saleWithStock}
+          items={saleSanitized}
+          isBusiness={isBusiness}
         />
       ) : null}
 
-      {latest.length > 0 ? (
+      {latestSanitized.length > 0 ? (
         <ProductRail
           title="Novità"
           subtitle="Ultimi arrivi: nuovi prodotti disponibili."
           rightHref="/catalogo"
           rightLabel="Vedi catalogo"
-          items={latest}
+          items={latestSanitized}
+          isBusiness={isBusiness}
         />
       ) : null}
 
