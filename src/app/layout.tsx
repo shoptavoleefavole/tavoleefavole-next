@@ -18,14 +18,8 @@ import WhatsAppFloatingButton from "@/components/WhatsAppFloatingButton";
 
 function normalizeSiteUrl(input: unknown) {
   const raw = String(input ?? "").trim();
-
-  // dev fallback
   if (!raw) return "http://localhost:3000";
-
-  // se già con protocollo, ok
   if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
-
-  // se arriva "mydomain.com" o "www...", aggiungo https
   return `https://${raw}`.replace(/\/+$/, "");
 }
 
@@ -33,9 +27,7 @@ function computeSite() {
   const rawSiteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ||
     (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-
   const siteUrl = normalizeSiteUrl(rawSiteUrl);
-
   try {
     return { siteUrl, site: new URL(siteUrl) };
   } catch {
@@ -46,19 +38,14 @@ function computeSite() {
 
 const { siteUrl, site } = computeSite();
 
-const defaultTitle = "Tavole & Favole";
-const defaultDescription =
-  "Ingredienti e accessori per pasticceria, cake design, confetti e specialità dolciarie. Spedizioni, resi e assistenza chiari.";
+const defaultTitle       = "Tavole & Favole";
+const defaultDescription = "Ingredienti e accessori per pasticceria, cake design, confetti e specialità dolciarie. Spedizioni, resi e assistenza chiari.";
 
 export const metadata: Metadata = {
   metadataBase: site,
   title: { template: `%s | ${defaultTitle}`, default: defaultTitle },
   description: defaultDescription,
-
-  alternates: {
-    canonical: siteUrl,
-  },
-
+  alternates: { canonical: siteUrl },
   openGraph: {
     title: defaultTitle,
     description: defaultDescription,
@@ -66,16 +53,8 @@ export const metadata: Metadata = {
     url: siteUrl,
     siteName: defaultTitle,
     locale: "it_IT",
-    images: [
-      {
-        url: "/og.jpg",
-        width: 1200,
-        height: 630,
-        alt: defaultTitle,
-      },
-    ],
+    images: [{ url: "/og.jpg", width: 1200, height: 630, alt: defaultTitle }],
   },
-
   twitter: {
     card: "summary_large_image",
     title: defaultTitle,
@@ -96,7 +75,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Salta al contenuto
         </a>
 
-        {/* Iubenda: carica lo script UNA SOLA VOLTA */}
+        {/* Iubenda */}
         <Script src="https://cdn.iubenda.com/iubenda.js" strategy="afterInteractive" />
 
         <AppProviders>
@@ -121,15 +100,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 <div className="hidden border-t border-border bg-background md:block">
                   <div className="mx-auto max-w-7xl px-4">
                     <div className="relative overflow-hidden rounded-2xl">
-                      {/* Background texture */}
+
+                      {/* ✅ Gradiente CSS — nessun file esterno, zero 404 */}
                       <div
                         aria-hidden="true"
-                        className="absolute inset-0 bg-[url('/nav-strip.webp')] bg-cover bg-center"
-                      />
-                      {/* Overlay per leggibilità */}
-                      <div
-                        aria-hidden="true"
-                        className="absolute inset-0 bg-gradient-to-b from-background/60 via-background/25 to-background/60"
+                        className="absolute inset-0"
+                        style={{
+                          background:
+                            "linear-gradient(135deg," +
+                            "rgba(var(--color-primary-rgb,220,180,120),0.08) 0%," +
+                            "rgba(var(--color-primary-rgb,220,180,120),0.03) 50%," +
+                            "rgba(var(--color-primary-rgb,220,180,120),0.08) 100%)",
+                        }}
                       />
 
                       {/* Contenuto sopra */}
@@ -149,7 +131,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <MobileBottomNav />
             </div>
 
-            {/* ✅ Mostra il floating button SOLO su desktop (no doppione su mobile) */}
+            {/* WhatsApp solo desktop */}
             <div className="hidden md:block">
               <WhatsAppFloatingButton />
             </div>

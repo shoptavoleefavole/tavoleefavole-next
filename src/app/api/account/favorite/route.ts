@@ -1,3 +1,4 @@
+// src/app/api/account/favorite/route.ts
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
@@ -16,28 +17,26 @@ function json(data: any, status = 200) {
 }
 
 function strapiBaseUrl() {
-  return (process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "http://localhost:1337").replace(/\/+$/, "");
+  return (
+    process.env.STRAPI_URL ||
+    process.env.NEXT_PUBLIC_STRAPI_URL ||
+    "http://localhost:1337"
+  ).replace(/\/+$/, "");
 }
 
-// ✅ IMPORTANTISSIMO: cookies() va awaitato
 async function getUserJwt() {
   const store = await cookies();
   return store.get("tf_token")?.value ?? null;
 }
 
 async function fetchJson(url: string, init: RequestInit = {}) {
-  const res = await fetch(url, { ...init, cache: "no-store" });
+  const res  = await fetch(url, { ...init, cache: "no-store" });
   const text = await res.text().catch(() => "");
   let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
+  try { data = text ? JSON.parse(text) : null; } catch { data = null; }
   return { res, data, text };
 }
 
-// Se hai un API token server-to-server lo usa, altrimenti usa il JWT utente
 function strapiBearer(userJwt: string) {
   return process.env.STRAPI_API_TOKEN || userJwt;
 }
@@ -59,8 +58,6 @@ function isNumericId(v: string) {
 }
 
 function productFilterParam(productKey: string) {
-  // Strapi 5: spesso il prodotto è identificato dal documentId (stringa)
-  // Strapi 4: spesso è un id numerico
   if (isNumericId(productKey)) {
     return `filters[product][id][$eq]=${encodeURIComponent(productKey)}`;
   }
@@ -69,32 +66,30 @@ function productFilterParam(productKey: string) {
 
 function pickProduct(prod: any) {
   const entity = prod?.data ?? prod;
-  const a = entity?.attributes ?? entity ?? {};
-
-  const docId = entity?.documentId ?? a?.documentId ?? null;
-  const numId = entity?.id ?? a?.id ?? null;
-
-  // ✅ preferisci documentId (Strapi 5)
-  const id = docId ?? numId ?? null;
-
+  const a      = entity?.attributes ?? entity ?? {};
+  const docId  = entity?.documentId ?? a?.documentId ?? null;
+  const numId  = entity?.id ?? a?.id ?? null;
+  const id     = docId ?? numId ?? null;
   return {
     id,
-    name: String(a?.name ?? a?.Titolo ?? a?.title ?? "").trim(),
-    slug: String(a?.slug ?? "").trim(),
+    name:  String(a?.name ?? a?.Titolo ?? a?.title ?? "").trim(),
+    slug:  String(a?.slug ?? "").trim(),
     price: typeof a?.price === "number" ? a.price : Number(a?.price ?? 0),
   };
 }
 
-/**
- * GET /api/account/favorite
- */
+/* ─── GET /api/account/favorite ─────────────────────────────────────── */
 export async function GET() {
   const baseUrl = strapiBaseUrl();
   const userJwt = await getUserJwt();
-  if (!userJwt) return json({ ok: false, error: "Not logged in" }, 401);
+
+  // ✅ FIX: utente non loggato → 200 con array vuoto, NON 401
+  // Evita l'errore rosso in console per gli utenti guest
+  if (!userJwt) return json({ ok: true, favorites: [] }, 200);
 
   const me = await getMe(baseUrl, userJwt);
-  if (!me?.id) return json({ ok: false, error: "Cannot load user" }, 401);
+  // ✅ FIX: token invalido/scaduto → 200 con array vuoto, NON 401
+  if (!me?.id) return json({ ok: true, favorites: [] }, 200);
 
   const url =
     `${baseUrl}/api/favorites` +
@@ -113,7 +108,6 @@ export async function GET() {
       status === 401 ? "Non autorizzato (token non valido o scaduto)" :
       status === 403 ? "Permessi Strapi: abilita Favorites per Authenticated" :
       "Favorites fetch failed";
-
     return json({ ok: false, error: msg, status, details: devDetails(data, text) }, status);
   }
 
@@ -123,15 +117,11 @@ export async function GET() {
     .map((row) => {
       const favId =
         row?.id ?? row?.documentId ?? row?.attributes?.id ?? row?.attributes?.documentId ?? null;
-
-      const a = row?.attributes ?? row ?? {};
+      const a       = row?.attributes ?? row ?? {};
       const prodRaw = a?.product;
-
       if (!prodRaw) return null;
-
       const product = pickProduct(prodRaw);
       if (!product?.id || !product?.name || !product?.slug) return null;
-
       return { id: favId, product };
     })
     .filter(Boolean);
@@ -139,10 +129,7 @@ export async function GET() {
   return json({ ok: true, favorites }, 200);
 }
 
-/**
- * POST /api/account/favorite
- * body: { productId }  <-- può essere id numerico o documentId
- */
+/* ─── POST /api/account/favorite ────────────────────────────────────── */
 export async function POST(req: Request) {
   const baseUrl = strapiBaseUrl();
   const userJwt = await getUserJwt();
@@ -151,14 +138,14 @@ export async function POST(req: Request) {
   const me = await getMe(baseUrl, userJwt);
   if (!me?.id) return json({ ok: false, error: "Cannot load user" }, 401);
 
-  const body = await req.json().catch(() => null);
+  const body         = await req.json().catch(() => null);
   const productIdRaw = body?.productId;
-  const productKey = String(productIdRaw ?? "").trim();
+  const productKey   = String(productIdRaw ?? "").trim();
   if (!productKey) return json({ ok: false, error: "Missing productId" }, 400);
 
   const b = strapiBearer(userJwt);
 
-  // ✅ anti-duplicato: filtro su product.id se numerico, altrimenti product.documentId
+  // Anti-duplicato
   const checkUrl =
     `${baseUrl}/api/favorites` +
     `?filters[user][id][$eq]=${encodeURIComponent(String(me.id))}` +
@@ -170,7 +157,6 @@ export async function POST(req: Request) {
     return json({ ok: true, created: false }, 200);
   }
 
-  // ✅ relazione product: in Strapi 5 si può passare direttamente il documentId (stringa) :contentReference[oaicite:1]{index=1}
   const create = await fetchJson(`${baseUrl}/api/favorites`, {
     method: "POST",
     headers: { Authorization: `Bearer ${b}`, "Content-Type": "application/json" },
@@ -187,10 +173,7 @@ export async function POST(req: Request) {
   return json({ ok: true, created: true }, 200);
 }
 
-/**
- * DELETE /api/account/favorite?productId=...
- * productId può essere id numerico o documentId
- */
+/* ─── DELETE /api/account/favorite?productId=... ────────────────────── */
 export async function DELETE(req: Request) {
   const baseUrl = strapiBaseUrl();
   const userJwt = await getUserJwt();
@@ -200,8 +183,8 @@ export async function DELETE(req: Request) {
   if (!me?.id) return json({ ok: false, error: "Cannot load user" }, 401);
 
   const { searchParams } = new URL(req.url);
-  const productIdRaw = searchParams.get("productId");
-  const productKey = String(productIdRaw ?? "").trim();
+  const productIdRaw     = searchParams.get("productId");
+  const productKey       = String(productIdRaw ?? "").trim();
   if (!productKey) return json({ ok: false, error: "Missing productId" }, 400);
 
   const b = strapiBearer(userJwt);
