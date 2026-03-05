@@ -508,6 +508,9 @@ export default async function CatalogoPage({
   const cookieHeader = cookieStore.toString();
   const isBusiness = await isBusinessUser(cookieHeader);
 
+  console.log("[catalogo:debug] isBusiness:", isBusiness, "| cookieLen:", cookieHeader.length, "| hasTfToken:", cookieHeader.includes("tf_token="));
+
+
   const macroFromStrapi = categoria ? await fetchCategoryBySlug(categoria) : null;
   const macro =
     macroFromStrapi ??
