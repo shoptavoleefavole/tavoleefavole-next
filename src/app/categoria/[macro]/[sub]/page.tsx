@@ -1,6 +1,8 @@
 // src/app/categoria/[macro]/[sub]/page.tsx
+
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
@@ -8,7 +10,6 @@ import Breadcrumbs from "@/components/Breadcrumbs";
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
-// ✅ SECURITY: mai usare NEXT_PUBLIC_ per token server-side (vengono bundlati lato client)
 const STRAPI_URL =
   process.env.STRAPI_URL ||
   process.env.NEXT_PUBLIC_STRAPI_URL ||
@@ -19,12 +20,19 @@ const STRAPI_TOKEN =
   process.env.STRAPI_TOKEN ||
   "";
 
+const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://tavoleefavole-next-t7pd.vercel.app"
+).replace(/\/+$/, "");
+
 const FETCH_TIMEOUT_MS = (() => {
   const n = Number(process.env.CATEGORY_STRAPI_TIMEOUT_MS ?? 25000);
   return Number.isFinite(n) ? Math.max(8000, n) : 25000;
 })();
 
 const PAGE_SIZE = 200;
+
+// ─── utils ────────────────────────────────────────────────────────────────────
 
 function safeDecode(v: unknown) {
   const s = String(v ?? "").trim();
@@ -129,9 +137,7 @@ async function fetchStrapi(path: string): Promise<StrapiFetchResult> {
     const res = await fetchWithRetry(url, { headers });
     const text = await res.text().catch(() => "");
     const json = text ? safeJsonParse(text) : null;
-
-    const isValidation =
-      res.status === 400 && json?.error?.name === "ValidationError";
+    const isValidation = res.status === 400 && json?.error?.name === "ValidationError";
 
     if (!res.ok && process.env.NODE_ENV === "development") {
       console.warn("[categoria/sub] Strapi not ok:", res.status, String(text || "").slice(0, 300));
@@ -145,6 +151,32 @@ async function fetchStrapi(path: string): Promise<StrapiFetchResult> {
     return { ok: false, status: 0, json: null, base, isValidation: false };
   }
 }
+
+// ─── Business user check ──────────────────────────────────────────────────────
+
+async function checkIsBusiness(): Promise<boolean> {
+  try {
+    const cookieStore = await cookies();
+    const tf = cookieStore.get("tf_token")?.value ?? null;
+    if (!tf) return false;
+
+    const res = await fetchWithTimeout(
+      `${SITE_URL}/api/account/type`,
+      { headers: { Cookie: cookieStore.toString() }, cache: "no-store" },
+      8_000
+    );
+    if (!res.ok) return false;
+
+    const text = await res.text().catch(() => "");
+    const json = safeJsonParse(text);
+    const ct = String(json?.customerType ?? "").toUpperCase();
+    return ct === "AZIENDE" || ct === "BUSINESS";
+  } catch {
+    return false;
+  }
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 function getDefaultSku(item: any): string | null {
   return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
@@ -177,9 +209,9 @@ function normalizeProduct(row: any, base: string) {
   const id = safeStr(row?.documentId ?? row?.id ?? a?.documentId ?? a?.id, slug || "0");
 
   const imagesFromImages = extractMediaUrls(base, a?.images);
-  const imagesFromImage = extractMediaUrls(base, a?.image);
-  const imagesFromCover = extractMediaUrls(base, a?.cover);
-  const imagesFromThumb = extractMediaUrls(base, a?.thumbnail);
+  const imagesFromImage  = extractMediaUrls(base, a?.image);
+  const imagesFromCover  = extractMediaUrls(base, a?.cover);
+  const imagesFromThumb  = extractMediaUrls(base, a?.thumbnail);
 
   const images = imagesFromImages.length
     ? imagesFromImages
@@ -200,6 +232,13 @@ function normalizeProduct(row: any, base: string) {
         .filter(Boolean)
     : [];
 
+  // priceAziende: normalizzato qui, filtrato server-side prima di passare al client
+  const rawPriceAziende = a?.priceAziende ?? null;
+  const priceAziende =
+    rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
+      ? Number(rawPriceAziende)
+      : null;
+
   return {
     id: String(id),
     documentId: row?.documentId ?? a?.documentId ?? null,
@@ -207,6 +246,7 @@ function normalizeProduct(row: any, base: string) {
     name: safeStr(a?.name ?? a?.title, "Prodotto"),
     price: typeof a?.price === "number" ? a.price : Number(a?.price ?? 0),
     compareAtPrice: a?.compareAtPrice ?? null,
+    priceAziende,
     shortDescription: a?.shortDescription ?? "",
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
     images: images.length ? images : undefined,
@@ -217,6 +257,8 @@ function normalizeProduct(row: any, base: string) {
     createdAt: a?.createdAt ?? row?.createdAt ?? null,
   };
 }
+
+// ─── fetch categoria / subcategoria ───────────────────────────────────────────
 
 async function fetchMacroLabel(macroSlug: string) {
   const qs = new URLSearchParams();
@@ -256,13 +298,12 @@ async function fetchSubLabel(subSlug: string) {
   };
 }
 
+// ─── fetch prodotti ───────────────────────────────────────────────────────────
+
 async function fetchProductsBySub(macroSlug: string, subSlug: string) {
   const base = normalizedStrapiBaseUrl();
 
-  // ✅ FIX: definisco tutti i tentativi come array e itero
-  // Non esco mai su data: [] — continuo al tentativo successivo
   const attempts: Array<{ label: string; qs: URLSearchParams }> = [
-    // 1️⃣ Filtro per subcategory.slug (caso più comune)
     (() => {
       const qs = new URLSearchParams();
       qs.set("pagination[pageSize]", String(PAGE_SIZE));
@@ -271,8 +312,6 @@ async function fetchProductsBySub(macroSlug: string, subSlug: string) {
       qs.set("populate", "*");
       return { label: "subcategory.slug", qs };
     })(),
-
-    // 2️⃣ Filtro per subcategory.slug + verifica macro (più preciso)
     (() => {
       const qs = new URLSearchParams();
       qs.set("pagination[pageSize]", String(PAGE_SIZE));
@@ -282,9 +321,6 @@ async function fetchProductsBySub(macroSlug: string, subSlug: string) {
       qs.set("populate", "*");
       return { label: "subcategory.slug+macroSlug", qs };
     })(),
-
-    // 3️⃣ Fallback: filtro diretto su category.slug
-    // (prodotti collegati direttamente alla macro, senza sottocategoria)
     (() => {
       const qs = new URLSearchParams();
       qs.set("pagination[pageSize]", String(PAGE_SIZE));
@@ -297,28 +333,18 @@ async function fetchProductsBySub(macroSlug: string, subSlug: string) {
 
   for (const attempt of attempts) {
     const r = await fetchStrapi(`/api/products?${attempt.qs.toString()}`);
-
-    // ValidationError → campo non esiste, salta questo tentativo
     if (r.isValidation) continue;
-
-    // Errore reale (timeout/500/403) → interrompi e ritorna vuoto
     if (!r.ok) {
       if (process.env.NODE_ENV === "development") {
         console.warn(`[categoria/sub] attempt "${attempt.label}" failed:`, r.status);
       }
       return [];
     }
-
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-
-    // ✅ FIX CHIAVE: 0 risultati → non ritornare, prova il prossimo tentativo
     if (data.length === 0) continue;
-
-    // ✅ Trovati prodotti: normalizza e ritorna
     return data.map((row) => normalizeProduct(row, r.base || base));
   }
 
-  // Nessun tentativo ha trovato prodotti
   return [];
 }
 
@@ -336,6 +362,8 @@ async function safeGetAvailabilityOrNull(skus: string[]) {
   }
 }
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default async function MacroSubPage({
   params,
 }: {
@@ -344,16 +372,17 @@ export default async function MacroSubPage({
   const { macro, sub } = await params;
 
   const macroSlug = safeDecode(macro);
-  const subSlug = safeDecode(sub);
+  const subSlug   = safeDecode(sub);
 
   if (!macroSlug || !subSlug) return notFound();
 
-  const [macroObj, subObj] = await Promise.all([
+  // Esegui in parallelo: dati categoria + check business + prodotti
+  const [macroObj, subObj, isBusiness, items] = await Promise.all([
     fetchMacroLabel(macroSlug).catch(() => ({ slug: macroSlug, label: macroSlug })),
     fetchSubLabel(subSlug).catch(() => ({ slug: subSlug, label: subSlug })),
+    checkIsBusiness(),
+    fetchProductsBySub(macroSlug, subSlug).catch(() => []),
   ]);
-
-  const items = await fetchProductsBySub(macroSlug, subSlug).catch(() => []);
 
   const skus = Array.from(
     new Set(
@@ -377,6 +406,8 @@ export default async function MacroSubPage({
       inStock: sku ? (known ? available > 0 : true) : Boolean(it?.inStock ?? true),
       inventory: row,
       sku,
+      // priceAziende visibile SOLO se utente verificato BUSINESS
+      priceAziende: isBusiness ? (it?.priceAziende ?? null) : null,
     };
   });
 

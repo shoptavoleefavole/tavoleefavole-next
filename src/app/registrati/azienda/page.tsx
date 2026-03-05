@@ -334,7 +334,7 @@ export default function RegisterBusinessPage() {
 
         {errorMsg ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div> : null}
 
-        <button type="submit" disabled={!canSubmit} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
+        <button type="submit" disabled={!canSubmit} className="w-full h-12 rounded-full bg-primary text-primary-contrast text-sm font-extrabold hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed">
           {loading ? "Creazione..." : "Crea account Business"}
         </button>
 
