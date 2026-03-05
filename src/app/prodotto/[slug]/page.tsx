@@ -540,7 +540,7 @@ export default async function ProductPage({
 
               {favId ? (
                 <div className="mt-3 text-xs text-text/60">
-                  Salva nei preferiti per ritrovarlo nell'area personale.
+                  Salva nei preferiti per ritrovarlo nell&area personale.
                 </div>
               ) : null}
             </div>
