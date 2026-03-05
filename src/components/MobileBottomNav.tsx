@@ -6,50 +6,41 @@ import Container from "@/components/Container";
 
 function HomeIcon({ className = "" }: { className?: string }) {
   return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M4 10.5L12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
+    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9.5Z" />
+      <path d="M9 21V12h6v9" />
     </svg>
   );
 }
 
 function GridIcon({ className = "" }: { className?: string }) {
   return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z"
-        fill="currentColor"
-      />
+    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
     </svg>
   );
 }
 
 function UserIcon({ className = "" }: { className?: string }) {
   return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M20 21a8 8 0 10-16 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path d="M12 13a4 4 0 100-8 4 4 0 000 8z" stroke="currentColor" strokeWidth="2" />
+    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
     </svg>
   );
 }
 
 function WhatsAppIcon({ className = "" }: { className?: string }) {
   return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M20 11.9a8 8 0 0 1-11.8 7L4 20l1.2-4.1A8 8 0 1 1 20 11.9Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9.2 8.9c.2-.4.4-.4.6-.4h.5c.2 0 .4 0 .5.3l.7 1.6c.1.3.1.6-.1.8l-.4.5c.6 1 1.5 1.9 2.6 2.5l.5-.4c.2-.2.5-.2.8-.1l1.6.7c.3.1.3.3.3.5v.5c0 .2 0 .4-.4.6-.5.3-1.5.5-2.7 0-2.2-.8-4.6-3-5.5-5.2-.5-1.2-.3-2.2 0-2.7Z"
-        fill="currentColor"
-      />
+    <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z" />
+      <path d="M12 0C5.373 0 0 5.373 0 12c0 2.123.554 4.118 1.528 5.855L.057 23.57a.75.75 0 0 0 .922.899l5.919-1.55A11.95 11.95 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.907 0-3.694-.5-5.243-1.375l-.372-.213-3.862 1.012 1.029-3.757-.23-.386A9.96 9.96 0 0 1 2 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z" />
     </svg>
   );
 }
@@ -67,53 +58,56 @@ export default function MobileBottomNav() {
   const pathname = usePathname() ?? "/";
 
   // ✅ usa env se presente, altrimenti fallback numero
-  const whatsappHref = process.env.NEXT_PUBLIC_WHATSAPP_URL || "https://wa.me/393482783901";
+  const whatsappHref =
+    process.env.NEXT_PUBLIC_WHATSAPP_URL || "https://wa.me/393482783901";
 
   const items: NavItem[] = [
     { href: whatsappHref, label: "WhatsApp", icon: WhatsAppIcon, external: true },
-    { href: "/", label: "Home", icon: HomeIcon },
-    { href: "/catalogo", label: "Catalogo", icon: GridIcon },
-    { href: "/account", label: "Account", icon: UserIcon },
+    { href: "/",         label: "Home",      icon: HomeIcon                      },
+    { href: "/catalogo", label: "Catalogo",  icon: GridIcon                      },
+    { href: "/account",  label: "Account",   icon: UserIcon                      },
   ];
 
   return (
     <nav
-      className="md:hidden fixed inset-x-0 bottom-0 z-[9999] border-t border-border bg-background/95 backdrop-blur"
-      aria-label="Navigazione principale mobile"
+      className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background md:hidden"
+      aria-label="Navigazione mobile"
     >
       <Container>
-        <div className="grid grid-cols-4 items-center py-2">
+        <div className="flex items-center justify-around py-2">
           {items.map((it) => {
             const active = !it.external ? isActivePath(pathname, it.href) : false;
-            const Icon = it.icon;
+            const Icon   = it.icon;
 
             if (it.external) {
               return (
                 <a
-                  key={it.href}
+                  key={it.label}
                   href={it.href}
                   target="_blank"
-                  rel="noopener noreferrer"
-                  className="relative flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold text-muted-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  aria-label="Apri WhatsApp"
+                  rel="noopener noreferrer"   // ✅ fix sicurezza: previene tabnapping
+                  className="flex flex-col items-center gap-0.5 px-3 py-1 text-muted-text hover:text-text transition-colors"
+                  aria-label={it.label}
                 >
-                  <Icon />
-                  {it.label}
+                  <Icon className="h-6 w-6" />
+                  <span className="text-[10px] font-semibold">{it.label}</span>
                 </a>
               );
             }
 
             return (
               <Link
-                key={it.href}
+                key={it.label}
                 href={it.href}
-                className={`relative flex flex-col items-center justify-center gap-1 rounded-xl py-2 text-xs font-extrabold hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                  active ? "text-text" : "text-muted-text"
-                }`}
+                className={[
+                  "flex flex-col items-center gap-0.5 px-3 py-1 transition-colors",
+                  active ? "text-primary" : "text-muted-text hover:text-text",
+                ].join(" ")}
+                aria-label={it.label}
                 aria-current={active ? "page" : undefined}
               >
-                <Icon />
-                {it.label}
+                <Icon className="h-6 w-6" />
+                <span className="text-[10px] font-semibold">{it.label}</span>
               </Link>
             );
           })}
