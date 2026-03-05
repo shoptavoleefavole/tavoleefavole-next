@@ -41,7 +41,7 @@ function getClientIp(req: Request): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Strapi base URL                                                    */
+/*  Strapi base URL                                                   */
 /* ------------------------------------------------------------------ */
 
 function strapiBaseUrl() {
@@ -62,13 +62,12 @@ function strapiBaseUrl() {
   return base;
 }
 
-const STRAPI_SERVICE_TOKEN =
-  process.env.STRAPI_API_TOKEN || process.env.STRAPI_TOKEN || "";
+const STRAPI_SERVICE_TOKEN = process.env.STRAPI_API_TOKEN || "";
 
 const isDev = process.env.NODE_ENV === "development";
 
 /* ------------------------------------------------------------------ */
-/*  Security Headers                                                   */
+/*  Security Headers                                                  */
 /* ------------------------------------------------------------------ */
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -83,7 +82,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Helpers risposta JSON                                              */
+/*  Helpers risposta JSON                                             */
 /* ------------------------------------------------------------------ */
 
 function jsonNoStore(data: any, status = 200) {
@@ -99,7 +98,7 @@ function safeJsonParse(text: string) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Validazioni input                                                  */
+/*  Validazioni input                                                 */
 /* ------------------------------------------------------------------ */
 
 function normalizeEmail(v: unknown) {
@@ -147,7 +146,7 @@ const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l'accesso.";
 
 /* ------------------------------------------------------------------ */
-/*  Tipi                                                               */
+/*  Tipi                                                              */
 /* ------------------------------------------------------------------ */
 
 type Address = {
@@ -167,7 +166,7 @@ type CompanyFields = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Address helpers                                                    */
+/*  Address helpers                                                   */
 /* ------------------------------------------------------------------ */
 
 function capOk(cap: string) {
@@ -186,7 +185,12 @@ function normAddress(input: unknown): Address {
       .replace(/[^\d]/g, "")
       .slice(0, 10),
     province: sanitizeText(a.province, 24),
-    country: (String(a.country ?? "IT").trim().toUpperCase().replace(/[^A-Z]/g, "") || "IT").slice(0, 2),
+    country:
+      (String(a.country ?? "IT")
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z]/g, "") || "IT"
+      ).slice(0, 2),
   };
 }
 
@@ -301,7 +305,7 @@ async function strapiPut(path: string, body: any, timeoutMs: number, token?: str
 }
 
 /* ------------------------------------------------------------------ */
-/*  Deduplicazione errori Strapi                                       */
+/*  Deduplicazione errori Strapi                                      */
 /* ------------------------------------------------------------------ */
 
 function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
@@ -332,7 +336,7 @@ function looksLikeUniqueViolation(status: number, strapiData: any, strapiText: s
 }
 
 /* ------------------------------------------------------------------ */
-/*  Body reading limit                                                 */
+/*  Body reading limit                                                */
 /* ------------------------------------------------------------------ */
 
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
@@ -342,7 +346,7 @@ async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Cookie                                                             */
+/*  Cookie                                                            */
 /* ------------------------------------------------------------------ */
 
 function setAuthCookie(resp: NextResponse, jwt: string) {
@@ -356,7 +360,7 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mapping tipo cliente                                               */
+/*  Mapping tipo cliente                                              */
 /* ------------------------------------------------------------------ */
 
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
@@ -364,7 +368,7 @@ function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
 }
 
 /* ------------------------------------------------------------------ */
-/*  CustomerProfile + Azienda                                          */
+/*  CustomerProfile + Azienda                                         */
 /* ------------------------------------------------------------------ */
 
 async function ensureCustomerProfile(
@@ -372,7 +376,7 @@ async function ensureCustomerProfile(
   firstName: string,
   lastName: string,
   type: "PERSON" | "BUSINESS",
-  userJwt: string | undefined,
+  _userJwt: string | undefined,
   shippingAddress: Address | null,
   billingAddress: Address | null,
   aziendeId: number | null
@@ -384,14 +388,22 @@ async function ensureCustomerProfile(
     lastName: lastName || "-",
     customerType: toStrapiCustomerType(type),
     user: userId,
-    emailVerified: false, // ✅ NUOVO: marcato non verificato finché non clicca il link
+    emailVerified: false,
     ...(shippingAddress ? { shippingAddress } : {}),
     ...(billingAddress ? { billingAddress } : {}),
     ...(aziendeId ? { azienda: aziendeId } : {}),
   };
 
-  const tokenToUse = STRAPI_SERVICE_TOKEN || userJwt || "";
-  if (!tokenToUse) return false;
+  // In produzione vogliamo usare SEMPRE il service token, non il JWT utente
+  const tokenToUse = STRAPI_SERVICE_TOKEN;
+  if (!tokenToUse) {
+    if (isDev) {
+      console.warn(
+        "[register] ensureCustomerProfile: STRAPI_SERVICE_TOKEN mancante, impossibile creare/aggiornare il profilo"
+      );
+    }
+    return false;
+  }
 
   const create = await strapiPost(
     "/api/customer-profiles",
@@ -486,7 +498,7 @@ async function createCompanyBestEffort(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Handlers HTTP                                                      */
+/*  Handlers HTTP                                                     */
 /* ------------------------------------------------------------------ */
 
 export async function GET() {
@@ -538,7 +550,9 @@ export async function POST(req: Request) {
 
     const companyName = clampString(sanitizeText(body?.companyName, 140), 140);
     const vatNumber = clampString(sanitizeText(body?.vat ?? body?.vatNumber, 40), 40);
-    const sdi = clampString(sanitizeText(body?.sdi, 20), 20).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const sdi = clampString(sanitizeText(body?.sdi, 20), 20)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
     const pec = sanitizeEmailMaybe(body?.pec);
 
     if (!isValidEmail(email)) {
@@ -597,30 +611,19 @@ export async function POST(req: Request) {
       const jwt = reg.data?.jwt as string | undefined;
       const userId = Number(reg.data?.user?.id ?? 0);
 
-      // ✅ PUNTO 4: Invia email di verifica (best-effort, non blocca la registrazione)
+      // ✅ Invio email di verifica (best-effort, non blocca la registrazione)
       try {
         const emailSent = await sendVerificationEmail(email);
         if (isDev) {
           console.warn("[register] sendVerificationEmail result:", emailSent);
         }
       } catch (emailErr) {
-        // Non bloccare la registrazione se l'email fallisce
         if (isDev) {
           console.warn("[register] sendVerificationEmail error (best-effort):", emailErr);
         }
       }
 
-      const response = jsonNoStore(
-        {
-          ok: true,
-          loggedIn: Boolean(jwt),
-          type,
-          emailPending: true, // ✅ Frontend può mostrare "Controlla la tua email"
-          message: "Account creato! Controlla la tua email per verificare l'account.",
-        },
-        200
-      );
-      if (jwt) setAuthCookie(response, jwt);
+      let profileCreated = false;
 
       if (userId > 0) {
         // 1) Crea Azienda (se BUSINESS)
@@ -646,7 +649,7 @@ export async function POST(req: Request) {
 
         // 2) Crea/aggiorna CustomerProfile
         try {
-          await ensureCustomerProfile(
+          profileCreated = await ensureCustomerProfile(
             userId,
             firstName,
             lastName,
@@ -662,6 +665,19 @@ export async function POST(req: Request) {
           }
         }
       }
+
+      const response = jsonNoStore(
+        {
+          ok: true,
+          loggedIn: Boolean(jwt),
+          type,
+          emailPending: true,
+          profileCreated,
+          message: "Account creato! Controlla la tua email per verificare l'account.",
+        },
+        200
+      );
+      if (jwt) setAuthCookie(response, jwt);
 
       return response;
     }
