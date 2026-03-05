@@ -79,9 +79,8 @@ function sanitizeEmail(v: unknown): string {
 }
 
 function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
-  return String(v ?? "").toUpperCase().trim() === "BUSINESS"
-    ? "BUSINESS"
-    : "PRIVATE";
+  const s = String(v ?? "").toUpperCase().trim();
+  return s === "BUSINESS" || s === "AZIENDE" ? "BUSINESS" : "PRIVATE";
 }
 
 // Rimuove il placeholder "-" che usiamo per soddisfare campi required in Strapi.
@@ -318,19 +317,28 @@ async function findCustomerProfile(base: string, userId: number) {
 
 // Azienda legata all'utente (relazione users_permissions_users)
 async function findAziendaByUserId(base: string, userId: number) {
-  const qs = new URLSearchParams();
-  qs.set("pagination[pageSize]", "1");
-  qs.set("filters[users_permissions_users][id][$eq]", String(userId));
-  const r = await fetchJson(
-    `${base}/api/aziendes?${qs.toString()}`,
-    { method: "GET", headers: serviceHeaders() },
-    12_000
-  );
-  const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-  if (!row) return null;
-  const { id, documentId } = pickKey(row);
-  if (!id && !documentId) return null;
-  return { id, documentId, attrs: extractAttrs(row) };
+  // prova più varianti di relazione
+  for (const filterKey of [
+    "filters[users_permissions_users][id][$eq]",
+    "filters[user][id][$eq]",
+    "filters[users][id][$eq]",
+  ]) {
+    const qs = new URLSearchParams();
+    qs.set("pagination[pageSize]", "1");
+    qs.set("populate", "billingAddress");
+    qs.set(filterKey, String(userId));
+    const r = await fetchJson(
+      `${base}/api/aziendes?${qs.toString()}`,
+      { method: "GET", headers: serviceHeaders() },
+      12_000
+    );
+    const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+    if (row) {
+      const { id, documentId } = pickKey(row);
+      if (id || documentId) return { id, documentId, attrs: extractAttrs(row) };
+    }
+  }
+  return null;
 }
 
 function extractAziendaFromProfileAttrs(profileAttrs: any): any | null {
@@ -586,7 +594,7 @@ export async function PUT(req: Request) {
     const patch: any = {
       firstName,
       lastName,
-      customerType: "BUSINESS",
+      customerType: "AZIENDE",
       shippingAddress: addressHasAny(shipping) ? shipping : null,
       billingAddress: addressHasAny(billing) ? billing : null,
       ...(aziendaKey ? { azienda: aziendaKey } : {}),

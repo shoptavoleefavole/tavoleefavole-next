@@ -355,7 +355,7 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
 /* ------------------------------------------------------------------ */
 
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
-  return type === "BUSINESS" ? "BUSINESS" : "PRIVATE";
+  return type === "BUSINESS" ? "AZIENDE" : "PRIVATE";
 }
 
 /* ------------------------------------------------------------------ */
