@@ -5,20 +5,19 @@ import { sendVerificationEmail } from "@/lib/email";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REGISTER_VERSION = "2026-03-02-v8";
+const REGISTER_VERSION = "2026-03-06-v9";
 const BODY_LIMIT = 32 * 1024;
 
 /* ------------------------------------------------------------------ */
-/*  Rate Limiter in-memory (IP-based)                                 */
+/* Rate Limiter in-memory (IP-based)                                    */
 /* ------------------------------------------------------------------ */
 
 const ipAttempts = new Map<string, { count: number; resetAt: number }>();
-const RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
-const RATE_MAX = 5; // max 5 registrazioni per IP per finestra
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX = 5;
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
-  // Pulizia periodica voci scadute (ogni 100 richieste ca.)
   if (ipAttempts.size > 500) {
     for (const [k, v] of ipAttempts) {
       if (now > v.resetAt) ipAttempts.delete(k);
@@ -41,7 +40,7 @@ function getClientIp(req: Request): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Strapi base URL                                                   */
+/* Strapi base URL                                                       */
 /* ------------------------------------------------------------------ */
 
 function strapiBaseUrl() {
@@ -63,11 +62,10 @@ function strapiBaseUrl() {
 }
 
 const STRAPI_SERVICE_TOKEN = process.env.STRAPI_API_TOKEN || "";
-
 const isDev = process.env.NODE_ENV === "development";
 
 /* ------------------------------------------------------------------ */
-/*  Security Headers                                                  */
+/* Security Headers                                                      */
 /* ------------------------------------------------------------------ */
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -82,7 +80,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Helpers risposta JSON                                             */
+/* Helpers risposta JSON                                                 */
 /* ------------------------------------------------------------------ */
 
 function jsonNoStore(data: any, status = 200) {
@@ -98,7 +96,7 @@ function safeJsonParse(text: string) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Validazioni input                                                 */
+/* Validazioni input                                                     */
 /* ------------------------------------------------------------------ */
 
 function normalizeEmail(v: unknown) {
@@ -134,7 +132,6 @@ function sanitizeEmailMaybe(v: unknown) {
   return isValidEmail(e) ? e : "";
 }
 
-// Sanitizza stringhe per prevenire injection
 function sanitizeText(v: unknown, max = 120): string {
   return String(v ?? "")
     .trim()
@@ -146,7 +143,7 @@ const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l'accesso.";
 
 /* ------------------------------------------------------------------ */
-/*  Tipi                                                              */
+/* Tipi                                                                  */
 /* ------------------------------------------------------------------ */
 
 type Address = {
@@ -166,7 +163,7 @@ type CompanyFields = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Address helpers                                                   */
+/* Address helpers                                                       */
 /* ------------------------------------------------------------------ */
 
 function capOk(cap: string) {
@@ -185,12 +182,12 @@ function normAddress(input: unknown): Address {
       .replace(/[^\d]/g, "")
       .slice(0, 10),
     province: sanitizeText(a.province, 24),
-    country:
-      (String(a.country ?? "IT")
+    country: (
+      String(a.country ?? "IT")
         .trim()
         .toUpperCase()
         .replace(/[^A-Z]/g, "") || "IT"
-      ).slice(0, 2),
+    ).slice(0, 2),
   };
 }
 
@@ -204,7 +201,7 @@ function validateAddress(a: Address): string | null {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Fetch helpers (con retry e timeout)                               */
+/* Fetch helpers (con retry e timeout)                                  */
 /* ------------------------------------------------------------------ */
 
 function isRetryableFetchError(e: any) {
@@ -292,7 +289,6 @@ async function strapiPut(path: string, body: any, timeoutMs: number, token?: str
     Accept: "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-
   const res = await fetchWithRetry(
     url,
     { method: "PUT", headers, body: JSON.stringify(body) },
@@ -305,7 +301,7 @@ async function strapiPut(path: string, body: any, timeoutMs: number, token?: str
 }
 
 /* ------------------------------------------------------------------ */
-/*  Deduplicazione errori Strapi                                      */
+/* Deduplicazione errori Strapi                                          */
 /* ------------------------------------------------------------------ */
 
 function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
@@ -336,7 +332,7 @@ function looksLikeUniqueViolation(status: number, strapiData: any, strapiText: s
 }
 
 /* ------------------------------------------------------------------ */
-/*  Body reading limit                                                */
+/* Body reading limit                                                    */
 /* ------------------------------------------------------------------ */
 
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
@@ -346,7 +342,7 @@ async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Cookie                                                            */
+/* Cookie                                                                */
 /* ------------------------------------------------------------------ */
 
 function setAuthCookie(resp: NextResponse, jwt: string) {
@@ -355,12 +351,12 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 giorni
+    maxAge: 60 * 60 * 24 * 7,
   });
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mapping tipo cliente                                              */
+/* Mapping tipo cliente                                                  */
 /* ------------------------------------------------------------------ */
 
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
@@ -368,7 +364,7 @@ function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
 }
 
 /* ------------------------------------------------------------------ */
-/*  CustomerProfile + Azienda                                         */
+/* CustomerProfile + Azienda                                             */
 /* ------------------------------------------------------------------ */
 
 async function ensureCustomerProfile(
@@ -383,7 +379,16 @@ async function ensureCustomerProfile(
 ) {
   const TIMEOUT = 12_000;
 
-  const patch: any = {
+  // ✅ FIX BUG #2: Strapi v5 richiede { connect: [{ id }] } per le relazioni.
+  // Fallback: se connect fallisce, riproviamo con id numerico grezzo (Strapi v4).
+  const buildAziendaRelation = (useConnect: boolean) => {
+    if (!aziendeId) return {};
+    return useConnect
+      ? { azienda: { connect: [{ id: aziendeId }] } }
+      : { azienda: aziendeId };
+  };
+
+  const basePatch: any = {
     firstName: firstName || "-",
     lastName: lastName || "-",
     customerType: toStrapiCustomerType(type),
@@ -391,37 +396,55 @@ async function ensureCustomerProfile(
     emailVerified: false,
     ...(shippingAddress ? { shippingAddress } : {}),
     ...(billingAddress ? { billingAddress } : {}),
-    ...(aziendeId ? { azienda: aziendeId } : {}),
   };
 
-  // In produzione vogliamo usare SEMPRE il service token, non il JWT utente
   const tokenToUse = STRAPI_SERVICE_TOKEN;
   if (!tokenToUse) {
     if (isDev) {
       console.warn(
-        "[register] ensureCustomerProfile: STRAPI_SERVICE_TOKEN mancante, impossibile creare/aggiornare il profilo"
+        "[register] ensureCustomerProfile: STRAPI_SERVICE_TOKEN mancante"
       );
     }
     return false;
   }
 
-  const create = await strapiPost(
+  // Tentativo 1: CREATE con connect syntax (Strapi v5)
+  const patch_v5 = { ...basePatch, ...buildAziendaRelation(true) };
+  const create_v5 = await strapiPost(
     "/api/customer-profiles",
-    { data: patch },
+    { data: patch_v5 },
     TIMEOUT,
     tokenToUse
   );
-
   if (isDev) {
-    console.warn("[register] ensureCustomerProfile create", {
-      ok: create.res.ok,
-      status: create.res.status,
+    console.warn("[register] ensureCustomerProfile create (v5 connect)", {
+      ok: create_v5.res.ok,
+      status: create_v5.res.status,
+      error: create_v5.data?.error?.message,
     });
   }
+  if (create_v5.res.ok) return true;
 
-  if (create.res.ok) return true;
-  if (!looksLikeUniqueViolation(create.res.status, create.data, create.text)) {
-    return false;
+  // Tentativo 2: CREATE con id numerico (Strapi v4 fallback)
+  if (!looksLikeUniqueViolation(create_v5.res.status, create_v5.data, create_v5.text)) {
+    const patch_v4 = { ...basePatch, ...buildAziendaRelation(false) };
+    const create_v4 = await strapiPost(
+      "/api/customer-profiles",
+      { data: patch_v4 },
+      TIMEOUT,
+      tokenToUse
+    );
+    if (isDev) {
+      console.warn("[register] ensureCustomerProfile create (v4 id)", {
+        ok: create_v4.res.ok,
+        status: create_v4.res.status,
+        error: create_v4.data?.error?.message,
+      });
+    }
+    if (create_v4.res.ok) return true;
+    if (!looksLikeUniqueViolation(create_v4.res.status, create_v4.data, create_v4.text)) {
+      return false;
+    }
   }
 
   // Profilo già esistente → UPDATE
@@ -442,9 +465,10 @@ async function ensureCustomerProfile(
   const key = id || docId;
   if (!key) return false;
 
+  // UPDATE con connect syntax (Strapi v5)
   const upd = await strapiPut(
     `/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
-    { data: patch },
+    { data: patch_v5 },
     TIMEOUT,
     tokenToUse
   );
@@ -454,6 +478,23 @@ async function ensureCustomerProfile(
       ok: upd.res.ok,
       status: upd.res.status,
     });
+  }
+
+  // UPDATE con id numerico (Strapi v4 fallback)
+  if (!upd.res.ok) {
+    const upd_v4 = await strapiPut(
+      `/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
+      { data: { ...basePatch, ...buildAziendaRelation(false) } },
+      TIMEOUT,
+      tokenToUse
+    );
+    if (isDev) {
+      console.warn("[register] ensureCustomerProfile update (v4 fallback)", {
+        ok: upd_v4.res.ok,
+        status: upd_v4.res.status,
+      });
+    }
+    return upd_v4.res.ok;
   }
 
   return upd.res.ok;
@@ -472,6 +513,7 @@ async function createCompanyBestEffort(
     sdi: payload.sdi || undefined,
     pec: payload.pec || undefined,
     billingAddress: payload.billingAddress || undefined,
+    isApproved: true, // ✅ FIX BUG #1 CRITICO: senza questo i prezzi azienda non vengono mai attivati
   };
 
   for (const userRef of [
@@ -487,7 +529,20 @@ async function createCompanyBestEffort(
     );
     if (r.res.ok) {
       const id = r.data?.data?.id ?? r.data?.id ?? null;
+      if (isDev) {
+        console.warn("[register] createCompanyBestEffort: azienda creata", {
+          id,
+          userRef: Object.keys(userRef)[0],
+        });
+      }
       return id ? Number(id) : null;
+    }
+    if (isDev) {
+      console.warn("[register] createCompanyBestEffort tentativo fallito", {
+        userRef: Object.keys(userRef)[0],
+        status: r.res.status,
+        error: r.data?.error?.message ?? r.text?.slice(0, 200),
+      });
     }
   }
 
@@ -498,7 +553,7 @@ async function createCompanyBestEffort(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Handlers HTTP                                                     */
+/* Handlers HTTP                                                          */
 /* ------------------------------------------------------------------ */
 
 export async function GET() {
@@ -515,13 +570,11 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    // ✅ Content-Type check
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
       return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
     }
 
-    // ✅ Rate limiting
     const clientIp = getClientIp(req);
     if (!checkRateLimit(clientIp)) {
       return jsonNoStore(
@@ -530,7 +583,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ Body size limit
     const { raw, tooLarge } = await readBodyWithLimit(req);
     if (tooLarge) {
       return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
@@ -611,7 +663,7 @@ export async function POST(req: Request) {
       const jwt = reg.data?.jwt as string | undefined;
       const userId = Number(reg.data?.user?.id ?? 0);
 
-      // ✅ Invio email di verifica (best-effort, non blocca la registrazione)
+      // Invio email di verifica (best-effort, non blocca la registrazione)
       try {
         const emailSent = await sendVerificationEmail(email);
         if (isDev) {
@@ -626,7 +678,7 @@ export async function POST(req: Request) {
       let profileCreated = false;
 
       if (userId > 0) {
-        // 1) Crea Azienda (se BUSINESS)
+        // STEP 1: Crea Azienda PRIMA (se BUSINESS) → ottieni aziendeId
         let aziendeId: number | null = null;
         if (type === "BUSINESS") {
           try {
@@ -647,7 +699,7 @@ export async function POST(req: Request) {
           }
         }
 
-        // 2) Crea/aggiorna CustomerProfile
+        // STEP 2: Crea/aggiorna CustomerProfile con link all'azienda
         try {
           profileCreated = await ensureCustomerProfile(
             userId,
@@ -682,7 +734,6 @@ export async function POST(req: Request) {
       return response;
     }
 
-    // Email già registrata → avvia flusso forgot-password
     if (looksLikeAlreadyRegistered(reg.res.status, reg.data, reg.text)) {
       try {
         await strapiPost("/api/auth/forgot-password", { email }, FORGOT_TIMEOUT);

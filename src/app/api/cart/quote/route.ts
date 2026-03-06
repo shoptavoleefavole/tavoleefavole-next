@@ -24,7 +24,7 @@ type ApiBody = {
 function json(data: any, status = 200) {
   return NextResponse.json(data, {
     status,
-    headers: { "Cache-Control": "no-store", "x-cart-quote": "v4-robust-timeout-retry-missing-items" },
+    headers: { "Cache-Control": "no-store", "x-cart-quote": "v5-company-prices-fix" },
   });
 }
 
@@ -82,17 +82,22 @@ async function fetchWithRetry(url: string, init: RequestInit, ms = STRAPI_TIMEOU
     } catch (e: any) {
       lastErr = e;
       if (!isRetryableFetchError(e) || i === 2) break;
-      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i))); // 500ms, 1000ms
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
     }
   }
   throw lastErr;
 }
 
+// ✅ FIX: try/catch su decodeURIComponent per cookie malformati
 function getCookieValue(cookieHeader: string, name: string) {
   const parts = cookieHeader.split(";").map((p) => p.trim());
   const hit = parts.find((p) => p.startsWith(`${name}=`));
   if (!hit) return null;
-  return decodeURIComponent(hit.slice(name.length + 1));
+  try {
+    return decodeURIComponent(hit.slice(name.length + 1));
+  } catch {
+    return null;
+  }
 }
 
 function clampNumber(v: any, fallback = 0) {
@@ -119,15 +124,18 @@ function normalizeCurrency(input: any) {
 
 function isZeroDecimalCurrency(currency: string) {
   const zero = new Set([
-    "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+    "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA",
+    "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
   ]);
   return zero.has(String(currency || "").toUpperCase());
 }
+
 function toMinor(priceMajor: number, currency: string) {
   if (!Number.isFinite(priceMajor) || priceMajor <= 0) return null;
   if (isZeroDecimalCurrency(currency)) return Math.round(priceMajor);
   return Math.round(priceMajor * 100);
 }
+
 function toMajor(amountMinor: number, currency: string) {
   if (isZeroDecimalCurrency(currency)) return amountMinor;
   return amountMinor / 100;
@@ -136,6 +144,7 @@ function toMajor(amountMinor: number, currency: string) {
 function isPlainObject(x: any) {
   return !!x && typeof x === "object" && !Array.isArray(x);
 }
+
 function sanitizeMeta(meta: any): CartItemMeta | undefined {
   if (!isPlainObject(meta)) return undefined;
   const out: CartItemMeta = {};
@@ -169,7 +178,6 @@ function normalizeItems(input: any): CartItem[] {
         : undefined;
 
     const lineId = typeof it?.lineId === "string" ? it.lineId : undefined;
-
     const meta = sanitizeMeta(it?.meta);
     const isCustom = typeof meta?.kind === "string" && meta.kind.trim().length > 0;
 
@@ -189,7 +197,7 @@ function normalizeItems(input: any): CartItem[] {
   return out;
 }
 
-/* --- Cialde pricing (solo se item custom con meta.kind) --- */
+/* --- Cialde pricing --- */
 const CIALDE_PRICE_MAJOR = {
   ostia: 4.75,
   pasta_di_zucchero: 6.5,
@@ -211,14 +219,20 @@ function buildCialdaName(meta?: CartItemMeta) {
 }
 
 /* --- Strapi product extraction --- */
+
+// ✅ FIX BUG #2: aggiunto tutti i campi prezzo B2B usati su Strapi
 type StrapiProduct = {
   id: number | null;
   slug: string | null;
   name: string | null;
   price: number | null;
   compareAtPrice: number | null;
-
+  // tutti i possibili campi prezzo azienda
   companyPrice: number | null;
+  b2bPrice: number | null;
+  priceAziende: number | null;
+  priceCompany: number | null;
+  priceB2B: number | null;
   aziendaDiscountEligible: boolean;
 };
 
@@ -227,6 +241,7 @@ function toNumOrNull(v: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// ✅ FIX BUG #2: extractProduct legge tutti i campi prezzo B2B
 function extractProduct(row: any): StrapiProduct {
   const a = row?.attributes ?? row ?? {};
   const id = typeof row?.id === "number" ? row.id : null;
@@ -235,7 +250,17 @@ function extractProduct(row: any): StrapiProduct {
 
   const price = toNumOrNull(a?.price ?? row?.price);
   const compareAtPrice = toNumOrNull(a?.compareAtPrice ?? row?.compareAtPrice);
+
+  // legge tutte le varianti di nome del prezzo azienda
   const companyPrice = toNumOrNull(a?.companyPrice ?? row?.companyPrice);
+  const b2bPrice = toNumOrNull(a?.b2bPrice ?? row?.b2bPrice);
+  const priceAziende = toNumOrNull(a?.priceAziende ?? row?.priceAziende);
+  const priceCompany = toNumOrNull(
+    a?.price_company ?? row?.price_company ?? a?.priceCompany ?? row?.priceCompany
+  );
+  const priceB2B = toNumOrNull(
+    a?.price_b2b ?? row?.price_b2b ?? a?.priceB2B ?? row?.priceB2B
+  );
 
   const eligibleRaw =
     a?.aziendaDiscountEligible ??
@@ -251,16 +276,36 @@ function extractProduct(row: any): StrapiProduct {
     price,
     compareAtPrice,
     companyPrice,
+    b2bPrice,
+    priceAziende,
+    priceCompany,
+    priceB2B,
     aziendaDiscountEligible: Boolean(eligibleRaw),
   };
 }
 
-// ✅ più compatibile: ripeto filters[field][$in]=...
+// ✅ FIX BUG #4: prova tutti i campi prezzo B2B in ordine di priorità
+function pickCompanyUnitPrice(p: StrapiProduct): number | null {
+  const candidates = [
+    p.companyPrice,
+    p.b2bPrice,
+    p.priceAziende,
+    p.priceCompany,
+    p.priceB2B,
+  ].filter((x): x is number => typeof x === "number" && Number.isFinite(x) && x > 0);
+  return candidates.length ? candidates[0] : null;
+}
+
 function addInFilter(qs: URLSearchParams, field: string, values: (string | number)[]) {
   values.forEach((v) => qs.append(`filters[${field}][$in]`, String(v)));
 }
 
-async function strapiRequest(STRAPI_URL: string, STRAPI_API_TOKEN: string, path: string, init: RequestInit) {
+async function strapiRequest(
+  STRAPI_URL: string,
+  STRAPI_API_TOKEN: string,
+  path: string,
+  init: RequestInit
+) {
   const res = await fetchWithRetry(`${strapiBaseUrl(STRAPI_URL)}${path}`, {
     ...init,
     headers: {
@@ -275,6 +320,7 @@ async function strapiRequest(STRAPI_URL: string, STRAPI_API_TOKEN: string, path:
   return { res, data, text };
 }
 
+// ✅ FIX BUG #3: aggiunto tutti i campi B2B nella query a Strapi
 async function fetchProductsByIdsOrSlugs(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
@@ -289,15 +335,32 @@ async function fetchProductsByIdsOrSlugs(args: {
   if (slugs.length) addInFilter(qs, "slug", slugs);
 
   const qs1 = new URLSearchParams(qs.toString());
-  ["name", "slug", "price", "compareAtPrice", "companyPrice", "aziendaDiscountEligible"].forEach((f, i) => {
-    qs1.append(`fields[${i}]`, f);
-  });
+  // ✅ richiediamo TUTTI i campi prezzo B2B a Strapi, non solo companyPrice
+  const fields = [
+    "name",
+    "slug",
+    "price",
+    "compareAtPrice",
+    "companyPrice",
+    "b2bPrice",
+    "priceAziende",
+    "priceCompany",
+    "priceB2B",
+    "price_company",
+    "price_b2b",
+    "aziendaDiscountEligible",
+  ];
+  fields.forEach((f, i) => qs1.append(`fields[${i}]`, f));
 
-  let r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs1.toString()}`, { method: "GET" });
+  let r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs1.toString()}`, {
+    method: "GET",
+  });
 
   // fallback senza fields se 400
   if (!r.res.ok && r.res.status === 400) {
-    r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs.toString()}`, { method: "GET" });
+    r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs.toString()}`, {
+      method: "GET",
+    });
   }
 
   if (!r.res.ok) return { ok: false as const, status: r.res.status, details: r.data ?? r.text };
@@ -315,7 +378,7 @@ async function fetchProductsByIdsOrSlugs(args: {
   return { ok: true as const, byId, bySlug };
 }
 
-/* --- Company ctx (approvata) --- */
+/* --- Company ctx --- */
 type CompanyCtx = { approved: boolean; discountPercent: number };
 
 function clampPercent(v: any) {
@@ -340,9 +403,12 @@ async function getCompanyCtx(args: {
     qs.append("populate[1]", "azienda");
     qs.append("fields[0]", "customerType");
 
-    const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/customer-profiles?${qs.toString()}`, {
-      method: "GET",
-    });
+    const r = await strapiRequest(
+      STRAPI_URL,
+      STRAPI_API_TOKEN,
+      `/api/customer-profiles?${qs.toString()}`,
+      { method: "GET" }
+    );
     if (!r.res.ok) return null;
 
     const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
@@ -350,7 +416,11 @@ async function getCompanyCtx(args: {
 
     const a = first?.attributes ?? first ?? {};
     const customerType = String(a?.customerType ?? "").toUpperCase();
-    if (customerType !== "AZIENDE") return { approved: false, discountPercent: 0 };
+
+    // ✅ FIX BUG #1: accetta sia "AZIENDE" che "BUSINESS" come tipo valido
+    if (customerType !== "AZIENDE" && customerType !== "BUSINESS") {
+      return { approved: false, discountPercent: 0 };
+    }
 
     const rel = a?.aziende?.data ?? a?.azienda?.data ?? a?.aziende ?? a?.azienda ?? null;
     const company = Array.isArray(rel) ? rel[0] : rel;
@@ -363,7 +433,10 @@ async function getCompanyCtx(args: {
     return { approved: true, discountPercent: percent > 0 ? percent : 0 };
   };
 
-  return (await tryQuery("user")) || (await tryQuery("users")) || { approved: false, discountPercent: 0 };
+  return (
+    (await tryQuery("user")) ||
+    (await tryQuery("users")) || { approved: false, discountPercent: 0 }
+  );
 }
 
 export async function POST(request: Request) {
@@ -385,7 +458,9 @@ export async function POST(request: Request) {
 
     // auth (optional)
     const cookieHeader = request.headers.get("cookie") || "";
-    const userJwt = getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken");
+    const userJwt =
+      getCookieValue(cookieHeader, "tf_token") ||
+      getCookieValue(cookieHeader, "jwtToken");
 
     let userId: number | null = null;
     let authenticated = false;
@@ -401,14 +476,13 @@ export async function POST(request: Request) {
           authenticated = true;
         }
       } catch {
-        // se /users/me va lento, non blocco il quote: lo tratteremo come guest
+        // se /users/me va lento, trattato come guest
       }
     }
 
-    const companyCtx = await getCompanyCtx({ STRAPI_URL, STRAPI_API_TOKEN, userId }).catch(() => ({
-      approved: false,
-      discountPercent: 0,
-    }));
+    const companyCtx = await getCompanyCtx({ STRAPI_URL, STRAPI_API_TOKEN, userId }).catch(
+      () => ({ approved: false, discountPercent: 0 })
+    );
     const isCompanyUser = companyCtx.approved === true;
 
     const customItems = itemsIn.filter(isCialdaItem);
@@ -428,7 +502,11 @@ export async function POST(request: Request) {
     const prodRes =
       ids.length || slugs.length
         ? await fetchProductsByIdsOrSlugs({ STRAPI_URL, STRAPI_API_TOKEN, ids, slugs })
-        : { ok: true as const, byId: new Map<number, StrapiProduct>(), bySlug: new Map<string, StrapiProduct>() };
+        : {
+            ok: true as const,
+            byId: new Map<number, StrapiProduct>(),
+            bySlug: new Map<string, StrapiProduct>(),
+          };
 
     if (!prodRes.ok) {
       return json(
@@ -443,7 +521,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // ✅ se manca un prodotto (slug/id sbagliato), rispondo 400 chiaro (non 500)
     const missing: Array<{ productId?: number; id?: number; slug?: string }> = [];
     for (const it of strapiItems) {
       const p =
@@ -451,7 +528,6 @@ export async function POST(request: Request) {
         (typeof it.id === "number" ? prodRes.byId.get(it.id) : undefined) ||
         (it.slug ? prodRes.bySlug.get(it.slug) : undefined) ||
         null;
-
       if (!p) missing.push({ productId: it.productId, id: it.id, slug: it.slug });
     }
     if (missing.length) {
@@ -459,7 +535,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "ITEM_NOT_FOUND",
-          message: "Uno o più prodotti del carrello non esistono su Strapi (slug/id non allineati).",
+          message: "Uno o più prodotti del carrello non esistono su Strapi.",
           missing,
         },
         400
@@ -485,7 +561,12 @@ export async function POST(request: Request) {
             ok: false,
             error: "INVALID_PRICE",
             message: "Prodotto trovato ma prezzo non valido su Strapi.",
-            product: { id: p?.id ?? null, slug: p?.slug ?? it.slug ?? null, name: p?.name ?? null, price: p?.price ?? null },
+            product: {
+              id: p?.id ?? null,
+              slug: p?.slug ?? it.slug ?? null,
+              name: p?.name ?? null,
+              price: p?.price ?? null,
+            },
           },
           400
         );
@@ -493,26 +574,34 @@ export async function POST(request: Request) {
 
       const publicPriceMajor = p.price;
       const compareAtMajor =
-        typeof p.compareAtPrice === "number" && p.compareAtPrice > publicPriceMajor ? p.compareAtPrice : null;
+        typeof p.compareAtPrice === "number" && p.compareAtPrice > publicPriceMajor
+          ? p.compareAtPrice
+          : null;
 
       const baseUnitMajor = compareAtMajor ?? publicPriceMajor;
 
-      // prezzi aziende (se company user)
       let finalUnitMajor = publicPriceMajor;
       let companyApplied = false;
 
-      if (isCompanyUser && typeof p.companyPrice === "number" && p.companyPrice > 0) {
-        finalUnitMajor = p.companyPrice;
-        companyApplied = true;
-      } else if (isCompanyUser && companyCtx.discountPercent > 0 && p.aziendaDiscountEligible) {
-        finalUnitMajor = (publicPriceMajor * (100 - companyCtx.discountPercent)) / 100;
-        companyApplied = true;
+      if (isCompanyUser) {
+        // ✅ FIX BUG #4: usa pickCompanyUnitPrice che prova tutti i campi B2B
+        const b2bPrice = pickCompanyUnitPrice(p);
+        if (b2bPrice !== null && b2bPrice > 0) {
+          finalUnitMajor = b2bPrice;
+          companyApplied = true;
+        } else if (companyCtx.discountPercent > 0 && p.aziendaDiscountEligible) {
+          finalUnitMajor = (publicPriceMajor * (100 - companyCtx.discountPercent)) / 100;
+          companyApplied = true;
+        }
       }
 
       const baseUnitMinor = toMinor(baseUnitMajor, currency);
       const finalUnitMinor = toMinor(finalUnitMajor, currency);
       if (!baseUnitMinor || !finalUnitMinor) {
-        return json({ ok: false, error: "INVALID_AMOUNT", message: "Prezzo non valido (minor calc)." }, 400);
+        return json(
+          { ok: false, error: "INVALID_AMOUNT", message: "Prezzo non valido (minor calc)." },
+          400
+        );
       }
 
       baseSubtotalMinor += baseUnitMinor * it.qty;
@@ -534,11 +623,14 @@ export async function POST(request: Request) {
       });
     }
 
-    // cialde custom (solo se meta.kind presente)
+    // cialde custom
     for (const it of customItems) {
       const material = String(it?.meta?.material ?? "").trim();
       if (!isCialdaMaterial(material)) {
-        return json({ ok: false, error: "INVALID_CIALDA_MATERIAL", message: "Cialda: materiale non valido." }, 400);
+        return json(
+          { ok: false, error: "INVALID_CIALDA_MATERIAL", message: "Cialda: materiale non valido." },
+          400
+        );
       }
 
       const unitMajor = CIALDE_PRICE_MAJOR[material];
@@ -565,10 +657,8 @@ export async function POST(request: Request) {
     }
 
     const discountMinor = Math.max(0, baseSubtotalMinor - finalSubtotalMinor);
-
     const shippingMajor = Math.max(0, clampNumber(body.shippingTotal, 0));
     const shippingMinor = shippingMajor > 0 ? toMinor(shippingMajor, currency) ?? 0 : 0;
-
     const totalMinor = finalSubtotalMinor + shippingMinor;
 
     return json({
@@ -589,7 +679,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           error: "TIMEOUT",
-          message: "Aggiornamento prezzi troppo lento (Render). Riprova tra poco.",
+          message: "Aggiornamento prezzi troppo lento. Riprova tra poco.",
           details: e?.message ?? String(e),
         },
         504
