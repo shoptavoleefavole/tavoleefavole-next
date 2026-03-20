@@ -10,7 +10,7 @@ function json(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-verify": "v2",
+      "x-checkout-verify": "v5",
     },
   });
 }
@@ -44,6 +44,27 @@ function parsePositiveInt(value: unknown) {
 function getSessionMetadataValue(session: Stripe.Checkout.Session, key: string) {
   const value = session.metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function getSessionRefs(session: Stripe.Checkout.Session) {
+  const numericOrderId = parsePositiveInt(
+    getSessionMetadataValue(session, "strapiOrderId") ||
+      getSessionMetadataValue(session, "orderId") ||
+      ""
+  );
+
+  const documentId =
+    getSessionMetadataValue(session, "strapiDocumentId") ||
+    getSessionMetadataValue(session, "orderDocumentId") ||
+    getSessionMetadataValue(session, "documentId") ||
+    null;
+
+  const orderRef = firstNonEmptyString(
+    getSessionMetadataValue(session, "orderRef"),
+    session.client_reference_id
+  );
+
+  return { numericOrderId, documentId, orderRef };
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000) {
@@ -97,6 +118,7 @@ async function strapiRequest(
       headers: {
         Authorization: `Bearer ${STRAPI_API_TOKEN}`,
         "Content-Type": "application/json",
+        Accept: "application/json",
         ...(extraHeaders || {}),
         ...(init.headers || {}),
       },
@@ -109,6 +131,18 @@ async function strapiRequest(
   return { res, data, text };
 }
 
+function buildOrderQueryVariants(inputQs: URLSearchParams) {
+  const base = new URLSearchParams(inputQs.toString());
+  base.set("pagination[pageSize]", "1");
+  base.set("fields[0]", "id");
+  base.set("fields[1]", "documentId");
+
+  const withDraft = new URLSearchParams(base.toString());
+  withDraft.set("status", "draft");
+
+  return [withDraft, base];
+}
+
 async function findFirstOrderByFilter(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
@@ -116,34 +150,33 @@ async function findFirstOrderByFilter(args: {
 }) {
   const { STRAPI_URL, STRAPI_API_TOKEN, qs } = args;
 
-  qs.set("pagination[pageSize]", "1");
-  qs.set("fields[0]", "id");
-  qs.set("fields[1]", "documentId");
-  qs.set("publicationState", "preview");
+  for (const candidateQs of buildOrderQueryVariants(qs)) {
+    const r = await strapiRequest(
+      STRAPI_URL,
+      STRAPI_API_TOKEN,
+      `/api/orders?${candidateQs.toString()}`,
+      { method: "GET" }
+    );
 
-  const r = await strapiRequest(
-    STRAPI_URL,
-    STRAPI_API_TOKEN,
-    `/api/orders?${qs.toString()}`,
-    { method: "GET" }
-  );
+    if (!r.res.ok) continue;
 
-  if (!r.res.ok) return null;
+    const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
+    if (!first) continue;
 
-  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
-  if (!first) return null;
+    const a = first?.attributes ?? first ?? {};
+    const numericId =
+      typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
+    const documentId =
+      typeof first?.documentId === "string"
+        ? first.documentId
+        : typeof a?.documentId === "string"
+          ? a.documentId
+          : null;
 
-  const a = first?.attributes ?? first ?? {};
-  const numericId =
-    typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
-  const documentId =
-    typeof first?.documentId === "string"
-      ? first.documentId
-      : typeof a?.documentId === "string"
-        ? a.documentId
-        : null;
+    return { numericId, documentId };
+  }
 
-  return { numericId, documentId };
+  return null;
 }
 
 async function updateOrderSmart(args: {
@@ -164,13 +197,23 @@ async function updateOrderSmart(args: {
   } = args;
 
   const tries: Array<{ label: string; path: string }> = [];
+
   if (documentId) {
+    tries.push({
+      label: "documentId:draft",
+      path: `/api/orders/${encodeURIComponent(documentId)}?status=draft`,
+    });
     tries.push({
       label: "documentId",
       path: `/api/orders/${encodeURIComponent(documentId)}`,
     });
   }
+
   if (typeof numericId === "number") {
+    tries.push({
+      label: "numericId:draft",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}?status=draft`,
+    });
     tries.push({
       label: "numericId",
       path: `/api/orders/${encodeURIComponent(String(numericId))}`,
@@ -194,7 +237,9 @@ async function updateOrderSmart(args: {
       }
     );
 
-    if (upd.res.ok) return { ok: true as const, via: t.label };
+    if (upd.res.ok) {
+      return { ok: true as const, via: t.label, data: upd.data };
+    }
 
     last = {
       via: t.label,
@@ -243,15 +288,7 @@ export async function GET(request: Request) {
     const paid =
       session.payment_status === "paid" || session.payment_status === "no_payment_required";
     const complete = session.status === "complete";
-
-    const metadataStrapiDocumentId = getSessionMetadataValue(session, "strapiDocumentId");
-    const metadataStrapiOrderId = parsePositiveInt(
-      getSessionMetadataValue(session, "strapiOrderId")
-    );
-    const orderRef = firstNonEmptyString(
-      session.client_reference_id,
-      getSessionMetadataValue(session, "orderRef")
-    );
+    const refs = getSessionRefs(session);
 
     const customerEmail =
       firstNonEmptyString(
@@ -275,36 +312,37 @@ export async function GET(request: Request) {
         paid: false,
         status: session.status,
         payment_status: session.payment_status,
-        orderRef: orderRef || null,
+        orderRef: refs.orderRef || null,
+        orderId: refs.numericOrderId,
+        documentId: refs.documentId,
       });
     }
 
     let found: { numericId: number | null; documentId: string | null } | null = null;
 
-    if (metadataStrapiDocumentId) {
-      const qs = new URLSearchParams();
-      qs.set("filters[documentId][$eq]", metadataStrapiDocumentId);
-      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
-
-      if (!found) {
-        found = {
-          numericId: metadataStrapiOrderId,
-          documentId: metadataStrapiDocumentId,
-        };
-      }
-    }
-
-    if (!found && metadataStrapiOrderId) {
-      found = {
-        numericId: metadataStrapiOrderId,
-        documentId: metadataStrapiDocumentId || null,
-      };
-    }
-
-    if (!found) {
+    {
       const qs = new URLSearchParams();
       qs.set("filters[stripeSessionId][$eq]", session_id);
       found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && refs.numericOrderId) {
+      const qs = new URLSearchParams();
+      qs.set("filters[id][$eq]", String(refs.numericOrderId));
+      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && refs.documentId) {
+      const qs = new URLSearchParams();
+      qs.set("filters[documentId][$eq]", refs.documentId);
+      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && (refs.numericOrderId || refs.documentId)) {
+      found = {
+        numericId: refs.numericOrderId,
+        documentId: refs.documentId,
+      };
     }
 
     if (!found) {
@@ -313,10 +351,12 @@ export async function GET(request: Request) {
         paid: true,
         updated: false,
         message: "Payment ok but order not found on Strapi",
-        orderRef: orderRef || null,
+        orderRef: refs.orderRef || null,
+        orderId: refs.numericOrderId,
+        documentId: refs.documentId,
         refs: {
-          strapiOrderId: metadataStrapiOrderId,
-          strapiDocumentId: metadataStrapiDocumentId,
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
           stripeSessionId: session_id,
         },
       });
@@ -346,12 +386,12 @@ export async function GET(request: Request) {
         updated: false,
         orderId: found.numericId,
         documentId: found.documentId,
-        orderRef: orderRef || found.documentId || null,
+        orderRef: refs.orderRef || found.documentId || null,
         status: upd.last?.status,
         details: upd.last?.details,
         refs: {
-          strapiOrderId: metadataStrapiOrderId,
-          strapiDocumentId: metadataStrapiDocumentId,
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
           stripeSessionId: session_id,
         },
       });
@@ -361,12 +401,13 @@ export async function GET(request: Request) {
       ok: true,
       paid: true,
       updated: true,
+      via: upd.via,
       orderId: found.numericId,
       documentId: found.documentId,
-      orderRef: orderRef || found.documentId || null,
+      orderRef: refs.orderRef || found.documentId || null,
       refs: {
-        strapiOrderId: metadataStrapiOrderId,
-        strapiDocumentId: metadataStrapiDocumentId,
+        strapiOrderId: refs.numericOrderId,
+        strapiDocumentId: refs.documentId,
         stripeSessionId: session_id,
       },
     });
