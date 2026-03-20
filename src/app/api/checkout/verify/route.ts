@@ -87,7 +87,8 @@ async function strapiRequest(
   STRAPI_API_TOKEN: string,
   path: string,
   init: RequestInit,
-  timeoutMs = 25_000
+  timeoutMs = 25_000,
+  extraHeaders?: Record<string, string>
 ) {
   const res = await fetchWithRetry(
     `${strapiBaseUrl(STRAPI_URL)}${path}`,
@@ -96,6 +97,7 @@ async function strapiRequest(
       headers: {
         Authorization: `Bearer ${STRAPI_API_TOKEN}`,
         "Content-Type": "application/json",
+        ...(extraHeaders || {}),
         ...(init.headers || {}),
       },
     },
@@ -119,14 +121,21 @@ async function findFirstOrderByFilter(args: {
   qs.set("fields[1]", "documentId");
   qs.set("publicationState", "preview");
 
-  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/orders?${qs.toString()}`, { method: "GET" });
+  const r = await strapiRequest(
+    STRAPI_URL,
+    STRAPI_API_TOKEN,
+    `/api/orders?${qs.toString()}`,
+    { method: "GET" }
+  );
+
   if (!r.res.ok) return null;
 
   const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
   if (!first) return null;
 
   const a = first?.attributes ?? first ?? {};
-  const numericId = typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
+  const numericId =
+    typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
   const documentId =
     typeof first?.documentId === "string"
       ? first.documentId
@@ -140,29 +149,58 @@ async function findFirstOrderByFilter(args: {
 async function updateOrderSmart(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
+  ORDER_STATUS_WEBHOOK_SECRET: string;
   documentId?: string | null;
   numericId?: number | null;
   payload: any;
 }) {
-  const { STRAPI_URL, STRAPI_API_TOKEN, documentId, numericId, payload } = args;
+  const {
+    STRAPI_URL,
+    STRAPI_API_TOKEN,
+    ORDER_STATUS_WEBHOOK_SECRET,
+    documentId,
+    numericId,
+    payload,
+  } = args;
 
   const tries: Array<{ label: string; path: string }> = [];
-  if (documentId) tries.push({ label: "documentId", path: `/api/orders/${encodeURIComponent(documentId)}` });
+  if (documentId) {
+    tries.push({
+      label: "documentId",
+      path: `/api/orders/${encodeURIComponent(documentId)}`,
+    });
+  }
   if (typeof numericId === "number") {
-    tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
+    tries.push({
+      label: "numericId",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}`,
+    });
   }
 
   let last: any = null;
 
   for (const t of tries) {
-    const upd = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, t.path, {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    });
+    const upd = await strapiRequest(
+      STRAPI_URL,
+      STRAPI_API_TOKEN,
+      t.path,
+      {
+        method: "PUT",
+        body: JSON.stringify({ data: payload }),
+      },
+      25_000,
+      {
+        "x-order-status-secret": ORDER_STATUS_WEBHOOK_SECRET,
+      }
+    );
 
     if (upd.res.ok) return { ok: true as const, via: t.label };
 
-    last = { via: t.label, status: upd.res.status, details: upd.data ?? upd.text };
+    last = {
+      via: t.label,
+      status: upd.res.status,
+      details: upd.data ?? upd.text,
+    };
   }
 
   return { ok: false as const, last };
@@ -173,9 +211,17 @@ export async function GET(request: Request) {
     const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
     const STRAPI_URL = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "";
     const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN || "";
+    const ORDER_STATUS_WEBHOOK_SECRET = process.env.ORDER_STATUS_WEBHOOK_SECRET || "";
 
-    if (!STRIPE_SECRET_KEY) return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
-    if (!STRAPI_URL) return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
+    if (!ORDER_STATUS_WEBHOOK_SECRET) {
+      return json({ ok: false, error: "Missing ORDER_STATUS_WEBHOOK_SECRET" }, 500);
+    }
+    if (!STRIPE_SECRET_KEY) {
+      return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
+    }
+    if (!STRAPI_URL) {
+      return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
+    }
     if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) {
       return json({ ok: false, error: "Missing STRAPI_API_TOKEN" }, 500);
     }
@@ -184,7 +230,9 @@ export async function GET(request: Request) {
     const rawSessionId = String(searchParams.get("session_id") || "").trim();
     const session_id = rawSessionId.replace(/^session_id=/, "").trim();
 
-    if (!session_id) return json({ ok: false, error: "Missing session_id" }, 400);
+    if (!session_id) {
+      return json({ ok: false, error: "Missing session_id" }, 400);
+    }
 
     const stripe = new Stripe(STRIPE_SECRET_KEY);
 
@@ -192,11 +240,14 @@ export async function GET(request: Request) {
       expand: ["payment_intent"],
     });
 
-    const paid = session.payment_status === "paid" || session.payment_status === "no_payment_required";
+    const paid =
+      session.payment_status === "paid" || session.payment_status === "no_payment_required";
     const complete = session.status === "complete";
 
     const metadataStrapiDocumentId = getSessionMetadataValue(session, "strapiDocumentId");
-    const metadataStrapiOrderId = parsePositiveInt(getSessionMetadataValue(session, "strapiOrderId"));
+    const metadataStrapiOrderId = parsePositiveInt(
+      getSessionMetadataValue(session, "strapiOrderId")
+    );
     const orderRef = firstNonEmptyString(
       session.client_reference_id,
       getSessionMetadataValue(session, "orderRef")
@@ -212,7 +263,9 @@ export async function GET(request: Request) {
     const stripePaymentIntentId =
       typeof session.payment_intent === "string"
         ? session.payment_intent
-        : session.payment_intent && typeof session.payment_intent === "object" && "id" in session.payment_intent
+        : session.payment_intent &&
+            typeof session.payment_intent === "object" &&
+            "id" in session.payment_intent
           ? String(session.payment_intent.id)
           : null;
 
@@ -228,11 +281,11 @@ export async function GET(request: Request) {
 
     let found: { numericId: number | null; documentId: string | null } | null = null;
 
-    // 1) Prima prova con il documentId reale salvato nei metadata Stripe
     if (metadataStrapiDocumentId) {
       const qs = new URLSearchParams();
       qs.set("filters[documentId][$eq]", metadataStrapiDocumentId);
       found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+
       if (!found) {
         found = {
           numericId: metadataStrapiOrderId,
@@ -241,7 +294,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // 2) Se ho solo l'id numerico salvato nei metadata, usalo direttamente
     if (!found && metadataStrapiOrderId) {
       found = {
         numericId: metadataStrapiOrderId,
@@ -249,7 +301,6 @@ export async function GET(request: Request) {
       };
     }
 
-    // 3) Fallback: cerca per stripeSessionId
     if (!found) {
       const qs = new URLSearchParams();
       qs.set("filters[stripeSessionId][$eq]", session_id);
@@ -282,6 +333,7 @@ export async function GET(request: Request) {
     const upd = await updateOrderSmart({
       STRAPI_URL,
       STRAPI_API_TOKEN,
+      ORDER_STATUS_WEBHOOK_SECRET,
       documentId: found.documentId,
       numericId: found.numericId,
       payload,
@@ -292,6 +344,8 @@ export async function GET(request: Request) {
         ok: true,
         paid: true,
         updated: false,
+        orderId: found.numericId,
+        documentId: found.documentId,
         orderRef: orderRef || found.documentId || null,
         status: upd.last?.status,
         details: upd.last?.details,
@@ -308,6 +362,7 @@ export async function GET(request: Request) {
       paid: true,
       updated: true,
       orderId: found.numericId,
+      documentId: found.documentId,
       orderRef: orderRef || found.documentId || null,
       refs: {
         strapiOrderId: metadataStrapiOrderId,
