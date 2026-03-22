@@ -10,7 +10,7 @@ function json(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-verify": "v2",
+      "x-checkout-verify": "v6",
     },
   });
 }
@@ -25,6 +25,46 @@ function safeJsonParse(text: string) {
   } catch {
     return null;
   }
+}
+
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function parsePositiveInt(value: unknown) {
+  const s = String(value ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function getSessionMetadataValue(session: Stripe.Checkout.Session, key: string) {
+  const value = session.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function getSessionRefs(session: Stripe.Checkout.Session) {
+  const numericOrderId = parsePositiveInt(
+    getSessionMetadataValue(session, "strapiOrderId") ||
+      getSessionMetadataValue(session, "orderId") ||
+      ""
+  );
+
+  const documentId =
+    getSessionMetadataValue(session, "strapiDocumentId") ||
+    getSessionMetadataValue(session, "orderDocumentId") ||
+    getSessionMetadataValue(session, "documentId") ||
+    null;
+
+  const orderRef = firstNonEmptyString(
+    getSessionMetadataValue(session, "orderRef"),
+    session.client_reference_id
+  );
+
+  return { numericOrderId, documentId, orderRef };
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000) {
@@ -68,7 +108,8 @@ async function strapiRequest(
   STRAPI_API_TOKEN: string,
   path: string,
   init: RequestInit,
-  timeoutMs = 25_000
+  timeoutMs = 25_000,
+  extraHeaders?: Record<string, string>
 ) {
   const res = await fetchWithRetry(
     `${strapiBaseUrl(STRAPI_URL)}${path}`,
@@ -77,6 +118,8 @@ async function strapiRequest(
       headers: {
         Authorization: `Bearer ${STRAPI_API_TOKEN}`,
         "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(extraHeaders || {}),
         ...(init.headers || {}),
       },
     },
@@ -88,55 +131,169 @@ async function strapiRequest(
   return { res, data, text };
 }
 
+function buildOrderQueryVariants(inputQs: URLSearchParams) {
+  const base = new URLSearchParams(inputQs.toString());
+  base.set("pagination[pageSize]", "1");
+  base.set("fields[0]", "id");
+  base.set("fields[1]", "documentId");
+  base.set("fields[2]", "orderStatus");
+  base.set("fields[3]", "stripeSessionId");
+  base.set("fields[4]", "stripePaymentIntentId");
+  base.set("fields[5]", "customerEmail");
+
+  const withDraft = new URLSearchParams(base.toString());
+  withDraft.set("status", "draft");
+
+  return [withDraft, base];
+}
+
+type FoundOrder = {
+  numericId: number | null;
+  documentId: string | null;
+  orderStatus: string | null;
+  stripeSessionId: string | null;
+  stripePaymentIntentId: string | null;
+  customerEmail: string | null;
+};
+
 async function findFirstOrderByFilter(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
   qs: URLSearchParams;
-}) {
+}): Promise<FoundOrder | null> {
   const { STRAPI_URL, STRAPI_API_TOKEN, qs } = args;
-  qs.set("pagination[pageSize]", "1");
-  qs.set("fields[0]", "id");
-  qs.set("fields[1]", "documentId");
 
-  const r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/orders?${qs.toString()}`, { method: "GET" });
-  if (!r.res.ok) return null;
+  for (const candidateQs of buildOrderQueryVariants(qs)) {
+    const r = await strapiRequest(
+      STRAPI_URL,
+      STRAPI_API_TOKEN,
+      `/api/orders?${candidateQs.toString()}`,
+      { method: "GET" }
+    );
 
-  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
-  if (!first) return null;
+    if (!r.res.ok) continue;
 
-  const a = first?.attributes ?? first ?? {};
-  const numericId = typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
-  const documentId =
-    typeof first?.documentId === "string" ? first.documentId : typeof a?.documentId === "string" ? a.documentId : null;
+    const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
+    if (!first) continue;
 
-  return { numericId, documentId };
+    const a = first?.attributes ?? first ?? {};
+    const numericId =
+      typeof first?.id === "number" ? first.id : typeof a?.id === "number" ? a.id : null;
+    const documentId =
+      typeof first?.documentId === "string"
+        ? first.documentId
+        : typeof a?.documentId === "string"
+          ? a.documentId
+          : null;
+
+    const orderStatus =
+      typeof a?.orderStatus === "string"
+        ? a.orderStatus
+        : typeof first?.orderStatus === "string"
+          ? first.orderStatus
+          : null;
+
+    const stripeSessionId =
+      typeof a?.stripeSessionId === "string"
+        ? a.stripeSessionId
+        : typeof first?.stripeSessionId === "string"
+          ? first.stripeSessionId
+          : null;
+
+    const stripePaymentIntentId =
+      typeof a?.stripePaymentIntentId === "string"
+        ? a.stripePaymentIntentId
+        : typeof first?.stripePaymentIntentId === "string"
+          ? first.stripePaymentIntentId
+          : null;
+
+    const customerEmail =
+      typeof a?.customerEmail === "string"
+        ? a.customerEmail
+        : typeof first?.customerEmail === "string"
+          ? first.customerEmail
+          : null;
+
+    return {
+      numericId,
+      documentId,
+      orderStatus,
+      stripeSessionId,
+      stripePaymentIntentId,
+      customerEmail,
+    };
+  }
+
+  return null;
 }
 
 async function updateOrderSmart(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
+  ORDER_STATUS_WEBHOOK_SECRET: string;
   documentId?: string | null;
   numericId?: number | null;
   payload: any;
 }) {
-  const { STRAPI_URL, STRAPI_API_TOKEN, documentId, numericId, payload } = args;
+  const {
+    STRAPI_URL,
+    STRAPI_API_TOKEN,
+    ORDER_STATUS_WEBHOOK_SECRET,
+    documentId,
+    numericId,
+    payload,
+  } = args;
 
   const tries: Array<{ label: string; path: string }> = [];
-  if (documentId) tries.push({ label: "documentId", path: `/api/orders/${encodeURIComponent(documentId)}` });
-  if (typeof numericId === "number")
-    tries.push({ label: "numericId", path: `/api/orders/${encodeURIComponent(String(numericId))}` });
+
+  if (documentId) {
+    tries.push({
+      label: "documentId:draft",
+      path: `/api/orders/${encodeURIComponent(documentId)}?status=draft`,
+    });
+    tries.push({
+      label: "documentId",
+      path: `/api/orders/${encodeURIComponent(documentId)}`,
+    });
+  }
+
+  if (typeof numericId === "number") {
+    tries.push({
+      label: "numericId:draft",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}?status=draft`,
+    });
+    tries.push({
+      label: "numericId",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}`,
+    });
+  }
 
   let last: any = null;
 
   for (const t of tries) {
-    const upd = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, t.path, {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    });
+    const upd = await strapiRequest(
+      STRAPI_URL,
+      STRAPI_API_TOKEN,
+      t.path,
+      {
+        method: "PUT",
+        body: JSON.stringify({ data: payload }),
+      },
+      25_000,
+      {
+        "x-order-status-secret": ORDER_STATUS_WEBHOOK_SECRET,
+      }
+    );
 
-    if (upd.res.ok) return { ok: true as const, via: t.label };
+    if (upd.res.ok) {
+      return { ok: true as const, via: t.label, data: upd.data };
+    }
 
-    last = { via: t.label, status: upd.res.status, details: upd.data ?? upd.text };
+    last = {
+      via: t.label,
+      status: upd.res.status,
+      details: upd.data ?? upd.text,
+    };
   }
 
   return { ok: false as const, last };
@@ -147,32 +304,55 @@ export async function GET(request: Request) {
     const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
     const STRAPI_URL = process.env.STRAPI_URL || process.env.NEXT_PUBLIC_STRAPI_URL || "";
     const STRAPI_API_TOKEN = process.env.STRAPI_API_TOKEN || "";
+    const ORDER_STATUS_WEBHOOK_SECRET = process.env.ORDER_STATUS_WEBHOOK_SECRET || "";
 
-    if (!STRIPE_SECRET_KEY) return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
-    if (!STRAPI_URL) return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
-    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20)
+    if (!ORDER_STATUS_WEBHOOK_SECRET) {
+      return json({ ok: false, error: "Missing ORDER_STATUS_WEBHOOK_SECRET" }, 500);
+    }
+    if (!STRIPE_SECRET_KEY) {
+      return json({ ok: false, error: "Missing STRIPE_SECRET_KEY" }, 500);
+    }
+    if (!STRAPI_URL) {
+      return json({ ok: false, error: "Missing STRAPI_URL" }, 500);
+    }
+    if (!STRAPI_API_TOKEN || STRAPI_API_TOKEN.length < 20) {
       return json({ ok: false, error: "Missing STRAPI_API_TOKEN" }, 500);
+    }
 
     const { searchParams } = new URL(request.url);
-    const session_id = String(searchParams.get("session_id") || "").trim();
-    if (!session_id) return json({ ok: false, error: "Missing session_id" }, 400);
+    const rawSessionId = String(searchParams.get("session_id") || "").trim();
+    const session_id = rawSessionId.replace(/^session_id=/, "").trim();
 
-    // ✅ ROBUSTO: niente apiVersion hardcoded (evita rotture al prossimo update di stripe)
+    if (!session_id) {
+      return json({ ok: false, error: "Missing session_id" }, 400);
+    }
+
     const stripe = new Stripe(STRIPE_SECRET_KEY);
 
     const session = await stripe.checkout.sessions.retrieve(session_id, {
       expand: ["payment_intent"],
     });
 
-    const paid = session.payment_status === "paid" || session.payment_status === "no_payment_required";
+    const paid =
+      session.payment_status === "paid" || session.payment_status === "no_payment_required";
     const complete = session.status === "complete";
+    const refs = getSessionRefs(session);
 
-    const orderRef =
-      (typeof session.client_reference_id === "string" && session.client_reference_id.trim())
-        ? session.client_reference_id.trim()
-        : (typeof (session as any)?.metadata?.orderRef === "string" && (session as any).metadata.orderRef.trim())
-          ? (session as any).metadata.orderRef.trim()
-          : "";
+    const customerEmail =
+      firstNonEmptyString(
+        session.customer_details?.email,
+        session.customer_email,
+        getSessionMetadataValue(session, "customerEmail")
+      ) || null;
+
+    const stripePaymentIntentId =
+      typeof session.payment_intent === "string"
+        ? session.payment_intent
+        : session.payment_intent &&
+            typeof session.payment_intent === "object" &&
+            "id" in session.payment_intent
+          ? String(session.payment_intent.id)
+          : null;
 
     if (!paid || !complete) {
       return json({
@@ -180,23 +360,41 @@ export async function GET(request: Request) {
         paid: false,
         status: session.status,
         payment_status: session.payment_status,
-        orderRef: orderRef || null,
+        orderRef: refs.orderRef || null,
+        orderId: refs.numericOrderId,
+        documentId: refs.documentId,
       });
     }
 
-    // 1) trova ordine in Strapi (prima documentId, poi stripeSessionId)
-    let found: { numericId: number | null; documentId: string | null } | null = null;
+    let found: FoundOrder | null = null;
 
-    if (orderRef) {
-      const qs = new URLSearchParams();
-      qs.set("filters[documentId][$eq]", orderRef);
-      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
-    }
-
-    if (!found) {
+    {
       const qs = new URLSearchParams();
       qs.set("filters[stripeSessionId][$eq]", session_id);
       found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && refs.numericOrderId) {
+      const qs = new URLSearchParams();
+      qs.set("filters[id][$eq]", String(refs.numericOrderId));
+      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && refs.documentId) {
+      const qs = new URLSearchParams();
+      qs.set("filters[documentId][$eq]", refs.documentId);
+      found = await findFirstOrderByFilter({ STRAPI_URL, STRAPI_API_TOKEN, qs });
+    }
+
+    if (!found && (refs.numericOrderId || refs.documentId)) {
+      found = {
+        numericId: refs.numericOrderId,
+        documentId: refs.documentId,
+        orderStatus: null,
+        stripeSessionId: null,
+        stripePaymentIntentId: null,
+        customerEmail: null,
+      };
     }
 
     if (!found) {
@@ -205,28 +403,91 @@ export async function GET(request: Request) {
         paid: true,
         updated: false,
         message: "Payment ok but order not found on Strapi",
-        orderRef: orderRef || null,
+        orderRef: refs.orderRef || null,
+        orderId: refs.numericOrderId,
+        documentId: refs.documentId,
+        refs: {
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
+          stripeSessionId: session_id,
+        },
       });
     }
 
-    const payload = { orderStatus: "PAID", stripeSessionId: session_id };
+    const alreadyPaid = String(found.orderStatus || "").toUpperCase() === "PAID";
+    const alreadyBoundToSession =
+      typeof found.stripeSessionId === "string" && found.stripeSessionId === session_id;
+
+    if (alreadyPaid && alreadyBoundToSession) {
+      return json({
+        ok: true,
+        paid: true,
+        updated: true,
+        via: "already_paid",
+        orderId: found.numericId,
+        documentId: found.documentId,
+        orderRef: refs.orderRef || found.documentId || null,
+        refs: {
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
+          stripeSessionId: session_id,
+        },
+      });
+    }
+
+    const payload: Record<string, any> = {
+      orderStatus: "PAID",
+      stripeSessionId: session_id,
+    };
+
+    if (stripePaymentIntentId) payload.stripePaymentIntentId = stripePaymentIntentId;
+    if (customerEmail) payload.customerEmail = customerEmail;
 
     const upd = await updateOrderSmart({
       STRAPI_URL,
       STRAPI_API_TOKEN,
-      documentId: found.documentId ?? (orderRef || null),
+      ORDER_STATUS_WEBHOOK_SECRET,
+      documentId: found.documentId,
       numericId: found.numericId,
       payload,
     });
 
     if (!upd.ok) {
+      if (alreadyPaid) {
+        return json({
+          ok: true,
+          paid: true,
+          updated: true,
+          via: "already_paid_update_failed",
+          warning: {
+            status: upd.last?.status,
+            details: upd.last?.details,
+          },
+          orderId: found.numericId,
+          documentId: found.documentId,
+          orderRef: refs.orderRef || found.documentId || null,
+          refs: {
+            strapiOrderId: refs.numericOrderId,
+            strapiDocumentId: refs.documentId,
+            stripeSessionId: session_id,
+          },
+        });
+      }
+
       return json({
         ok: true,
         paid: true,
         updated: false,
-        orderRef: orderRef || found.documentId || null,
+        orderId: found.numericId,
+        documentId: found.documentId,
+        orderRef: refs.orderRef || found.documentId || null,
         status: upd.last?.status,
         details: upd.last?.details,
+        refs: {
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
+          stripeSessionId: session_id,
+        },
       });
     }
 
@@ -234,8 +495,15 @@ export async function GET(request: Request) {
       ok: true,
       paid: true,
       updated: true,
+      via: upd.via,
       orderId: found.numericId,
-      orderRef: orderRef || found.documentId || null,
+      documentId: found.documentId,
+      orderRef: refs.orderRef || found.documentId || null,
+      refs: {
+        strapiOrderId: refs.numericOrderId,
+        strapiDocumentId: refs.documentId,
+        stripeSessionId: session_id,
+      },
     });
   } catch (e: any) {
     console.error("[checkout/verify] error:", e);
