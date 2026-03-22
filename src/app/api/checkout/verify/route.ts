@@ -10,7 +10,7 @@ function json(data: any, status = 200) {
     status,
     headers: {
       "Cache-Control": "no-store",
-      "x-checkout-verify": "v5",
+      "x-checkout-verify": "v6",
     },
   });
 }
@@ -136,6 +136,10 @@ function buildOrderQueryVariants(inputQs: URLSearchParams) {
   base.set("pagination[pageSize]", "1");
   base.set("fields[0]", "id");
   base.set("fields[1]", "documentId");
+  base.set("fields[2]", "orderStatus");
+  base.set("fields[3]", "stripeSessionId");
+  base.set("fields[4]", "stripePaymentIntentId");
+  base.set("fields[5]", "customerEmail");
 
   const withDraft = new URLSearchParams(base.toString());
   withDraft.set("status", "draft");
@@ -143,11 +147,20 @@ function buildOrderQueryVariants(inputQs: URLSearchParams) {
   return [withDraft, base];
 }
 
+type FoundOrder = {
+  numericId: number | null;
+  documentId: string | null;
+  orderStatus: string | null;
+  stripeSessionId: string | null;
+  stripePaymentIntentId: string | null;
+  customerEmail: string | null;
+};
+
 async function findFirstOrderByFilter(args: {
   STRAPI_URL: string;
   STRAPI_API_TOKEN: string;
   qs: URLSearchParams;
-}) {
+}): Promise<FoundOrder | null> {
   const { STRAPI_URL, STRAPI_API_TOKEN, qs } = args;
 
   for (const candidateQs of buildOrderQueryVariants(qs)) {
@@ -173,7 +186,42 @@ async function findFirstOrderByFilter(args: {
           ? a.documentId
           : null;
 
-    return { numericId, documentId };
+    const orderStatus =
+      typeof a?.orderStatus === "string"
+        ? a.orderStatus
+        : typeof first?.orderStatus === "string"
+          ? first.orderStatus
+          : null;
+
+    const stripeSessionId =
+      typeof a?.stripeSessionId === "string"
+        ? a.stripeSessionId
+        : typeof first?.stripeSessionId === "string"
+          ? first.stripeSessionId
+          : null;
+
+    const stripePaymentIntentId =
+      typeof a?.stripePaymentIntentId === "string"
+        ? a.stripePaymentIntentId
+        : typeof first?.stripePaymentIntentId === "string"
+          ? first.stripePaymentIntentId
+          : null;
+
+    const customerEmail =
+      typeof a?.customerEmail === "string"
+        ? a.customerEmail
+        : typeof first?.customerEmail === "string"
+          ? first.customerEmail
+          : null;
+
+    return {
+      numericId,
+      documentId,
+      orderStatus,
+      stripeSessionId,
+      stripePaymentIntentId,
+      customerEmail,
+    };
   }
 
   return null;
@@ -318,7 +366,7 @@ export async function GET(request: Request) {
       });
     }
 
-    let found: { numericId: number | null; documentId: string | null } | null = null;
+    let found: FoundOrder | null = null;
 
     {
       const qs = new URLSearchParams();
@@ -342,6 +390,10 @@ export async function GET(request: Request) {
       found = {
         numericId: refs.numericOrderId,
         documentId: refs.documentId,
+        orderStatus: null,
+        stripeSessionId: null,
+        stripePaymentIntentId: null,
+        customerEmail: null,
       };
     }
 
@@ -354,6 +406,27 @@ export async function GET(request: Request) {
         orderRef: refs.orderRef || null,
         orderId: refs.numericOrderId,
         documentId: refs.documentId,
+        refs: {
+          strapiOrderId: refs.numericOrderId,
+          strapiDocumentId: refs.documentId,
+          stripeSessionId: session_id,
+        },
+      });
+    }
+
+    const alreadyPaid = String(found.orderStatus || "").toUpperCase() === "PAID";
+    const alreadyBoundToSession =
+      typeof found.stripeSessionId === "string" && found.stripeSessionId === session_id;
+
+    if (alreadyPaid && alreadyBoundToSession) {
+      return json({
+        ok: true,
+        paid: true,
+        updated: true,
+        via: "already_paid",
+        orderId: found.numericId,
+        documentId: found.documentId,
+        orderRef: refs.orderRef || found.documentId || null,
         refs: {
           strapiOrderId: refs.numericOrderId,
           strapiDocumentId: refs.documentId,
@@ -380,6 +453,27 @@ export async function GET(request: Request) {
     });
 
     if (!upd.ok) {
+      if (alreadyPaid) {
+        return json({
+          ok: true,
+          paid: true,
+          updated: true,
+          via: "already_paid_update_failed",
+          warning: {
+            status: upd.last?.status,
+            details: upd.last?.details,
+          },
+          orderId: found.numericId,
+          documentId: found.documentId,
+          orderRef: refs.orderRef || found.documentId || null,
+          refs: {
+            strapiOrderId: refs.numericOrderId,
+            strapiDocumentId: refs.documentId,
+            stripeSessionId: session_id,
+          },
+        });
+      }
+
       return json({
         ok: true,
         paid: true,
