@@ -258,6 +258,13 @@ export async function sendOrderConfirmationEmail(input: OrderConfirmationEmailIn
     text,
   });
 
+  console.info("[order-email] sender debug", {
+    from: RESEND_FROM_EMAIL,
+    to,
+    hasApiKey: !!RESEND_API_KEY,
+    siteUrl: SITE_URL,
+  });
+
   if (error) {
     console.error("[order-email] Resend error:", error);
     return { ok: false, error: "RESEND_ERROR" as const, details: error };

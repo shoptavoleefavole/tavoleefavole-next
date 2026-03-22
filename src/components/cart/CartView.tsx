@@ -73,9 +73,27 @@ function SafeImg({
 
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={currentSrc} alt={alt} className={className} loading="lazy" decoding="async"
-      onLoad={() => { loadedRef.current = true; if (timerRef.current) { window.clearTimeout(timerRef.current); timerRef.current = null; } }}
-      onError={() => { loadedRef.current = true; if (timerRef.current) { window.clearTimeout(timerRef.current); timerRef.current = null; } if (currentSrc !== fallbackSrc) setCurrentSrc(fallbackSrc); }}
+    <img
+      src={currentSrc}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      decoding="async"
+      onLoad={() => {
+        loadedRef.current = true;
+        if (timerRef.current) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+      }}
+      onError={() => {
+        loadedRef.current = true;
+        if (timerRef.current) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        if (currentSrc !== fallbackSrc) setCurrentSrc(fallbackSrc);
+      }}
     />
   );
 }
@@ -90,7 +108,6 @@ function TruckIcon() {
   );
 }
 
-// ✅ NUOVO: tipo form indirizzo
 type AddressForm = {
   fullName: string;
   email: string;
@@ -111,7 +128,6 @@ function capOk(cap: string) {
   return /^\d{5}$/.test(c);
 }
 
-// ✅ Valida form: restituisce null se ok, stringa errore se invalido
 function validateShippingForm(f: AddressForm): string | null {
   if (!f.address.trim() || f.address.trim().length < 3) return "Inserisci l'indirizzo di spedizione.";
   if (!capOk(f.postalCode)) return "CAP non valido (5 cifre).";
@@ -120,15 +136,31 @@ function validateShippingForm(f: AddressForm): string | null {
   return null;
 }
 
-// ✅ Controlla se l'utente ha iniziato a compilare il form
 function isFormTouched(f: AddressForm): boolean {
   return !!(f.address.trim() || f.postalCode.trim() || f.city.trim());
 }
 
 type Quote = {
   ok: boolean;
-  pricedItems?: Array<{ lineId: string | null; qty: number; unitPrice: number; baseUnitPrice: number; lineTotal: number; isOnSale: boolean; companyApplied: boolean }>;
-  totals?: { subtotal: number; discountTotal: number; shippingTotal: number; total: number; currency: string };
+  pricedItems?: Array<{
+    lineId: string | null;
+    qty: number;
+    unitPrice: number;
+    baseUnitPrice: number;
+    lineTotal: number;
+    isOnSale: boolean;
+    companyApplied: boolean;
+  }>;
+  totals?: {
+    subtotal: number;
+    discountedSubtotal?: number;
+    discountTotal: number;
+    shippingTotal: number;
+    total: number;
+    currency: string;
+    freeShippingThreshold?: number;
+    qualifiesForFreeShipping?: boolean;
+  };
   error?: string;
 };
 
@@ -143,7 +175,6 @@ async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: n
   }
 }
 
-// ✅ Campo form riutilizzabile
 function FormField({
   label, value, onChange, placeholder, type = "text", required = false, error,
 }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; required?: boolean; error?: string }) {
@@ -172,34 +203,33 @@ export default function CartView() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const quoteAbortRef = useRef<AbortController | null>(null);
 
-  // ✅ NUOVO: form inline invece di caricamento da profilo
   const [shippingForm, setShippingForm] = useState<AddressForm>(emptyForm());
   const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
   const [billingForm, setBillingForm] = useState<AddressForm>(emptyForm());
   const [formTouched, setFormTouched] = useState(false);
 
-  // Shipping quote
   const [shippingQuoteBusy, setShippingQuoteBusy] = useState(false);
   const [shippingQuoteError, setShippingQuoteError] = useState<string | null>(null);
   const [shippingEur, setShippingEur] = useState<number | null>(null);
 
-  // ✅ Pre-compila il form se l'utente è loggato e ha il profilo (non-bloccante)
   useEffect(() => {
     let cancelled = false;
     async function run() {
       try {
         const res = await fetchWithTimeout("/api/account/profile", {
-          method: "GET", credentials: "include", timeoutMs: 8_000,
+          method: "GET",
+          credentials: "include",
+          timeoutMs: 8_000,
           headers: { Accept: "application/json" },
         });
         const data = await res.json().catch(() => null);
-        if (cancelled || !res.ok || !data?.ok) return; // silenzioso per i guest
+        if (cancelled || !res.ok || !data?.ok) return;
 
         const sa = data.shippingAddress;
         const ba = data.billingAddress;
 
         if (sa?.address) {
-          setShippingForm(prev => ({
+          setShippingForm((prev) => ({
             ...prev,
             address: sa.address || "",
             postalCode: sa.postalCode || "",
@@ -209,9 +239,8 @@ export default function CartView() {
           }));
         }
 
-        // Se la fatturazione è diversa dalla spedizione, mostra form separato
         if (ba?.address && ba.address !== sa?.address) {
-          setBillingForm(prev => ({
+          setBillingForm((prev) => ({
             ...prev,
             address: ba.address || "",
             postalCode: ba.postalCode || "",
@@ -222,23 +251,22 @@ export default function CartView() {
           setBillingSameAsShipping(false);
         }
       } catch {
-        // guest: nessun errore mostrato, form rimane vuoto
+        // guest: nessun errore mostrato
       }
     }
     run();
     return () => { cancelled = true; };
   }, []);
 
-  // Helper per aggiornare un singolo campo del form
   const updateShipping = (field: keyof AddressForm) => (value: string) => {
-    setShippingForm(prev => ({ ...prev, [field]: value }));
+    setShippingForm((prev) => ({ ...prev, [field]: value }));
     setFormTouched(true);
   };
+
   const updateBilling = (field: keyof AddressForm) => (value: string) => {
-    setBillingForm(prev => ({ ...prev, [field]: value }));
+    setBillingForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  // ✅ Indirizzo derivato dal form (per il quote spedizione)
   const shippingAddressForQuote = useMemo(() => ({
     address: shippingForm.address,
     city: shippingForm.city,
@@ -247,56 +275,80 @@ export default function CartView() {
     country: shippingForm.country || "IT",
   }), [shippingForm]);
 
-  // Quote prezzi (invariato)
   useEffect(() => {
     quoteAbortRef.current?.abort();
-    if (!items.length) { setQuote(null); return; }
+    if (!items.length) {
+      setQuote(null);
+      return;
+    }
+
     const controller = new AbortController();
     quoteAbortRef.current = controller;
+
     const run = async () => {
       try {
         const payload = {
-          currency: "EUR", shippingTotal: 0,
+          currency: "EUR",
+          shippingTotal: 0,
           items: items.map((it: any) => ({
-            lineId: it.lineId, qty: clampQty(it.qty),
+            lineId: it.lineId,
+            qty: clampQty(it.qty),
             id: toIntOrNull(it.id) ?? undefined,
             productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
-            slug: it.slug, imageUrl: it.image, meta: it.meta ?? undefined,
+            slug: it.slug,
+            imageUrl: it.image,
+            meta: it.meta ?? undefined,
           })),
         };
+
         const res = await fetchWithTimeout("/api/cart/quote", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          credentials: "include", body: JSON.stringify(payload),
-          signal: controller.signal, timeoutMs: 12_000,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+          timeoutMs: 12_000,
         });
+
         const data = (await res.json().catch(() => null)) as Quote | null;
-        if (!res.ok || !data?.ok) { setQuote({ ok: false, error: data?.error || `Quote fallita (HTTP ${res.status})` }); return; }
+        if (!res.ok || !data?.ok) {
+          setQuote({ ok: false, error: data?.error || `Quote fallita (HTTP ${res.status})` });
+          return;
+        }
+
         setQuote(data);
       } catch (e: any) {
-        if (e?.name === "AbortError") { setQuote({ ok: false, error: "Timeout: aggiornamento prezzi troppo lento." }); return; }
+        if (e?.name === "AbortError") {
+          setQuote({ ok: false, error: "Timeout: aggiornamento prezzi troppo lento." });
+          return;
+        }
         setQuote({ ok: false, error: e?.message ? String(e.message) : "Errore quote" });
       }
     };
+
     run();
     return () => controller.abort();
   }, [items]);
 
-  // ✅ Quote spedizione: si attiva solo quando il form ha i campi necessari
   useEffect(() => {
     let cancelled = false;
-    if (!items.length) { setShippingEur(null); setShippingQuoteError(null); return; }
+    if (!items.length) {
+      setShippingEur(null);
+      setShippingQuoteError(null);
+      return;
+    }
 
     const formError = validateShippingForm(shippingForm);
     if (formError) {
       setShippingEur(null);
-      // mostra errore solo se l'utente ha iniziato a compilare
       if (formTouched && isFormTouched(shippingForm)) setShippingQuoteError(formError);
       else setShippingQuoteError(null);
       return;
     }
 
     async function run() {
-      setShippingQuoteError(null); setShippingEur(null);
+      setShippingQuoteError(null);
+      setShippingEur(null);
       try {
         setShippingQuoteBusy(true);
         const payload = {
@@ -309,14 +361,23 @@ export default function CartView() {
           })),
         };
         const res = await fetchWithTimeout("/api/shipping/quote", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          credentials: "include", body: JSON.stringify(payload), timeoutMs: 12_000,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(payload),
+          timeoutMs: 12_000,
         });
         const data = await res.json().catch(() => null);
         if (cancelled) return;
-        if (!res.ok || !data?.ok) { setShippingQuoteError("Spedizione non disponibile per questo indirizzo."); return; }
+        if (!res.ok || !data?.ok) {
+          setShippingQuoteError("Spedizione non disponibile per questo indirizzo.");
+          return;
+        }
         const eur = Number(data.shippingEur);
-        if (!Number.isFinite(eur) || eur < 0) { setShippingQuoteError("Spedizione non disponibile."); return; }
+        if (!Number.isFinite(eur) || eur < 0) {
+          setShippingQuoteError("Spedizione non disponibile.");
+          return;
+        }
         setShippingEur(eur);
       } catch {
         if (!cancelled) setShippingQuoteError("Spedizione non disponibile.");
@@ -324,23 +385,51 @@ export default function CartView() {
         if (!cancelled) setShippingQuoteBusy(false);
       }
     }
+
     run();
     return () => { cancelled = true; };
   }, [items, shippingForm, shippingAddressForQuote, formTouched]);
 
   const quoteMap = useMemo(() => {
     const map = new Map<string, NonNullable<Quote["pricedItems"]>[number]>();
-    for (const qi of quote?.pricedItems ?? []) { if (qi.lineId) map.set(qi.lineId, qi); }
+    for (const qi of quote?.pricedItems ?? []) {
+      if (qi.lineId) map.set(qi.lineId, qi);
+    }
     return map;
   }, [quote]);
 
-  const subtotal = typeof quote?.totals?.subtotal === "number" ? quote.totals.subtotal : safeNumber(summary.total, 0);
-  const baseTotal = typeof quote?.totals?.total === "number" ? quote.totals.total : subtotal;
-  const estimatedTotal = typeof shippingEur === "number" ? baseTotal + shippingEur : baseTotal;
+  const originalSubtotal =
+    typeof quote?.totals?.subtotal === "number"
+      ? quote.totals.subtotal
+      : safeNumber(summary.total, 0);
+
+  const discountedSubtotal =
+    typeof quote?.totals?.discountedSubtotal === "number"
+      ? quote.totals.discountedSubtotal
+      : originalSubtotal;
+
+  const discountTotal =
+    typeof quote?.totals?.discountTotal === "number"
+      ? quote.totals.discountTotal
+      : Math.max(0, originalSubtotal - discountedSubtotal);
+
+  const qualifiesForFreeShipping = quote?.totals?.qualifiesForFreeShipping === true;
+  const freeShippingThreshold =
+    typeof quote?.totals?.freeShippingThreshold === "number"
+      ? quote.totals.freeShippingThreshold
+      : 79;
+
+  const effectiveShippingEur =
+    qualifiesForFreeShipping
+      ? 0
+      : typeof shippingEur === "number"
+        ? shippingEur
+        : null;
+
+  const estimatedTotal = discountedSubtotal + (effectiveShippingEur ?? 0);
 
   const shippingFormError = validateShippingForm(shippingForm);
 
-  // ✅ canCheckout non dipende più dal profilo
   const canCheckout =
     items.length > 0 &&
     !checkoutBusy &&
@@ -352,14 +441,17 @@ export default function CartView() {
   async function startCheckout() {
     if (!canCheckout) return;
     setCheckoutError(null);
+
     try {
       setCheckoutBusy(true);
       const effBilling = billingSameAsShipping ? shippingForm : billingForm;
+
       const payload = {
         items: items.map((it: any) => ({
           id: it.id,
           productId: toIntOrNull(it.productId) ?? toIntOrNull(it.id) ?? undefined,
-          slug: it.slug, name: it.name,
+          slug: it.slug,
+          name: it.name,
           price: safeNumber(it.price, 0),
           qty: clampQty(it.qty),
           imageUrl: it.image,
@@ -367,7 +459,6 @@ export default function CartView() {
           lineId: it.lineId,
         })),
         billingType: "PRIVATE",
-        // ✅ billingSnapshot arricchito con dati form
         billingSnapshot: {
           firstName: effBilling.fullName.split(" ")[0] || "",
           lastName: effBilling.fullName.split(" ").slice(1).join(" ") || "",
@@ -389,14 +480,27 @@ export default function CartView() {
         customerEmail: shippingForm.email || undefined,
         currency: "EUR",
       };
+
       const res = await fetchWithTimeout("/api/checkout/start", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        credentials: "include", body: JSON.stringify(payload), timeoutMs: 20_000,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+        timeoutMs: 20_000,
       });
+
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) { setCheckoutError(data?.message || data?.error || "Checkout non riuscito."); return; }
+      if (!res.ok || !data?.ok) {
+        setCheckoutError(data?.message || data?.error || "Checkout non riuscito.");
+        return;
+      }
+
       const url = data?.url;
-      if (!url || typeof url !== "string") { setCheckoutError("Checkout non riuscito: URL Stripe mancante."); return; }
+      if (!url || typeof url !== "string") {
+        setCheckoutError("Checkout non riuscito: URL Stripe mancante.");
+        return;
+      }
+
       window.location.href = url;
     } catch (e: any) {
       setCheckoutError(e?.message ? String(e.message) : "Errore durante il checkout.");
@@ -414,8 +518,11 @@ export default function CartView() {
             <p className="mt-1 text-sm text-muted-text">Rivedi i prodotti e completa l&apos;ordine in pochi passaggi.</p>
           </div>
           {items.length > 0 && (
-            <button type="button" onClick={clear}
-              className="text-sm font-semibold text-link hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            <button
+              type="button"
+              onClick={clear}
+              className="text-sm font-semibold text-link hover:text-link-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
               Svuota carrello
             </button>
           )}
@@ -431,8 +538,6 @@ export default function CartView() {
           </div>
         ) : (
           <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_420px]">
-
-            {/* SINISTRA: prodotti (invariato) */}
             <section aria-label="Articoli" className="space-y-4">
               {items.map((it: any) => {
                 const slug = safeString(it.slug);
@@ -440,9 +545,12 @@ export default function CartView() {
                 const qi = it.lineId ? quoteMap.get(it.lineId) : undefined;
                 const unit = typeof qi?.unitPrice === "number" ? qi.unitPrice : safeNumber(it.price, 0);
                 const img = normalizeImageUrl(it.image) || "/brand/tavoleefavole-logo.svg";
+
                 return (
-                  <div key={it.lineId}
-                    className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]">
+                  <div
+                    key={it.lineId}
+                    className="grid gap-4 rounded-2xl border border-border bg-background p-4 shadow-sm sm:grid-cols-[120px_1fr]"
+                  >
                     <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-surface">
                       <SafeImg src={img} alt={safeString(it.name, "Prodotto")} className="h-full w-full object-cover" />
                     </div>
@@ -450,15 +558,22 @@ export default function CartView() {
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
                           {isLinkable ? (
-                            <Link href={`/prodotto/${encodeURIComponent(slug)}`}
-                              className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2">{it.name}</Link>
+                            <Link
+                              href={`/prodotto/${encodeURIComponent(slug)}`}
+                              className="text-sm font-semibold text-text hover:text-link-hover line-clamp-2"
+                            >
+                              {it.name}
+                            </Link>
                           ) : (
                             <div className="text-sm font-semibold text-text line-clamp-2">{it.name}</div>
                           )}
                           <div className="mt-1 text-sm font-extrabold text-text">{formatEUR(unit)}</div>
                         </div>
-                        <button type="button" onClick={() => removeItem(it.lineId)}
-                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                        <button
+                          type="button"
+                          onClick={() => removeItem(it.lineId)}
+                          className="shrink-0 rounded-xl px-3 py-2 text-sm font-semibold text-text hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        >
                           Rimuovi
                         </button>
                       </div>
@@ -466,16 +581,26 @@ export default function CartView() {
                         <div className="flex items-center gap-2">
                           <div className="text-sm text-muted-text">Quantità</div>
                           <div className="inline-flex items-center overflow-hidden rounded-xl border border-border bg-background">
-                            <button type="button" onClick={() => setQty(it.lineId, Math.max(1, clampQty(it.qty) - 1))}
-                              className="h-10 w-10 grid place-items-center hover:bg-surface-2">
+                            <button
+                              type="button"
+                              onClick={() => setQty(it.lineId, Math.max(1, clampQty(it.qty) - 1))}
+                              className="h-10 w-10 grid place-items-center hover:bg-surface-2"
+                            >
                               <span className="text-lg leading-none">−</span>
                             </button>
-                            <input type="number" min={1} value={clampQty(it.qty)}
+                            <input
+                              type="number"
+                              min={1}
+                              value={clampQty(it.qty)}
                               onChange={(e) => setQty(it.lineId, clampQty(e.target.value))}
                               className="h-10 w-16 border-x border-border bg-background px-2 text-center text-sm"
-                              inputMode="numeric" />
-                            <button type="button" onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)}
-                              className="h-10 w-10 grid place-items-center hover:bg-surface-2">
+                              inputMode="numeric"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setQty(it.lineId, clampQty(it.qty) + 1)}
+                              className="h-10 w-10 grid place-items-center hover:bg-surface-2"
+                            >
                               <span className="text-lg leading-none">+</span>
                             </button>
                           </div>
@@ -488,10 +613,7 @@ export default function CartView() {
               })}
             </section>
 
-            {/* DESTRA: form + riepilogo */}
             <aside className="space-y-4">
-
-              {/* Banner spedizione */}
               <div className="rounded-2xl border border-border bg-surface p-5">
                 <div className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-background">
@@ -506,46 +628,87 @@ export default function CartView() {
                 </div>
               </div>
 
-              {/* ✅ NUOVO: Form indirizzo di spedizione inline */}
               <div className="rounded-2xl border border-border bg-background p-5">
                 <div className="text-sm font-extrabold text-text mb-4">Dati di spedizione</div>
 
                 <div className="space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="col-span-2">
-                      <FormField label="Nome e cognome" value={shippingForm.fullName}
-                        onChange={updateShipping("fullName")} placeholder="Mario Rossi" />
+                      <FormField
+                        label="Nome e cognome"
+                        value={shippingForm.fullName}
+                        onChange={updateShipping("fullName")}
+                        placeholder="Mario Rossi"
+                      />
                     </div>
                     <div className="col-span-2">
-                      <FormField label="Indirizzo" value={shippingForm.address} required
-                        onChange={updateShipping("address")} placeholder="Via Roma, 1" />
+                      <FormField
+                        label="Indirizzo"
+                        value={shippingForm.address}
+                        required
+                        onChange={updateShipping("address")}
+                        placeholder="Via Roma, 1"
+                      />
                     </div>
-                    <FormField label="CAP" value={shippingForm.postalCode} required
-                      onChange={updateShipping("postalCode")} placeholder="00100" />
-                    <FormField label="Città" value={shippingForm.city} required
-                      onChange={updateShipping("city")} placeholder="Roma" />
-                    <FormField label="Provincia" value={shippingForm.province} required
-                      onChange={updateShipping("province")} placeholder="RM" />
-                    <FormField label="Stato" value={shippingForm.country}
-                      onChange={updateShipping("country")} placeholder="IT" />
+                    <FormField
+                      label="CAP"
+                      value={shippingForm.postalCode}
+                      required
+                      onChange={updateShipping("postalCode")}
+                      placeholder="00100"
+                    />
+                    <FormField
+                      label="Città"
+                      value={shippingForm.city}
+                      required
+                      onChange={updateShipping("city")}
+                      placeholder="Roma"
+                    />
+                    <FormField
+                      label="Provincia"
+                      value={shippingForm.province}
+                      required
+                      onChange={updateShipping("province")}
+                      placeholder="RM"
+                    />
+                    <FormField
+                      label="Stato"
+                      value={shippingForm.country}
+                      onChange={updateShipping("country")}
+                      placeholder="IT"
+                    />
                     <div className="col-span-2">
-                      <FormField label="Email (per ricevuta)" value={shippingForm.email}
-                        onChange={updateShipping("email")} placeholder="nome@email.it" type="email" />
+                      <FormField
+                        label="Email (per ricevuta)"
+                        value={shippingForm.email}
+                        onChange={updateShipping("email")}
+                        placeholder="nome@email.it"
+                        type="email"
+                      />
                     </div>
                     <div className="col-span-2">
-                      <FormField label="Telefono (opzionale)" value={shippingForm.phone}
-                        onChange={updateShipping("phone")} placeholder="+39 333 000 0000" type="tel" />
+                      <FormField
+                        label="Telefono (opzionale)"
+                        value={shippingForm.phone}
+                        onChange={updateShipping("phone")}
+                        placeholder="+39 333 000 0000"
+                        type="tel"
+                      />
                     </div>
                   </div>
 
-                  {/* Feedback spedizione */}
                   {shippingQuoteBusy && (
                     <p className="text-xs text-muted-text">Calcolo spedizione…</p>
                   )}
                   {!shippingQuoteBusy && shippingQuoteError && formTouched && (
                     <p className="text-xs font-semibold text-red-600">{shippingQuoteError}</p>
                   )}
-                  {!shippingQuoteBusy && shippingEur !== null && (
+                  {!shippingQuoteBusy && shippingEur !== null && qualifiesForFreeShipping && (
+                    <p className="text-xs font-semibold text-green-700">
+                      ✓ Spedizione gratuita applicata sopra {formatEUR(freeShippingThreshold)}
+                    </p>
+                  )}
+                  {!shippingQuoteBusy && shippingEur !== null && !qualifiesForFreeShipping && (
                     <p className="text-xs font-semibold text-green-700">
                       ✓ Spedizione disponibile: {formatEUR(shippingEur)}
                     </p>
@@ -553,14 +716,16 @@ export default function CartView() {
                 </div>
               </div>
 
-              {/* ✅ NUOVO: Fatturazione uguale a spedizione */}
               <div className="rounded-2xl border border-border bg-background p-5">
                 <div className="flex items-center justify-between gap-3 mb-3">
                   <div className="text-sm font-extrabold text-text">Dati di fatturazione</div>
                   <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={billingSameAsShipping}
+                    <input
+                      type="checkbox"
+                      checked={billingSameAsShipping}
                       onChange={(e) => setBillingSameAsShipping(e.target.checked)}
-                      className="h-4 w-4 rounded border-border accent-primary" />
+                      className="h-4 w-4 rounded border-border accent-primary"
+                    />
                     <span className="text-xs text-muted-text">Uguale a spedizione</span>
                   </label>
                 </div>
@@ -573,23 +738,46 @@ export default function CartView() {
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div className="col-span-2">
-                        <FormField label="Indirizzo fatturazione" value={billingForm.address} required
-                          onChange={updateBilling("address")} placeholder="Via Roma, 1" />
+                        <FormField
+                          label="Indirizzo fatturazione"
+                          value={billingForm.address}
+                          required
+                          onChange={updateBilling("address")}
+                          placeholder="Via Roma, 1"
+                        />
                       </div>
-                      <FormField label="CAP" value={billingForm.postalCode} required
-                        onChange={updateBilling("postalCode")} placeholder="00100" />
-                      <FormField label="Città" value={billingForm.city} required
-                        onChange={updateBilling("city")} placeholder="Roma" />
-                      <FormField label="Provincia" value={billingForm.province} required
-                        onChange={updateBilling("province")} placeholder="RM" />
-                      <FormField label="Stato" value={billingForm.country}
-                        onChange={updateBilling("country")} placeholder="IT" />
+                      <FormField
+                        label="CAP"
+                        value={billingForm.postalCode}
+                        required
+                        onChange={updateBilling("postalCode")}
+                        placeholder="00100"
+                      />
+                      <FormField
+                        label="Città"
+                        value={billingForm.city}
+                        required
+                        onChange={updateBilling("city")}
+                        placeholder="Roma"
+                      />
+                      <FormField
+                        label="Provincia"
+                        value={billingForm.province}
+                        required
+                        onChange={updateBilling("province")}
+                        placeholder="RM"
+                      />
+                      <FormField
+                        label="Stato"
+                        value={billingForm.country}
+                        onChange={updateBilling("country")}
+                        placeholder="IT"
+                      />
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Riepilogo ordine */}
               <div className="rounded-2xl border border-border bg-surface p-5">
                 <div className="text-sm font-extrabold text-text">Riepilogo ordine</div>
                 <div className="mt-4 space-y-2 text-sm">
@@ -597,21 +785,51 @@ export default function CartView() {
                     <span className="text-muted-text">Articoli</span>
                     <span className="text-text">{summary.count}</span>
                   </div>
+
                   <div className="flex items-center justify-between">
-                    <span className="text-muted-text">Subtotale</span>
-                    <span className="text-text">{formatEUR(subtotal)}</span>
+                    <span className="text-muted-text">Subtotale iniziale</span>
+                    <span className="text-text">{formatEUR(originalSubtotal)}</span>
                   </div>
+
+                  {discountTotal > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-text">Sconto</span>
+                      <span className="text-green-700">− {formatEUR(discountTotal)}</span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-text">Subtotale scontato</span>
+                    <span className="text-text">{formatEUR(discountedSubtotal)}</span>
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <span className="text-muted-text">Spedizione</span>
                     <span className="text-text">
-                      {shippingQuoteBusy ? "Calcolo…" : shippingEur != null ? formatEUR(shippingEur) : "—"}
+                      {shippingQuoteBusy
+                        ? "Calcolo…"
+                        : effectiveShippingEur != null
+                          ? qualifiesForFreeShipping
+                            ? "Gratis"
+                            : formatEUR(effectiveShippingEur)
+                          : "—"}
                     </span>
                   </div>
+
                   <div className="mt-4 border-t border-border pt-4 flex items-center justify-between">
                     <span className="text-sm font-extrabold text-text">Totale</span>
                     <span className="text-base font-extrabold text-text">{formatEUR(estimatedTotal)}</span>
                   </div>
-                  <div className="mt-2 text-xs text-muted-text">Consegna: <b>24/48h</b></div>
+
+                  <div className="mt-2 text-xs text-muted-text">
+                    Consegna: <b>24/48h</b>
+                  </div>
+
+                  {qualifiesForFreeShipping && (
+                    <div className="text-xs font-semibold text-green-700">
+                      Spedizione gratuita applicata sopra {formatEUR(freeShippingThreshold)}.
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-4">

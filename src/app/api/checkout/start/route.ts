@@ -64,6 +64,8 @@ type ApiBody = {
   customerEmail?: string;
 };
 
+const FREE_SHIPPING_THRESHOLD_MAJOR_EUR = 79;
+
 function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, {
     status,
@@ -1043,41 +1045,47 @@ export async function POST(request: Request) {
     };
     const zone: ShippingZone = computeShippingZoneFromAddress(shippingAddrForZone);
 
+    const freeShippingThresholdMinor = toStripeUnitAmount(FREE_SHIPPING_THRESHOLD_MAJOR_EUR, currency);
+    const qualifiesForFreeShipping =
+      typeof freeShippingThresholdMinor === "number" && finalSubtotalMinor >= freeShippingThresholdMinor;
+
     let shippingMinor = 0;
-    try {
-      const shippingPriceMajor = await getShippingPriceMajor({
-        STRAPI_URL,
-        STRAPI_API_TOKEN,
-        zone,
-        weightTotalGrams,
-      });
-      const m = toStripeUnitAmount(shippingPriceMajor, currency);
-      shippingMinor = m ?? 0;
-      if (!shippingMinor || shippingMinor < 1) {
-        const e: any = new Error("Invalid shipping price");
-        e.code = "SHIPPING_INVALID_PRICE";
-        throw e;
+    if (!qualifiesForFreeShipping) {
+      try {
+        const shippingPriceMajor = await getShippingPriceMajor({
+          STRAPI_URL,
+          STRAPI_API_TOKEN,
+          zone,
+          weightTotalGrams,
+        });
+        const m = toStripeUnitAmount(shippingPriceMajor, currency);
+        shippingMinor = m ?? 0;
+        if (!shippingMinor || shippingMinor < 1) {
+          const e: any = new Error("Invalid shipping price");
+          e.code = "SHIPPING_INVALID_PRICE";
+          throw e;
+        }
+      } catch (e: any) {
+        const code = e?.code || "SHIPPING_UNAVAILABLE";
+        return jsonNoStore(
+          {
+            ok: false,
+            error: code,
+            message:
+              process.env.NODE_ENV === "development"
+                ? `Errore spedizione: ${e?.message ?? String(e)} (zone=${zone}, weight=${weightTotalGrams}g)`
+                : "Spedizione non disponibile. Contattaci per assistenza.",
+          },
+          400
+        );
       }
-    } catch (e: any) {
-      const code = e?.code || "SHIPPING_UNAVAILABLE";
-      return jsonNoStore(
-        {
-          ok: false,
-          error: code,
-          message:
-            process.env.NODE_ENV === "development"
-              ? `Errore spedizione: ${e?.message ?? String(e)} (zone=${zone}, weight=${weightTotalGrams}g)`
-              : "Spedizione non disponibile. Contattaci per assistenza.",
-        },
-        400
-      );
     }
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
     if (!Number.isFinite(totalMinor) || totalMinor <= 0)
       return jsonNoStore({ ok: false, error: "Total must be > 0" }, 400);
 
-    const subtotal = toMajor(baseSubtotalMinor, currency);
+    const subtotal = toMajor(finalSubtotalMinor, currency);
     const discountTotal = toMajor(discountMinor, currency);
     const shippingTotal = toMajor(shippingMinor, currency);
     const total = toMajor(totalMinor, currency);
@@ -1110,14 +1118,16 @@ export async function POST(request: Request) {
       };
     });
 
-    line_items.push({
-      quantity: 1,
-      price_data: {
-        currency: currency.toLowerCase(),
-        unit_amount: shippingMinor,
-        product_data: { name: "Spedizione (24/48h)" },
-      },
-    });
+    if (shippingMinor > 0) {
+      line_items.push({
+        quantity: 1,
+        price_data: {
+          currency: currency.toLowerCase(),
+          unit_amount: shippingMinor,
+          product_data: { name: "Spedizione (24/48h)" },
+        },
+      });
+    }
 
     // ✅ Serializza items: rimuovi undefined (Strapi li rifiuta)
     const safeItems = pricedItems.map((it) => ({
