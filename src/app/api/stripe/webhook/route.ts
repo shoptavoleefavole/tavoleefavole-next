@@ -83,6 +83,7 @@ async function strapiFetch(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      Accept: "application/json",
       ...(extraHeaders || {}),
       ...(init?.headers || {}),
     },
@@ -111,12 +112,14 @@ function pickOrderIds(row: any): { numericId: number | null; documentId: string 
 
 function getSessionRefs(session: Stripe.Checkout.Session) {
   const metadata = session.metadata || {};
+
   const numericOrderIdRaw =
     typeof metadata.strapiOrderId === "string"
       ? metadata.strapiOrderId
       : typeof metadata.orderId === "string"
         ? metadata.orderId
         : "";
+
   const numericOrderId = /^\d+$/.test(numericOrderIdRaw.trim()) ? numericOrderIdRaw.trim() : null;
 
   const documentId =
@@ -138,12 +141,26 @@ function getSessionRefs(session: Stripe.Checkout.Session) {
   return { numericOrderId, documentId, orderRef };
 }
 
+function buildOrderQueryVariants(inputQs: URLSearchParams) {
+  const base = new URLSearchParams(inputQs.toString());
+  base.set("pagination[pageSize]", "1");
+
+  const withDraft = new URLSearchParams(base.toString());
+  withDraft.set("status", "draft");
+
+  return [withDraft, base];
+}
+
 async function findFirstOrderByFilter(qs: URLSearchParams) {
-  qs.set("pagination[pageSize]", "1");
-  const { res, data, text } = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
-  if (!res.ok) return { ok: false as const, status: res.status, details: data ?? text };
-  const first = Array.isArray(data?.data) ? data.data[0] : null;
-  return { ok: true as const, first };
+  for (const candidateQs of buildOrderQueryVariants(qs)) {
+    const { res, data, text } = await strapiFetch(`/api/orders?${candidateQs.toString()}`, { method: "GET" });
+    if (!res.ok) continue;
+
+    const first = Array.isArray(data?.data) ? data.data[0] : null;
+    if (first) return { ok: true as const, first };
+  }
+
+  return { ok: false as const, status: 404, details: "Order not found" };
 }
 
 async function findOrder(params: {
@@ -177,64 +194,75 @@ async function findOrder(params: {
   return null;
 }
 
-async function resolveNumericId(orderRow: any) {
-  const { numericId, documentId } = pickOrderIds(orderRow);
-  if (typeof numericId === "number") return numericId;
-  if (!documentId) return null;
-
-  const qs = new URLSearchParams();
-  qs.set("filters[documentId][$eq]", documentId);
-  qs.set("pagination[pageSize]", "1");
-  qs.set("fields[0]", "id");
-
-  const r = await strapiFetch(`/api/orders?${qs.toString()}`, { method: "GET" });
-  if (!r.res.ok) return null;
-  const first = Array.isArray(r.data?.data) ? r.data.data[0] : null;
-  return typeof first?.id === "number" ? first.id : null;
-}
-
 function toSafeLogMessage(details: any) {
-  const message =
-    typeof details?.error?.message === "string"
-      ? details.error.message
-      : typeof details?.message === "string"
-        ? details.message
-        : null;
-  return message;
+  return typeof details?.error?.message === "string"
+    ? details.error.message
+    : typeof details?.message === "string"
+      ? details.message
+      : "Strapi update failed";
 }
 
-async function updateOrderByNumericId(
+async function updateOrderSmart(
   orderRow: any,
   payload: any,
   orderStatusSecret: string
 ) {
-  const numericId = await resolveNumericId(orderRow);
-  if (!numericId) {
-    return {
-      ok: false as const,
-      last: { used: "none", status: 404, message: "Numeric order id unavailable" },
+  const { numericId, documentId } = pickOrderIds(orderRow);
+
+  const tries: Array<{ used: string; path: string }> = [];
+
+  if (documentId) {
+    tries.push({
+      used: "documentId:draft",
+      path: `/api/orders/${encodeURIComponent(documentId)}?status=draft`,
+    });
+    tries.push({
+      used: "documentId",
+      path: `/api/orders/${encodeURIComponent(documentId)}`,
+    });
+  }
+
+  if (typeof numericId === "number") {
+    tries.push({
+      used: "numericId:draft",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}?status=draft`,
+    });
+    tries.push({
+      used: "numericId",
+      path: `/api/orders/${encodeURIComponent(String(numericId))}`,
+    });
+  }
+
+  let last: any = null;
+
+  for (const t of tries) {
+    const r = await strapiFetch(
+      t.path,
+      {
+        method: "PUT",
+        body: JSON.stringify({ data: payload }),
+      },
+      {
+        "x-order-status-secret": orderStatusSecret,
+      }
+    );
+
+    if (r.res.ok) return { ok: true as const, used: t.used };
+
+    last = {
+      used: t.used,
+      status: r.res.status,
+      message: toSafeLogMessage(r.data),
+      details: r.data ?? r.text,
     };
   }
 
-  const r = await strapiFetch(
-    `/api/orders/${encodeURIComponent(String(numericId))}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({ data: payload }),
-    },
-    {
-      "x-order-status-secret": orderStatusSecret,
-    }
-  );
-
-  if (r.res.ok) return { ok: true as const, used: "numericId" };
-
   return {
     ok: false as const,
-    last: {
-      used: "numericId",
-      status: r.res.status,
-      message: toSafeLogMessage(r.data) ?? "Strapi update failed",
+    last: last ?? {
+      used: "none",
+      status: 404,
+      message: "No valid order update path found",
     },
   };
 }
@@ -296,30 +324,36 @@ export async function POST(req: Request) {
       return json({ ok: false, error: "Order not found on Strapi" }, 500);
     }
 
-    const stripePaymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
-const customerEmail =
-  session.customer_details?.email ?? session.customer_email ?? session.metadata?.customerEmail ?? null;
+    const stripePaymentIntentId =
+      typeof session.payment_intent === "string" ? session.payment_intent : null;
 
-const orderAttrs = pickAttrs(orderRow);
-const alreadySent = !!orderAttrs?.orderConfirmationEmailSentAt;
+    const customerEmail =
+      session.customer_details?.email ??
+      session.customer_email ??
+      session.metadata?.customerEmail ??
+      null;
 
-const payload: any = {
-  orderStatus: "PAID",
-  stripeSessionId: sessionId,
-  stripePaymentIntentId,
-  customerEmail,
-};
+    const orderAttrs = pickAttrs(orderRow);
+    const alreadySent = !!orderAttrs?.orderConfirmationEmailSentAt;
 
-const upd = await updateOrderByNumericId(orderRow, payload, ORDER_STATUS_WEBHOOK_SECRET);
+    const payload: any = {
+      orderStatus: "PAID",
+      stripeSessionId: sessionId,
+      stripePaymentIntentId,
+      customerEmail,
+    };
 
-if (!upd.ok) {
-  console.error("[stripe/webhook] Strapi update failed", {
-    used: upd.last.used,
-    status: upd.last.status,
-    message: upd.last.message,
-  });
-  return json({ ok: false, error: "Failed updating order on Strapi" }, 500);
-}
+    const upd = await updateOrderSmart(orderRow, payload, ORDER_STATUS_WEBHOOK_SECRET);
+
+    if (!upd.ok) {
+      console.error("[stripe/webhook] Strapi update failed", {
+        used: upd.last.used,
+        status: upd.last.status,
+        message: upd.last.message,
+        details: upd.last.details,
+      });
+      return json({ ok: false, error: "Failed updating order on Strapi" }, 500);
+    }
 
     console.info("[stripe/webhook] updated order => PAID", {
       via: upd.used,
@@ -328,10 +362,13 @@ if (!upd.ok) {
 
     if (alreadySent) {
       console.info("[stripe/webhook] order email already sent, skip", { sessionId });
-      return json({ ok: true, updated: true, emailed: false, skipped: "already_sent", via: upd.used, sessionId }, 200);
+      return json(
+        { ok: true, updated: true, emailed: false, skipped: "already_sent", via: upd.used, sessionId },
+        200
+      );
     }
 
-    const resolvedNumericId = await resolveNumericId(orderRow);
+    const { numericId: resolvedNumericId } = pickOrderIds(orderRow);
     const emailTo = String(orderAttrs?.customerEmail || customerEmail || "").trim().toLowerCase();
 
     const emailResult = await sendOrderConfirmationEmail({
@@ -358,7 +395,7 @@ if (!upd.ok) {
     }
 
     const sentAt = new Date().toISOString();
-    const markSent = await updateOrderByNumericId(
+    const markSent = await updateOrderSmart(
       orderRow,
       { orderConfirmationEmailSentAt: sentAt },
       ORDER_STATUS_WEBHOOK_SECRET
@@ -370,6 +407,7 @@ if (!upd.ok) {
         used: markSent.last.used,
         status: markSent.last.status,
         message: markSent.last.message,
+        details: markSent.last.details,
       });
       return json({ ok: false, error: "Failed to mark order email as sent" }, 500);
     }
