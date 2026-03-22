@@ -21,10 +21,12 @@ type ApiBody = {
   shippingTotal?: number;
 };
 
+const FREE_SHIPPING_THRESHOLD_MAJOR_EUR = 79;
+
 function json(data: any, status = 200) {
   return NextResponse.json(data, {
     status,
-    headers: { "Cache-Control": "no-store", "x-cart-quote": "v4-robust-timeout-retry-missing-items" },
+    headers: { "Cache-Control": "no-store", "x-cart-quote": "v5-robust-free-shipping" },
   });
 }
 
@@ -82,7 +84,7 @@ async function fetchWithRetry(url: string, init: RequestInit, ms = STRAPI_TIMEOU
     } catch (e: any) {
       lastErr = e;
       if (!isRetryableFetchError(e) || i === 2) break;
-      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i))); // 500ms, 1000ms
+      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
     }
   }
   throw lastErr;
@@ -123,11 +125,13 @@ function isZeroDecimalCurrency(currency: string) {
   ]);
   return zero.has(String(currency || "").toUpperCase());
 }
+
 function toMinor(priceMajor: number, currency: string) {
   if (!Number.isFinite(priceMajor) || priceMajor <= 0) return null;
   if (isZeroDecimalCurrency(currency)) return Math.round(priceMajor);
   return Math.round(priceMajor * 100);
 }
+
 function toMajor(amountMinor: number, currency: string) {
   if (isZeroDecimalCurrency(currency)) return amountMinor;
   return amountMinor / 100;
@@ -136,6 +140,7 @@ function toMajor(amountMinor: number, currency: string) {
 function isPlainObject(x: any) {
   return !!x && typeof x === "object" && !Array.isArray(x);
 }
+
 function sanitizeMeta(meta: any): CartItemMeta | undefined {
   if (!isPlainObject(meta)) return undefined;
   const out: CartItemMeta = {};
@@ -189,20 +194,22 @@ function normalizeItems(input: any): CartItem[] {
   return out;
 }
 
-/* --- Cialde pricing (solo se item custom con meta.kind) --- */
 const CIALDE_PRICE_MAJOR = {
   ostia: 4.75,
   pasta_di_zucchero: 6.5,
 } as const;
+
 type CialdaMaterial = keyof typeof CIALDE_PRICE_MAJOR;
 
 function isCialdaItem(it: CartItem) {
   const kind = String(it?.meta?.kind ?? "").trim();
   return kind === "cialda-personalizzata" || kind === "cialde-personalizzate";
 }
+
 function isCialdaMaterial(x: any): x is CialdaMaterial {
   return x === "ostia" || x === "pasta_di_zucchero";
 }
+
 function buildCialdaName(meta?: CartItemMeta) {
   const m = String(meta?.material ?? "").trim();
   if (m === "pasta_di_zucchero") return "Cialda personalizzata (Pasta di zucchero)";
@@ -210,14 +217,12 @@ function buildCialdaName(meta?: CartItemMeta) {
   return "Cialda personalizzata";
 }
 
-/* --- Strapi product extraction --- */
 type StrapiProduct = {
   id: number | null;
   slug: string | null;
   name: string | null;
   price: number | null;
   compareAtPrice: number | null;
-
   companyPrice: number | null;
   aziendaDiscountEligible: boolean;
 };
@@ -255,7 +260,6 @@ function extractProduct(row: any): StrapiProduct {
   };
 }
 
-// ✅ più compatibile: ripeto filters[field][$in]=...
 function addInFilter(qs: URLSearchParams, field: string, values: (string | number)[]) {
   values.forEach((v) => qs.append(`filters[${field}][$in]`, String(v)));
 }
@@ -295,7 +299,6 @@ async function fetchProductsByIdsOrSlugs(args: {
 
   let r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs1.toString()}`, { method: "GET" });
 
-  // fallback senza fields se 400
   if (!r.res.ok && r.res.status === 400) {
     r = await strapiRequest(STRAPI_URL, STRAPI_API_TOKEN, `/api/products?${qs.toString()}`, { method: "GET" });
   }
@@ -315,7 +318,6 @@ async function fetchProductsByIdsOrSlugs(args: {
   return { ok: true as const, byId, bySlug };
 }
 
-/* --- Company ctx (approvata) --- */
 type CompanyCtx = { approved: boolean; discountPercent: number };
 
 function clampPercent(v: any) {
@@ -383,7 +385,6 @@ export async function POST(request: Request) {
     const itemsIn = normalizeItems(body.items);
     if (!itemsIn.length) return json({ ok: false, error: "Empty cart" }, 400);
 
-    // auth (optional)
     const cookieHeader = request.headers.get("cookie") || "";
     const userJwt = getCookieValue(cookieHeader, "tf_token") || getCookieValue(cookieHeader, "jwtToken");
 
@@ -400,9 +401,7 @@ export async function POST(request: Request) {
           if (typeof me?.id === "number") userId = me.id;
           authenticated = true;
         }
-      } catch {
-        // se /users/me va lento, non blocco il quote: lo tratteremo come guest
-      }
+      } catch {}
     }
 
     const companyCtx = await getCompanyCtx({ STRAPI_URL, STRAPI_API_TOKEN, userId }).catch(() => ({
@@ -443,7 +442,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // ✅ se manca un prodotto (slug/id sbagliato), rispondo 400 chiaro (non 500)
     const missing: Array<{ productId?: number; id?: number; slug?: string }> = [];
     for (const it of strapiItems) {
       const p =
@@ -454,6 +452,7 @@ export async function POST(request: Request) {
 
       if (!p) missing.push({ productId: it.productId, id: it.id, slug: it.slug });
     }
+
     if (missing.length) {
       return json(
         {
@@ -471,7 +470,6 @@ export async function POST(request: Request) {
 
     const pricedItems: any[] = [];
 
-    // prodotti Strapi
     for (const it of strapiItems) {
       const p =
         (typeof it.productId === "number" ? prodRes.byId.get(it.productId) : undefined) ||
@@ -497,7 +495,6 @@ export async function POST(request: Request) {
 
       const baseUnitMajor = compareAtMajor ?? publicPriceMajor;
 
-      // prezzi aziende (se company user)
       let finalUnitMajor = publicPriceMajor;
       let companyApplied = false;
 
@@ -534,7 +531,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // cialde custom (solo se meta.kind presente)
     for (const it of customItems) {
       const material = String(it?.meta?.material ?? "").trim();
       if (!isCialdaMaterial(material)) {
@@ -566,8 +562,17 @@ export async function POST(request: Request) {
 
     const discountMinor = Math.max(0, baseSubtotalMinor - finalSubtotalMinor);
 
-    const shippingMajor = Math.max(0, clampNumber(body.shippingTotal, 0));
-    const shippingMinor = shippingMajor > 0 ? toMinor(shippingMajor, currency) ?? 0 : 0;
+    const requestedShippingMajor = Math.max(0, clampNumber(body.shippingTotal, 0));
+    const freeShippingThresholdMinor = toMinor(FREE_SHIPPING_THRESHOLD_MAJOR_EUR, currency);
+    const qualifiesForFreeShipping =
+      typeof freeShippingThresholdMinor === "number" && finalSubtotalMinor >= freeShippingThresholdMinor;
+
+    const shippingMinor =
+      qualifiesForFreeShipping
+        ? 0
+        : requestedShippingMajor > 0
+          ? toMinor(requestedShippingMajor, currency) ?? 0
+          : 0;
 
     const totalMinor = finalSubtotalMinor + shippingMinor;
 
@@ -577,10 +582,13 @@ export async function POST(request: Request) {
       pricedItems,
       totals: {
         subtotal: toMajor(baseSubtotalMinor, currency),
+        discountedSubtotal: toMajor(finalSubtotalMinor, currency),
         discountTotal: toMajor(discountMinor, currency),
         shippingTotal: toMajor(shippingMinor, currency),
         total: toMajor(totalMinor, currency),
         currency,
+        freeShippingThreshold: FREE_SHIPPING_THRESHOLD_MAJOR_EUR,
+        qualifiesForFreeShipping,
       },
     });
   } catch (e: any) {
