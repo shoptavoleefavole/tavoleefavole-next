@@ -17,7 +17,6 @@ type VerifyResponse = {
   error?: string;
   details?: any;
 
-  // opzionali (se li aggiungi lato API, non rompe)
   payment_status?: string;
   status?: string;
 };
@@ -31,16 +30,24 @@ function isPaid(data: VerifyResponse | null) {
   return data.paid === true || data.payment_status === "paid" || data.status === "complete";
 }
 
-export default function SuccessClient({ sessionId }: { sessionId: string }) {
+export default function SuccessClient({
+  sessionId,
+  initialInfo = null,
+}: {
+  sessionId: string;
+  initialInfo?: VerifyResponse | null;
+}) {
   const router = useRouter();
   const { clear } = useCart();
 
   const sid = useMemo(() => String(sessionId || "").trim(), [sessionId]);
+  const initialPaid = isPaid(initialInfo);
 
-  const [status, setStatus] = useState<"checking" | "paid" | "timeout" | "error">("checking");
-  const [info, setInfo] = useState<VerifyResponse | null>(null);
+  const [status, setStatus] = useState<"checking" | "paid" | "timeout" | "error">(
+    !sid ? "error" : initialPaid ? "paid" : "checking"
+  );
+  const [info, setInfo] = useState<VerifyResponse | null>(initialInfo);
 
-  // anti doppio start (StrictMode)
   const startedRef = useRef(false);
 
   useEffect(() => {
@@ -50,10 +57,22 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
       return;
     }
 
-    // se già confermato una volta in questa sessione browser → mostra subito paid
     const confirmedKey = `checkout_paid_once:${sid}`;
+
     if (typeof window !== "undefined" && sessionStorage.getItem(confirmedKey) === "1") {
       setStatus("paid");
+      if (initialInfo) setInfo(initialInfo);
+      return;
+    }
+
+    if (initialPaid) {
+      try {
+        sessionStorage.setItem(confirmedKey, "1");
+      } catch {}
+
+      clearCartOnPaid({ sessionId: sid, clearProvider: clear });
+      setStatus("paid");
+      if (initialInfo) setInfo(initialInfo);
       return;
     }
 
@@ -66,7 +85,7 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
       const start = Date.now();
       const maxMs = 22_000;
 
-      let last: VerifyResponse | null = null;
+      let last: VerifyResponse | null = initialInfo;
 
       while (Date.now() - start < maxMs) {
         try {
@@ -74,7 +93,6 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
             cache: "no-store",
           });
 
-          // se API momentaneamente instabile → ritenta
           if (!res.ok) {
             last = {
               ok: false,
@@ -106,13 +124,10 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
               sessionStorage.setItem(confirmedKey, "1");
             } catch {}
 
-            // ✅ svuota carrello UNA VOLTA sola e senza reload
             clearCartOnPaid({ sessionId: sid, clearProvider: clear });
-
             return;
           }
 
-          // non pagato ancora: ritenta
           await sleep(1100);
         } catch (e: any) {
           last = { ok: false, error: "Network error", details: String(e?.message ?? e) };
@@ -130,16 +145,13 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
     return () => {
       alive = false;
     };
-  }, [sid, clear]);
-
-  // ===== UI =====
+  }, [sid, clear, initialInfo, initialPaid]);
 
   const orderRef = info?.orderRef ?? null;
-  const orderId = typeof info?.orderId === "number" ? info?.orderId : null;
+  const orderId = typeof info?.orderId === "number" ? info.orderId : null;
 
   return (
     <main className="relative overflow-hidden">
-      {/* sfondo decorativo */}
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div className="absolute -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full bg-primary/20 blur-3xl" />
         <div className="absolute -bottom-40 left-10 h-[420px] w-[420px] rounded-full bg-pink-400/20 blur-3xl" />
@@ -175,7 +187,6 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
             </div>
           </div>
 
-          {/* box info ordine */}
           <div className="mt-6 grid gap-3 rounded-2xl border border-border bg-surface/60 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-extrabold">Dettagli ordine</div>
@@ -185,8 +196,8 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
                   status === "paid"
                     ? "border-green-200 text-green-700"
                     : status === "error"
-                      ? "border-red-200 text-red-600"
-                      : "border-border text-text/70",
+                    ? "border-red-200 text-red-600"
+                    : "border-border text-text/70",
                 ].join(" ")}
               >
                 {status === "paid" ? "PAGATO" : status === "error" ? "ERRORE" : "IN VERIFICA"}
@@ -211,7 +222,6 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
             </div>
           </div>
 
-          {/* messaggio “wow” */}
           {status === "paid" ? (
             <div className="mt-6 rounded-2xl border border-border bg-background p-4">
               <div className="text-sm font-extrabold">Cosa succede adesso?</div>
@@ -238,7 +248,6 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
             </div>
           ) : null}
 
-          {/* CTA */}
           <div className="mt-7 flex flex-wrap gap-3">
             <button
               type="button"
@@ -266,7 +275,6 @@ export default function SuccessClient({ sessionId }: { sessionId: string }) {
             ) : null}
           </div>
 
-          {/* debug solo in non-prod */}
           {process.env.NODE_ENV !== "production" && status !== "paid" && info ? (
             <pre className="mt-6 overflow-auto rounded-2xl bg-black/5 p-3 text-[11px]">
               {JSON.stringify(info, null, 2)}
