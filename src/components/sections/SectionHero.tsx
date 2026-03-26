@@ -199,7 +199,6 @@ export default function SectionHero({
               src={imgRight.src}
               alt={imgRight.alt ?? ""}
               fill
-              priority={index === 0}
               sizes="100vw"
               className="object-cover"
             />
@@ -323,7 +322,7 @@ export default function SectionHero({
                       fill
                       sizes="(min-width: 1024px) 560px, 46vw"
                       className="object-cover"
-                      priority={index === 0}
+                      loading="lazy"
                     />
                   ) : null}
                 </div>
