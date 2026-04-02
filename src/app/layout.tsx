@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Suspense } from "react";
 import Script from "next/script";
+import { GoogleAnalytics } from "@next/third-parties/google";
 
 import "@/styles/globals.css";
 
@@ -37,9 +38,11 @@ function computeSite() {
 }
 
 const { siteUrl, site } = computeSite();
+const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim() || "";
 
-const defaultTitle       = "Tavole & Favole";
-const defaultDescription = "Ingredienti e accessori per pasticceria, cake design, confetti e specialità dolciarie. Spedizioni, resi e assistenza chiari.";
+const defaultTitle = "Tavole & Favole";
+const defaultDescription =
+  "Ingredienti e accessori per pasticceria, cake design, confetti e specialità dolciarie. Spedizioni, resi e assistenza chiari.";
 
 export const metadata: Metadata = {
   metadataBase: site,
@@ -67,7 +70,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="it" suppressHydrationWarning>
       <body className="min-h-dvh bg-background text-text antialiased">
-        {/* Skip link accessibilità */}
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-xl focus:bg-background focus:px-4 focus:py-2 focus:text-sm focus:shadow-md"
@@ -75,7 +77,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Salta al contenuto
         </a>
 
-        {/* Iubenda */}
         <Script src="https://cdn.iubenda.com/iubenda.js" strategy="afterInteractive" />
 
         <AppProviders>
@@ -96,12 +97,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <Header />
                 </Suspense>
 
-                {/* Desktop categories strip */}
                 <div className="hidden border-t border-border bg-background md:block">
                   <div className="mx-auto max-w-7xl px-4">
                     <div className="relative overflow-hidden rounded-2xl">
-
-                      {/* ✅ Gradiente CSS — nessun file esterno, zero 404 */}
                       <div
                         aria-hidden="true"
                         className="absolute inset-0"
@@ -114,7 +112,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                         }}
                       />
 
-                      {/* Contenuto sopra */}
                       <div className="relative">
                         <Navbar />
                       </div>
@@ -126,12 +123,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <main id="main-content" className="flex-1 pb-24 md:pb-0">
                 {children}
               </main>
-
               <Footer />
               <MobileBottomNav />
             </div>
 
-            {/* WhatsApp solo desktop */}
             <div className="hidden md:block">
               <WhatsAppFloatingButton />
             </div>
@@ -139,6 +134,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         </AppProviders>
 
         <Analytics />
+        {gaMeasurementId ? <GoogleAnalytics gaId={gaMeasurementId} /> : null}
       </body>
     </html>
   );
