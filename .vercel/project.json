@@ -1,1 +1,16 @@
-{"projectId":"prj_knJIwpicfiIrRdhOm93CFr79SjVg","orgId":"team_2MoJ5jtiH7Wcl5fhQ8AG9k6o","projectName":"tavoleefavole-next-t7pd"}
+{
+  "projectId": "prj_knJIwpicfiIrRdhOm93CFr79SjVg",
+  "orgId": "team_2MoJ5jtiH7Wcl5fhQ8AG9k6o",
+  "projectName": "tavoleefavole-next-t7pd",
+  "settings": {
+    "createdAt": 1770108492907,
+    "framework": "nextjs",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}
