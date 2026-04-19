@@ -1,13 +1,14 @@
+"use client";
+
 import Script from "next/script";
 
 /**
- * Analytics placeholder (GA4) disattivabile via env.
+ * Google Analytics 4
  *
- * ON se:
- * - NEXT_PUBLIC_ANALYTICS_ENABLED === "true"
- * - NEXT_PUBLIC_GA4_ID è presente (es: G-XXXXXXXXXX)
- *
- * OFF in tutti gli altri casi (non carica nulla).
+ * ATTENZIONE:
+ * Questo componente è pronto per GA4 ma al momento
+ * viene disattivato finché non completiamo il collegamento
+ * sicuro con il consenso Iubenda senza dipendenze che rompono la build.
  */
 export default function Analytics() {
   const enabled = process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === "true";
@@ -18,6 +19,7 @@ export default function Analytics() {
   return (
     <>
       <Script
+        id="ga4-src"
         src={`https://www.googletagmanager.com/gtag/js?id=${gaId}`}
         strategy="afterInteractive"
       />
@@ -28,6 +30,7 @@ export default function Analytics() {
           __html: `
             window.dataLayer = window.dataLayer || [];
             function gtag(){dataLayer.push(arguments);}
+            window.gtag = gtag;
             gtag('js', new Date());
             gtag('config', '${gaId}', { anonymize_ip: true });
           `,

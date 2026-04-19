@@ -1,3 +1,5 @@
+//src/components/cart/CartView.tsx
+
 "use client";
 /* eslint-disable react/no-unescaped-entities */
 
@@ -51,6 +53,18 @@ function normalizeImageUrl(raw: unknown): string {
   if (s.startsWith("/brand/") || s.startsWith("/placeholder") || s.startsWith("/images/")) return s;
   if (s.startsWith("/uploads/") && STRAPI_PUBLIC_URL) return `${STRAPI_PUBLIC_URL}${s}`;
   return s;
+}
+
+function buildProfileFullName(data: any): string {
+  const explicit = safeString(data?.fullName, "");
+  if (explicit) return explicit;
+
+  const company = safeString(data?.companyName, "");
+  if (company) return company;
+
+  const firstName = safeString(data?.firstName, "");
+  const lastName = safeString(data?.lastName, "");
+  return `${firstName} ${lastName}`.trim();
 }
 
 function SafeImg({
@@ -227,17 +241,19 @@ export default function CartView() {
 
         const sa = data.shippingAddress;
         const ba = data.billingAddress;
+        const profileFullName = buildProfileFullName(data);
+        const profileEmail = safeString(data?.email, "");
 
-        if (sa?.address) {
-          setShippingForm((prev) => ({
-            ...prev,
-            address: sa.address || "",
-            postalCode: sa.postalCode || "",
-            city: sa.city || "",
-            province: sa.province || "",
-            country: sa.country || "IT",
-          }));
-        }
+        setShippingForm((prev) => ({
+          ...prev,
+          fullName: prev.fullName || profileFullName,
+          email: prev.email || profileEmail,
+          address: sa?.address || prev.address,
+          postalCode: sa?.postalCode || prev.postalCode,
+          city: sa?.city || prev.city,
+          province: sa?.province || prev.province,
+          country: sa?.country || prev.country || "IT",
+        }));
 
         if (ba?.address && ba.address !== sa?.address) {
           setBillingForm((prev) => ({

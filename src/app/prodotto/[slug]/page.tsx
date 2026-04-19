@@ -33,6 +33,7 @@ const SITE_URL = (
 ).replace(/\/+$/, "");
 
 type CategoryRef = { slug: string; label: string };
+type SpecRow = { label: string; value: string };
 
 type ProductLike = {
   id?: string | number | null;
@@ -41,10 +42,12 @@ type ProductLike = {
   name: string;
   price?: number | null;
   compareAtPrice?: number | null;
-  priceAziende?: number | null;        // ← AGGIUNTO
+  priceAziende?: number | null;
   shortDescription?: string | null;
   description?: any;
   specs?: any;
+  productDetails?: any;
+  productDetail?: any;
   inStock?: boolean;
   variants?: Array<{ sku?: string | null }>;
   variant?: { sku?: string | null } | null;
@@ -59,8 +62,6 @@ type ProductLike = {
   stockQty?: number | null;
   trackInventory?: boolean | null;
 };
-
-// ─── utils ────────────────────────────────────────────────────────────────────
 
 function safeDecode(v: unknown): string {
   const s = String(v ?? "").trim();
@@ -124,23 +125,218 @@ function clampText(s: unknown, max = 160): string {
   return str.length > max ? `${str.slice(0, max - 1)}…` : str;
 }
 
-function richTextToPlainText(value: any): string {
+function richTextToPlainText(value: unknown): string {
   if (!value) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return value.trim();
+
   if (Array.isArray(value)) {
     const parts: string[] = [];
     for (const block of value) {
-      const children = block?.children;
-      if (Array.isArray(children)) {
-        for (const ch of children) {
-          const t = ch?.text;
-          if (typeof t === "string" && t.trim()) parts.push(t.trim());
-        }
-      }
+      const blockText = richTextToPlainText(block);
+      if (blockText) parts.push(blockText);
     }
     return parts.join("\n\n").trim();
   }
-  try { return String(value); } catch { return ""; }
+
+  if (typeof value === "object" && value !== null) {
+    const obj = value as Record<string, unknown>;
+
+    if (typeof obj.text === "string" && obj.text.trim()) {
+      return obj.text.trim();
+    }
+
+    const children: unknown[] | null = Array.isArray(obj.children)
+      ? (obj.children as unknown[])
+      : null;
+
+    if (children?.length) {
+      const parts = children
+        .map((child: unknown) => richTextToPlainText(child))
+        .filter((part: string) => Boolean(part));
+
+      if (parts.length) return parts.join("").trim();
+    }
+
+    for (const key of ["value", "content", "description", "body"] as const) {
+      const nested = obj[key];
+      if (nested) {
+        const nestedText = richTextToPlainText(nested);
+        if (nestedText) return nestedText;
+      }
+    }
+  }
+
+  return "";
+}
+
+function prettifyLabel(raw: string): string {
+  const cleaned = String(raw ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) return "Dettaglio";
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+function splitTextToSpecs(text: string): SpecRow[] {
+  const lines = String(text ?? "")
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/^[\-•*]\s*/, "").trim())
+    .filter(Boolean);
+
+  const rows: SpecRow[] = [];
+
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex > 0 && separatorIndex < line.length - 1) {
+      const label = line.slice(0, separatorIndex).trim();
+      const value = line.slice(separatorIndex + 1).trim();
+      if (label && value) {
+        rows.push({ label: prettifyLabel(label), value });
+        continue;
+      }
+    }
+
+    rows.push({
+      label: rows.length === 0 ? "Dettagli prodotto" : `Dettaglio ${rows.length + 1}`,
+      value: line,
+    });
+  }
+
+  return rows;
+}
+
+function normalizeSpecs(value: any): SpecRow[] | null {
+  if (!value) return null;
+
+  if (Array.isArray(value)) {
+    const normalized: SpecRow[] = [];
+
+    for (const item of value) {
+      if (!item) continue;
+
+      if (typeof item === "string") {
+        normalized.push(...splitTextToSpecs(item));
+        continue;
+      }
+
+      const isRichTextBlock =
+        typeof item === "object" &&
+        item !== null &&
+        typeof item.type === "string" &&
+        Array.isArray(item.children);
+
+      if (isRichTextBlock) {
+        const fallbackText = richTextToPlainText(item);
+        if (fallbackText) {
+          normalized.push(...splitTextToSpecs(fallbackText));
+        }
+        continue;
+      }
+
+      if (typeof item === "object") {
+        const labelCandidate = [item.label, item.name, item.title, item.key].find(
+          (entry) => typeof entry === "string" && entry.trim()
+        );
+
+        const directValue = richTextToPlainText(
+          item.value ?? item.text ?? item.description ?? item.content ?? item
+        );
+
+        if (labelCandidate && directValue) {
+          normalized.push({
+            label: prettifyLabel(labelCandidate),
+            value: directValue,
+          });
+          continue;
+        }
+
+        const objectEntries = Object.entries(item)
+          .filter(([key, entry]) => {
+            if (["id", "__component", "createdAt", "updatedAt", "publishedAt"].includes(key)) {
+              return false;
+            }
+            return (
+              typeof entry === "string" ||
+              typeof entry === "number" ||
+              typeof entry === "boolean"
+            );
+          })
+          .map(([key, entry]) => ({
+            label: prettifyLabel(key),
+            value: String(entry).trim(),
+          }))
+          .filter((row) => row.value);
+
+        if (objectEntries.length) {
+          normalized.push(...objectEntries);
+          continue;
+        }
+
+        const fallbackText = richTextToPlainText(item);
+        if (fallbackText) {
+          normalized.push(...splitTextToSpecs(fallbackText));
+        }
+      }
+    }
+
+    return normalized.length ? normalized : null;
+  }
+
+  if (typeof value === "string") {
+    const rows = splitTextToSpecs(value);
+    return rows.length ? rows : null;
+  }
+
+  const isRichTextObject =
+    typeof value === "object" &&
+    value !== null &&
+    typeof value.type === "string" &&
+    Array.isArray(value.children);
+
+  if (isRichTextObject) {
+    const fallback = richTextToPlainText(value);
+    if (!fallback) return null;
+    const rows = splitTextToSpecs(fallback);
+    return rows.length ? rows : null;
+  }
+
+  if (typeof value === "object") {
+    const labeledValue = [value.label, value.name, value.title].find(
+      (entry) => typeof entry === "string" && entry.trim()
+    );
+    const textValue = richTextToPlainText(
+      value.value ?? value.text ?? value.description ?? value.content ?? value
+    );
+
+    if (labeledValue && textValue) {
+      return [{ label: prettifyLabel(labeledValue), value: textValue }];
+    }
+
+    const objectEntries = Object.entries(value)
+      .filter(([key, entry]) => {
+        if (["id", "__component", "createdAt", "updatedAt", "publishedAt"].includes(key)) {
+          return false;
+        }
+        return typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean";
+      })
+      .map(([key, entry]) => ({
+        label: prettifyLabel(key),
+        value: String(entry).trim(),
+      }))
+      .filter((row) => row.value);
+
+    if (objectEntries.length) return objectEntries;
+
+    const fallback = richTextToPlainText(value);
+    if (!fallback) return null;
+
+    const rows = splitTextToSpecs(fallback);
+    return rows.length ? rows : null;
+  }
+
+  return null;
 }
 
 function toNumber(v: unknown): number | null {
@@ -171,8 +367,6 @@ function stockBadge(status: StockStatus) {
   return { text: "Disponibilità da verificare", cls: "border-border text-text/70" };
 }
 
-// ─── Business user check ──────────────────────────────────────────────────────
-
 async function checkIsBusiness(): Promise<boolean> {
   try {
     const cookieStore = await cookies();
@@ -192,8 +386,6 @@ async function checkIsBusiness(): Promise<boolean> {
     return false;
   }
 }
-
-// ─── Metadata ─────────────────────────────────────────────────────────────────
 
 export async function generateMetadata({
   params,
@@ -244,45 +436,6 @@ export async function generateMetadata({
   };
 }
 
-// ─── TrustRow ─────────────────────────────────────────────────────────────────
-
-function TrustRow() {
-  return (
-    <div className="mt-4 grid gap-2">
-      <div className="flex items-start gap-2 text-sm text-text/80">
-        <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M6.5 10.2l2.1 2.2 5-5.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <span><b>Spedizione rapida</b> e imballo curato.</span>
-      </div>
-
-      <div className="flex items-start gap-2 text-sm text-text/80">
-        <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M10 3.6a6.4 6.4 0 106.4 6.4" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-            <path d="M10 6.2v4.1l2.8 1.7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <span><b>Reso facile</b> se cambi idea.</span>
-      </div>
-
-      <div className="flex items-start gap-2 text-sm text-text/80">
-        <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background">
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M10 2.5l6 2.6V10c0 4.4-3.1 7.3-6 8.4C7.1 17.3 4 14.4 4 10V5.1l6-2.6z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
-            <path d="M7.4 10.1l1.7 1.8 3.6-4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-        <span><b>Pagamenti sicuri</b> e assistenza dedicata.</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
 export default async function ProductPage({
   params,
 }: {
@@ -304,7 +457,6 @@ export default async function ProductPage({
   const images = getImages(product);
   const favId = favoriteKey(product);
 
-  // ─── Business check ──────────────────────────────────────────────────────
   const isBusiness = await checkIsBusiness();
 
   const rawPriceAziende = toNumber((product as any)?.priceAziende);
@@ -313,7 +465,6 @@ export default async function ProductPage({
       ? rawPriceAziende
       : null;
 
-  // ─── Stock ───────────────────────────────────────────────────────────────
   const stockQty =
     typeof product?.stockQty === "number" && Number.isFinite(product.stockQty)
       ? product.stockQty
@@ -334,7 +485,6 @@ export default async function ProductPage({
     : null;
   const row = defaultSku ? (availability as any)?.data?.MAIN?.[defaultSku] ?? null : null;
 
-  // ─── Category ────────────────────────────────────────────────────────────
   const catSlug = product?.category?.slug ?? null;
   const subSlug = product?.subcategory?.slug ?? null;
   const macro = catSlug ? await getMacroBySlug(catSlug) : null;
@@ -342,7 +492,6 @@ export default async function ProductPage({
   const catLabel = product?.category?.label ?? macro?.label ?? catSlug ?? "";
   const subLabel = product?.subcategory?.label ?? sub?.label ?? subSlug ?? "";
 
-  // ─── Related ─────────────────────────────────────────────────────────────
   const related = (await getRelatedProducts(product as any, 8)) as any[];
 
   const price = toNumber(product?.price) ?? 0;
@@ -354,10 +503,18 @@ export default async function ProductPage({
     170
   );
 
+  const rawProductDetails =
+    (product as any)?.productDetails ??
+    (product as any)?.productDetail ??
+    (product as any)?.productdetails ??
+    null;
+
+  const detailsText = richTextToPlainText(rawProductDetails);
+  const detailSpecs = normalizeSpecs(rawProductDetails ?? (product as any)?.specs);
+
   const cartId = String(product?.documentId ?? product?.id ?? product?.slug);
   const cartImage = (images?.[0] ?? product?.image ?? null) || undefined;
 
-  // Prezzo effettivo da passare al carrello (aziende → priceAziende)
   const effectivePrice = priceAziende ?? price;
 
   return (
@@ -406,10 +563,8 @@ export default async function ProductPage({
               <p className="mt-3 text-sm text-text/70 md:text-base">{shortDesc}</p>
             ) : null}
 
-            {/* ─── Prezzo ───────────────────────────────────────────────── */}
             <div className="mt-4">
               {priceAziende !== null ? (
-                // Prezzo riservato aziende
                 <div className="flex flex-col gap-1">
                   <div className="flex items-baseline gap-3">
                     <div className="text-3xl font-extrabold text-primary">
@@ -426,7 +581,6 @@ export default async function ProductPage({
                   ) : null}
                 </div>
               ) : price > 0 ? (
-                // Prezzo normale
                 <div className="flex items-baseline gap-3">
                   <div className="text-3xl font-extrabold">€ {price.toFixed(2)}</div>
                   {hasSale ? (
@@ -439,10 +593,7 @@ export default async function ProductPage({
             </div>
 
             <div className="mt-3 text-sm text-text/70">
-              Codice:{" "}
-              <span className="text-text">
-                {String(product.id ?? product.documentId ?? "—")}
-              </span>
+              Codice: <span className="text-text">{String(product.id ?? product.documentId ?? "—")}</span>
             </div>
 
             <div className="mt-4 rounded-2xl border border-border bg-background px-4 py-3">
@@ -468,7 +619,7 @@ export default async function ProductPage({
 
               <p className="mt-2 text-sm text-text/70">
                 {status === "in"
-                  ? "Spedizione veloce: prepariamo l&ordine appena confermato."
+                  ? "Spedizione veloce: prepariamo l'ordine appena confermato."
                   : status === "out"
                     ? "Puoi comunque salvare il prodotto e tornare più tardi."
                     : "La disponibilità verrà confermata durante l'ordine."}
@@ -540,19 +691,9 @@ export default async function ProductPage({
 
               {favId ? (
                 <div className="mt-3 text-xs text-text/60">
-                  Salva nei preferiti per ritrovarlo nell&area personale.
+                  Salva nei preferiti per ritrovarlo nell&apos;area personale.
                 </div>
               ) : null}
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-border bg-surface p-4">
-              <div className="text-sm font-extrabold">Acquisto senza pensieri</div>
-              <TrustRow />
-              <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
-                <Link href="/supporto" className="font-semibold text-link hover:text-link-hover">
-                  Hai bisogno di aiuto? Supporto clienti
-                </Link>
-              </div>
             </div>
           </div>
         </div>
@@ -560,10 +701,10 @@ export default async function ProductPage({
 
       <ProductTabs
         description={richTextToPlainText(product.description) || product.shortDescription || ""}
-        specs={Array.isArray(product.specs) ? product.specs : null}
+        specs={detailSpecs}
+        details={detailsText}
       />
 
-      {/* ─── Prodotti correlati ─────────────────────────────────────────── */}
       <section className="mt-12">
         <div className="flex items-end justify-between gap-3">
           <h2 className="text-xl font-extrabold">Ti suggeriamo anche…</h2>
@@ -588,8 +729,7 @@ export default async function ProductPage({
 
             const pPrice = toNumber(pRel?.price) ?? 0;
             const pCompare = toNumber(pRel?.compareAtPrice);
-            const pPriceAziende =
-              isBusiness ? toNumber(pRel?.priceAziende) : null;
+            const pPriceAziende = isBusiness ? toNumber(pRel?.priceAziende) : null;
 
             const relFavId = favoriteKey({
               documentId: pRel?.documentId,
@@ -624,7 +764,6 @@ export default async function ProductPage({
                   <div className="mt-3">
                     <div className="text-sm font-semibold line-clamp-2">{pRel.name}</div>
 
-                    {/* Prezzo correlati con supporto aziende */}
                     {pPriceAziende !== null && pPriceAziende > 0 ? (
                       <div className="mt-2 flex flex-col gap-0.5">
                         <div className="flex items-baseline gap-2">

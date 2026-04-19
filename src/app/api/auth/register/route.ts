@@ -5,20 +5,15 @@ import { sendVerificationEmail } from "@/lib/email";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const REGISTER_VERSION = "2026-03-02-v8";
+const REGISTER_VERSION = "2026-03-02-v9";
 const BODY_LIMIT = 32 * 1024;
 
-/* ------------------------------------------------------------------ */
-/*  Rate Limiter in-memory (IP-based)                                 */
-/* ------------------------------------------------------------------ */
-
 const ipAttempts = new Map<string, { count: number; resetAt: number }>();
-const RATE_WINDOW_MS = 15 * 60 * 1000; // 15 min
-const RATE_MAX = 5; // max 5 registrazioni per IP per finestra
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX = 5;
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
-  // Pulizia periodica voci scadute (ogni 100 richieste ca.)
   if (ipAttempts.size > 500) {
     for (const [k, v] of ipAttempts) {
       if (now > v.resetAt) ipAttempts.delete(k);
@@ -40,10 +35,6 @@ function getClientIp(req: Request): string {
   return "unknown";
 }
 
-/* ------------------------------------------------------------------ */
-/*  Strapi base URL                                                   */
-/* ------------------------------------------------------------------ */
-
 function strapiBaseUrl() {
   const raw =
     process.env.STRAPI_URL ||
@@ -63,12 +54,7 @@ function strapiBaseUrl() {
 }
 
 const STRAPI_SERVICE_TOKEN = process.env.STRAPI_API_TOKEN || "";
-
 const isDev = process.env.NODE_ENV === "development";
-
-/* ------------------------------------------------------------------ */
-/*  Security Headers                                                  */
-/* ------------------------------------------------------------------ */
 
 const SECURITY_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
@@ -81,10 +67,6 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 };
 
-/* ------------------------------------------------------------------ */
-/*  Helpers risposta JSON                                             */
-/* ------------------------------------------------------------------ */
-
 function jsonNoStore(data: any, status = 200) {
   return NextResponse.json(data, { status, headers: SECURITY_HEADERS });
 }
@@ -96,10 +78,6 @@ function safeJsonParse(text: string) {
     return null;
   }
 }
-
-/* ------------------------------------------------------------------ */
-/*  Validazioni input                                                 */
-/* ------------------------------------------------------------------ */
 
 function normalizeEmail(v: unknown) {
   return String(v ?? "").trim().toLowerCase();
@@ -134,20 +112,15 @@ function sanitizeEmailMaybe(v: unknown) {
   return isValidEmail(e) ? e : "";
 }
 
-// Sanitizza stringhe per prevenire injection
 function sanitizeText(v: unknown, max = 120): string {
   return String(v ?? "")
     .trim()
-    .replace(/[<>'"`;]/g, "")
+    .replace(/[<>'"\`;]/g, "")
     .slice(0, max);
 }
 
 const GENERIC_RECOVERY_MSG =
   "Se esiste un account associato a questa email, riceverai un messaggio con le istruzioni per recuperare l'accesso.";
-
-/* ------------------------------------------------------------------ */
-/*  Tipi                                                              */
-/* ------------------------------------------------------------------ */
 
 type Address = {
   address: string;
@@ -164,10 +137,6 @@ type CompanyFields = {
   sdi: string;
   billingAddress?: Address;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Address helpers                                                   */
-/* ------------------------------------------------------------------ */
 
 function capOk(cap: string) {
   const c = String(cap || "").replace(/\s+/g, "");
@@ -202,10 +171,6 @@ function validateAddress(a: Address): string | null {
   if (!a.country || a.country.length < 2) return "COUNTRY_INVALID";
   return null;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Fetch helpers (con retry e timeout)                               */
-/* ------------------------------------------------------------------ */
 
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
@@ -304,10 +269,6 @@ async function strapiPut(path: string, body: any, timeoutMs: number, token?: str
   return { res, data, text, url };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Deduplicazione errori Strapi                                      */
-/* ------------------------------------------------------------------ */
-
 function looksLikeAlreadyRegistered(status: number, strapiData: any, strapiText: string) {
   if (!(status === 400 || status === 409)) return false;
   const msg =
@@ -335,19 +296,11 @@ function looksLikeUniqueViolation(status: number, strapiData: any, strapiText: s
   return m.includes("unique") || m.includes("duplicate") || m.includes("already");
 }
 
-/* ------------------------------------------------------------------ */
-/*  Body reading limit                                                */
-/* ------------------------------------------------------------------ */
-
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   const raw = await req.text().catch(() => "");
   if (raw && raw.length > limitBytes) return { raw: "", tooLarge: true };
   return { raw, tooLarge: false };
 }
-
-/* ------------------------------------------------------------------ */
-/*  Cookie                                                            */
-/* ------------------------------------------------------------------ */
 
 function setAuthCookie(resp: NextResponse, jwt: string) {
   resp.cookies.set("tf_token", jwt, {
@@ -355,28 +308,55 @@ function setAuthCookie(resp: NextResponse, jwt: string) {
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7, // 7 giorni
+    maxAge: 60 * 60 * 24 * 7,
   });
 }
-
-/* ------------------------------------------------------------------ */
-/*  Mapping tipo cliente                                              */
-/* ------------------------------------------------------------------ */
 
 function toStrapiCustomerType(type: "PERSON" | "BUSINESS") {
   return type === "BUSINESS" ? "AZIENDE" : "PRIVATE";
 }
 
-/* ------------------------------------------------------------------ */
-/*  CustomerProfile + Azienda                                         */
-/* ------------------------------------------------------------------ */
+async function findCustomerProfileByUser(
+  userId: number,
+  timeoutMs: number,
+  token: string
+) {
+  const buildPath = (extra: Record<string, string> = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("pagination[pageSize]", "1");
+    qs.set("filters[user][id][$eq]", String(userId));
+    for (const [key, value] of Object.entries(extra)) {
+      qs.set(key, value);
+    }
+    return `/api/customer-profiles?${qs.toString()}`;
+  };
+
+  const attempts = [
+    buildPath(),
+    buildPath({ status: "draft" }),
+    buildPath({ publicationState: "preview" }),
+  ];
+
+  for (const path of attempts) {
+    const found = await strapiGet(path, timeoutMs, token);
+    const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
+    if (row) return row;
+  }
+
+  return null;
+}
+
+function extractEntityKeys(row: any) {
+  const id = row?.id ? String(row.id) : null;
+  const documentId = row?.documentId ? String(row.documentId) : null;
+  return { id, documentId };
+}
 
 async function ensureCustomerProfile(
   userId: number,
   firstName: string,
   lastName: string,
   type: "PERSON" | "BUSINESS",
-  _userJwt: string | undefined,
   shippingAddress: Address | null,
   billingAddress: Address | null,
   aziendeId: number | null
@@ -388,13 +368,12 @@ async function ensureCustomerProfile(
     lastName: lastName || "-",
     customerType: toStrapiCustomerType(type),
     user: userId,
-    emailVerified: false,
+    publishedAt: new Date().toISOString(),
     ...(shippingAddress ? { shippingAddress } : {}),
     ...(billingAddress ? { billingAddress } : {}),
     ...(aziendeId ? { azienda: aziendeId } : {}),
   };
 
-  // In produzione vogliamo usare SEMPRE il service token, non il JWT utente
   const tokenToUse = STRAPI_SERVICE_TOKEN;
   if (!tokenToUse) {
     if (isDev) {
@@ -416,6 +395,7 @@ async function ensureCustomerProfile(
     console.warn("[register] ensureCustomerProfile create", {
       ok: create.res.ok,
       status: create.res.status,
+      text: String(create.text ?? "").slice(0, 300),
     });
   }
 
@@ -424,39 +404,31 @@ async function ensureCustomerProfile(
     return false;
   }
 
-  // Profilo già esistente → UPDATE
-  const qs = new URLSearchParams();
-  qs.set("pagination[pageSize]", "1");
-  qs.set("filters[user][id][$eq]", String(userId));
-  qs.set("publicationState", "preview");
+  const row = await findCustomerProfileByUser(userId, TIMEOUT, tokenToUse);
+  if (!row) return false;
 
-  const found = await strapiGet(
-    `/api/customer-profiles?${qs.toString()}`,
-    TIMEOUT,
-    tokenToUse
-  );
+  const { id, documentId } = extractEntityKeys(row);
+  const candidatePaths = [
+    id ? `/api/customer-profiles/${encodeURIComponent(id)}` : null,
+    documentId ? `/api/customer-profiles/${encodeURIComponent(documentId)}` : null,
+  ].filter(Boolean) as string[];
 
-  const row = Array.isArray(found.data?.data) ? found.data.data[0] : null;
-  const id = row?.id ? String(row.id) : null;
-  const docId = row?.documentId ? String(row.documentId) : null;
-  const key = id || docId;
-  if (!key) return false;
+  for (const path of candidatePaths) {
+    const upd = await strapiPut(path, { data: patch }, TIMEOUT, tokenToUse);
 
-  const upd = await strapiPut(
-    `/api/customer-profiles/${encodeURIComponent(key)}?publicationState=preview`,
-    { data: patch },
-    TIMEOUT,
-    tokenToUse
-  );
+    if (isDev) {
+      console.warn("[register] ensureCustomerProfile update", {
+        path,
+        ok: upd.res.ok,
+        status: upd.res.status,
+        text: String(upd.text ?? "").slice(0, 300),
+      });
+    }
 
-  if (isDev) {
-    console.warn("[register] ensureCustomerProfile update", {
-      ok: upd.res.ok,
-      status: upd.res.status,
-    });
+    if (upd.res.ok) return true;
   }
 
-  return upd.res.ok;
+  return false;
 }
 
 async function createCompanyBestEffort(
@@ -497,9 +469,14 @@ async function createCompanyBestEffort(
   return null;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Handlers HTTP                                                     */
-/* ------------------------------------------------------------------ */
+function errorResponseWithOptionalAuthCookie(
+  payload: Record<string, any>,
+  jwt?: string
+) {
+  const response = jsonNoStore(payload, 200);
+  if (jwt) setAuthCookie(response, jwt);
+  return response;
+}
 
 export async function GET() {
   return jsonNoStore(
@@ -515,13 +492,11 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    // ✅ Content-Type check
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("application/json")) {
       return jsonNoStore({ ok: false, error: "UNSUPPORTED_CONTENT_TYPE" }, 415);
     }
 
-    // ✅ Rate limiting
     const clientIp = getClientIp(req);
     if (!checkRateLimit(clientIp)) {
       return jsonNoStore(
@@ -530,7 +505,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ Body size limit
     const { raw, tooLarge } = await readBodyWithLimit(req);
     if (tooLarge) {
       return jsonNoStore({ ok: false, error: "PAYLOAD_TOO_LARGE" }, 413);
@@ -611,7 +585,6 @@ export async function POST(req: Request) {
       const jwt = reg.data?.jwt as string | undefined;
       const userId = Number(reg.data?.user?.id ?? 0);
 
-      // ✅ Invio email di verifica (best-effort, non blocca la registrazione)
       try {
         const emailSent = await sendVerificationEmail(email);
         if (isDev) {
@@ -626,7 +599,6 @@ export async function POST(req: Request) {
       let profileCreated = false;
 
       if (userId > 0) {
-        // 1) Crea Azienda (se BUSINESS)
         let aziendeId: number | null = null;
         if (type === "BUSINESS") {
           try {
@@ -647,23 +619,35 @@ export async function POST(req: Request) {
           }
         }
 
-        // 2) Crea/aggiorna CustomerProfile
         try {
           profileCreated = await ensureCustomerProfile(
             userId,
             firstName,
             lastName,
             type,
-            jwt,
             ship,
             bill,
             aziendeId
           );
         } catch (e) {
           if (isDev) {
-            console.warn("[register] ensureCustomerProfile error (best-effort)", e);
+            console.warn("[register] ensureCustomerProfile error", e);
           }
         }
+      }
+
+      if (!profileCreated) {
+        return errorResponseWithOptionalAuthCookie(
+          {
+            ok: false,
+            error: "PROFILE_SETUP_FAILED",
+            loggedIn: Boolean(jwt),
+            profileCreated: false,
+            message:
+              "Account creato, ma il profilo non è stato inizializzato correttamente. Accedi e completa il profilo oppure contatta l'assistenza.",
+          },
+          jwt
+        );
       }
 
       const response = jsonNoStore(
@@ -672,7 +656,7 @@ export async function POST(req: Request) {
           loggedIn: Boolean(jwt),
           type,
           emailPending: true,
-          profileCreated,
+          profileCreated: true,
           message: "Account creato! Controlla la tua email per verificare l'account.",
         },
         200
@@ -682,13 +666,10 @@ export async function POST(req: Request) {
       return response;
     }
 
-    // Email già registrata → avvia flusso forgot-password
     if (looksLikeAlreadyRegistered(reg.res.status, reg.data, reg.text)) {
       try {
         await strapiPost("/api/auth/forgot-password", { email }, FORGOT_TIMEOUT);
-      } catch {
-        // best-effort
-      }
+      } catch {}
       return jsonNoStore(
         { ok: false, error: "CHECK_EMAIL", message: GENERIC_RECOVERY_MSG },
         200

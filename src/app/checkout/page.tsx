@@ -1,3 +1,4 @@
+// src/app/checkout/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,6 +16,29 @@ type Address = {
   province?: string;
   country: string;
   isDefault?: boolean;
+};
+
+type ProfilePayload = {
+  ok: boolean;
+  email?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  fullName?: string | null;
+  companyName?: string | null;
+  shippingAddress?: {
+    address: string;
+    city: string;
+    postalCode: string;
+    province: string;
+    country: string;
+  } | null;
+  billingAddress?: {
+    address: string;
+    city: string;
+    postalCode: string;
+    province: string;
+    country: string;
+  } | null;
 };
 
 const ADDR_KEY = "tf_addresses_v1";
@@ -35,6 +59,130 @@ function money(n: number) {
   return `€ ${x.toFixed(2)}`;
 }
 
+function normalizeProfileAddress(a: ProfilePayload["shippingAddress"]) {
+  if (!a || typeof a !== "object") return null;
+  const street = String(a.address ?? "").trim();
+  const city = String(a.city ?? "").trim();
+  const cap = String(a.postalCode ?? "").trim();
+  const province = String(a.province ?? "").trim();
+  const country = String(a.country ?? "IT").trim().toUpperCase() || "IT";
+  if (!street || !city || !cap) return null;
+  return { street, city, cap, province: province || undefined, country };
+}
+
+function profileFullName(profile: ProfilePayload) {
+  const explicit = String(profile.fullName ?? "").trim();
+  if (explicit) return explicit;
+
+  const company = String(profile.companyName ?? "").trim();
+  if (company) return company;
+
+  const firstName = String(profile.firstName ?? "").trim();
+  const lastName = String(profile.lastName ?? "").trim();
+  const person = `${firstName} ${lastName}`.trim();
+  if (person) return person;
+
+  return String(profile.email ?? "").trim();
+}
+
+function physicalSignature(a: Pick<Address, "street" | "cap" | "city" | "province" | "country">) {
+  return [a.street, a.cap, a.city, a.province ?? "", a.country]
+    .map((v) => String(v ?? "").trim().toLowerCase())
+    .join("|");
+}
+
+function sameAddress(a: Address, b: Address) {
+  return physicalSignature(a) === physicalSignature(b);
+}
+
+function enrichAddress(addr: Address, fallbackFullName: string): Address {
+  return {
+    ...addr,
+    fullName: String(addr.fullName ?? "").trim() || fallbackFullName || "Indirizzo",
+  };
+}
+
+function buildProfileAddresses(profile: ProfilePayload): Address[] {
+  const result: Address[] = [];
+  const fullName = profileFullName(profile) || "Indirizzo";
+
+  const shipping = normalizeProfileAddress(profile.shippingAddress);
+  const billing = normalizeProfileAddress(profile.billingAddress);
+
+  if (shipping) {
+    result.push({
+      id: "profile-shipping",
+      label: "Spedizione",
+      fullName,
+      street: shipping.street,
+      cap: shipping.cap,
+      city: shipping.city,
+      province: shipping.province,
+      country: shipping.country,
+      isDefault: true,
+    });
+  }
+
+  if (billing) {
+    const billingAddress: Address = {
+      id: "profile-billing",
+      label: "Fatturazione",
+      fullName,
+      street: billing.street,
+      cap: billing.cap,
+      city: billing.city,
+      province: billing.province,
+      country: billing.country,
+      isDefault: !shipping,
+    };
+
+    if (!result.some((addr) => sameAddress(addr, billingAddress))) {
+      result.push(billingAddress);
+    }
+  }
+
+  return result;
+}
+
+function mergeAddresses(primary: Address[], secondary: Address[], fallbackFullName: string): Address[] {
+  const result: Address[] = [];
+  const byPhysical = new Map<string, number>();
+
+  for (const addr of primary) {
+    const enriched = enrichAddress(addr, fallbackFullName);
+    const sig = physicalSignature(enriched);
+    byPhysical.set(sig, result.length);
+    result.push(enriched);
+  }
+
+  for (const addr of secondary) {
+    const enriched = enrichAddress(addr, fallbackFullName);
+    const sig = physicalSignature(enriched);
+    const idx = byPhysical.get(sig);
+
+    if (idx == null) {
+      byPhysical.set(sig, result.length);
+      result.push(enriched);
+      continue;
+    }
+
+    const current = result[idx];
+    result[idx] = {
+      ...current,
+      fullName: current.fullName || enriched.fullName,
+      phone: current.phone || enriched.phone,
+      label: current.label || enriched.label,
+      isDefault: Boolean(current.isDefault || enriched.isDefault),
+    };
+  }
+
+  if (!result.some((a) => a.isDefault) && result[0]) {
+    result[0] = { ...result[0], isDefault: true };
+  }
+
+  return result;
+}
+
 export default function CheckoutPage() {
   const { items, summary } = useCart();
 
@@ -42,15 +190,68 @@ export default function CheckoutPage() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [bootLoading, setBootLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    const arr = safeParse(typeof window !== "undefined" ? window.localStorage.getItem(ADDR_KEY) : null);
-    setAddresses(arr);
+    let cancelled = false;
 
-    const def = arr.find((a) => a.isDefault);
-    if (def?.id) setSelectedId(def.id);
-    else if (arr[0]?.id) setSelectedId(arr[0].id);
+    (async () => {
+      const localAddresses =
+        typeof window !== "undefined"
+          ? safeParse(window.localStorage.getItem(ADDR_KEY))
+          : [];
+
+      let merged = localAddresses;
+      let nextEmail = "";
+      let fallbackFullName = "";
+
+      try {
+        const res = await fetch("/api/account/profile", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "include",
+          headers: { Accept: "application/json" },
+        });
+
+        const data = (await res.json().catch(() => null)) as ProfilePayload | null;
+
+        if (res.ok && data?.ok) {
+          fallbackFullName = profileFullName(data);
+          const profileAddresses = buildProfileAddresses(data);
+          merged = mergeAddresses(profileAddresses, localAddresses, fallbackFullName);
+          nextEmail = String(data.email ?? "").trim();
+        } else if (localAddresses.length > 0) {
+          merged = mergeAddresses([], localAddresses, "");
+        }
+      } catch {
+        if (localAddresses.length > 0) {
+          merged = mergeAddresses([], localAddresses, "");
+        }
+      }
+
+      if (cancelled) return;
+
+      setAddresses(merged);
+
+      const selected =
+        merged.find((a) => a.isDefault) ||
+        merged[0] ||
+        null;
+
+      setSelectedId(selected?.id ?? "");
+      if (nextEmail) setEmail(nextEmail);
+
+      if (typeof window !== "undefined" && merged.length > 0) {
+        window.localStorage.setItem(ADDR_KEY, JSON.stringify(merged));
+      }
+
+      setBootLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const selected = useMemo(
@@ -129,9 +330,15 @@ export default function CheckoutPage() {
               </Link>
             </div>
 
-            {addresses.length === 0 ? (
+            {bootLoading ? (
+              <div className="mt-3 text-sm text-text/70">Caricamento indirizzi…</div>
+            ) : addresses.length === 0 ? (
               <div className="mt-3 text-sm text-text/70">
                 Nessun indirizzo salvato. Vai su{" "}
+                <Link href="/account/profilo" className="font-semibold text-link hover:text-link-hover">
+                  /account/profilo
+                </Link>{" "}
+                oppure{" "}
                 <Link href="/account/indirizzi" className="font-semibold text-link hover:text-link-hover">
                   /account/indirizzi
                 </Link>{" "}
@@ -163,12 +370,6 @@ export default function CheckoutPage() {
                         {a.province ? ` (${a.province})` : ""}
                         <br />
                         {a.country}
-                        {a.phone ? (
-                          <>
-                            <br />
-                            Tel: {a.phone}
-                          </>
-                        ) : null}
                       </div>
                     </div>
                   </label>
@@ -178,9 +379,9 @@ export default function CheckoutPage() {
           </div>
 
           <div className="mt-4 rounded-2xl border border-border bg-background p-5">
-            <div className="text-sm font-extrabold">Email (opzionale)</div>
+            <div className="text-sm font-extrabold">Email</div>
             <p className="mt-1 text-sm text-text/70">
-              Se inserisci l’email, Stripe può inviare ricevuta e aggiornamenti.
+              Usiamo l’email del tuo account se disponibile. Puoi modificarla prima del pagamento.
             </p>
 
             <input

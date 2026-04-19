@@ -7,10 +7,6 @@ export const dynamic = "force-dynamic";
 const BODY_LIMIT = 32 * 1024;
 const isDev = process.env.NODE_ENV === "development";
 
-/* ------------------------------------------------------------------ */
-/*  Config Strapi                                                      */
-/* ------------------------------------------------------------------ */
-
 function strapiBaseUrl() {
   const raw =
     process.env.STRAPI_URL ||
@@ -29,7 +25,6 @@ function strapiBaseUrl() {
   return base;
 }
 
-// Token di servizio: solo env "private", mai NEXT_PUBLIC_.
 const STRAPI_SERVICE_TOKEN =
   process.env.STRAPI_API_TOKEN || process.env.STRAPI_TOKEN || "";
 
@@ -50,10 +45,6 @@ function safeJsonParse(text: string) {
     return null;
   }
 }
-
-/* ------------------------------------------------------------------ */
-/*  Sanitizzazione e validazione                                      */
-/* ------------------------------------------------------------------ */
 
 function sanitize(input: unknown, maxLen = 160) {
   const raw = String(input ?? "");
@@ -83,10 +74,24 @@ function normalizeCustomerType(v: any): "PRIVATE" | "BUSINESS" {
   return s === "BUSINESS" || s === "AZIENDE" ? "BUSINESS" : "PRIVATE";
 }
 
-// Rimuove il placeholder "-" che usiamo per soddisfare campi required in Strapi.
 function cleanPlaceholder(v: unknown): string {
   const s = String(v ?? "").trim();
   return s === "-" ? "" : s;
+}
+
+function buildFullName(
+  firstName: unknown,
+  lastName: unknown,
+  companyName: unknown,
+  email: string
+) {
+  const company = String(companyName ?? "").trim();
+  if (company) return company;
+
+  const first = cleanPlaceholder(firstName);
+  const last = cleanPlaceholder(lastName);
+  const full = `${first} ${last}`.trim();
+  return full || email || "";
 }
 
 type Address = {
@@ -131,10 +136,6 @@ function validateAddressIfAny(a: Address) {
   return { ok: true as const, msg: "" };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Body limit + cookie                                               */
-/* ------------------------------------------------------------------ */
-
 async function readBodyWithLimit(req: Request, limitBytes = BODY_LIMIT) {
   const raw = await req.text().catch(() => "");
   if (raw && raw.length > limitBytes) return { raw: "", tooLarge: true };
@@ -156,10 +157,6 @@ function getJwtFromReq(req: Request) {
     ""
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Fetch helpers con retry                                           */
-/* ------------------------------------------------------------------ */
 
 function isRetryableFetchError(e: any) {
   const code = e?.cause?.code || e?.code;
@@ -220,10 +217,6 @@ async function fetchJson(
   return { res, json: safeJsonParse(text), text };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Helpers Strapi (user, profile, azienda)                           */
-/* ------------------------------------------------------------------ */
-
 async function getUserFromJwt(base: string, jwt: string) {
   const me = await fetchJson(
     `${base}/api/users/me`,
@@ -276,85 +269,110 @@ function serviceHeaders() {
 }
 
 async function findCustomerProfile(base: string, userId: number) {
-  const qs = new URLSearchParams();
-  qs.set("filters[user][id][$eq]", String(userId));
-  qs.set("populate[0]", "shippingAddress");
-  qs.set("populate[1]", "billingAddress");
-  qs.set("populate[2]", "azienda");
-  qs.set("nested", "true");
-  qs.set("pagination[pageSize]", "1");
-
-  const r = await fetchJson(
-    `${base}/api/customer-profiles?${qs.toString()}`,
-    { method: "GET", headers: serviceHeaders() },
-    12_000
-  );
-
-  let row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-
-  // Fallback: scan manuale se il filtro non funziona (Strapi v5)
-  if (!row) {
-    const allQs = new URLSearchParams();
-    allQs.set("populate[0]", "shippingAddress");
-    allQs.set("populate[1]", "billingAddress");
-    allQs.set("populate[2]", "azienda");
-    allQs.set("populate[3]", "user");
-    allQs.set("pagination[pageSize]", "50");
-
-    const allR = await fetchJson(
-      `${base}/api/customer-profiles?${allQs.toString()}`,
-      { method: "GET", headers: serviceHeaders() },
-      12_000
-    );
-
-    const allRows = Array.isArray(allR.json?.data) ? allR.json.data : [];
-    row = allRows.find((r: any) => {
-      const a = extractAttrs(r);
-      const u = a?.user?.data ?? a?.user ?? null;
-      const uid = u?.id ?? u?.data?.id ?? null;
-      return Number(uid) === userId;
-    }) ?? null;
-  }
-
-  if (!row) return null;
-  const { id, documentId } = pickKey(row);
-  if (!id && !documentId) return null;
-  return { row, id, documentId, attrs: extractAttrs(row) };
-}
-
-
-
-// Azienda legata all'utente (relazione users_permissions_users)
-async function findAziendaByUserId(base: string, userId: number) {
-  // prova più varianti di relazione
-  for (const filterKey of [
-    "filters[users_permissions_users][id][$eq]",
-    "filters[user][id][$eq]",
-    "filters[users][id][$eq]",
-  ]) {
+  const buildUrl = (extra: Record<string, string> = {}, includeUser = false) => {
     const qs = new URLSearchParams();
+    qs.set("filters[user][id][$eq]", String(userId));
     qs.set("pagination[pageSize]", "1");
-    qs.set("populate", "billingAddress");
-    qs.set(filterKey, String(userId));
+    qs.set("populate[0]", "shippingAddress");
+    qs.set("populate[1]", "billingAddress");
+    qs.set("populate[2]", "azienda");
+    if (includeUser) qs.set("populate[3]", "user");
+    for (const [key, value] of Object.entries(extra)) {
+      qs.set(key, value);
+    }
+    return `${base}/api/customer-profiles?${qs.toString()}`;
+  };
+
+  const attempts = [
+    buildUrl(),
+    buildUrl({ status: "draft" }),
+    buildUrl({ publicationState: "preview" }),
+  ];
+
+  for (const url of attempts) {
     const r = await fetchJson(
-      `${base}/api/aziendes?${qs.toString()}`,
+      url,
       { method: "GET", headers: serviceHeaders() },
       12_000
     );
     const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
     if (row) {
       const { id, documentId } = pickKey(row);
-      if (id || documentId) return { id, documentId, attrs: extractAttrs(row) };
+      if (id || documentId) return { row, id, documentId, attrs: extractAttrs(row) };
     }
   }
+
+  const scanAttempts = [
+    buildUrl({}, true),
+    buildUrl({ status: "draft" }, true),
+    buildUrl({ publicationState: "preview" }, true),
+  ];
+
+  for (const url of scanAttempts) {
+    const allR = await fetchJson(
+      url.replace("pagination%5BpageSize%5D=1", "pagination%5BpageSize%5D=50"),
+      { method: "GET", headers: serviceHeaders() },
+      12_000
+    );
+
+    const allRows = Array.isArray(allR.json?.data) ? allR.json.data : [];
+    const row =
+      allRows.find((r: any) => {
+        const a = extractAttrs(r);
+        const u = a?.user?.data ?? a?.user ?? null;
+        const uid = u?.id ?? u?.data?.id ?? null;
+        return Number(uid) === userId;
+      }) ?? null;
+
+    if (row) {
+      const { id, documentId } = pickKey(row);
+      if (id || documentId) return { row, id, documentId, attrs: extractAttrs(row) };
+    }
+  }
+
+  return null;
+}
+
+async function findAziendaByUserId(base: string, userId: number) {
+  const filters = [
+    "filters[users_permissions_users][id][$eq]",
+    "filters[user][id][$eq]",
+    "filters[users][id][$eq]",
+  ];
+
+  const extrasList = [{}, { status: "draft" }, { publicationState: "preview" }];
+
+  for (const filterKey of filters) {
+    for (const extras of extrasList) {
+      const qs = new URLSearchParams();
+      qs.set("pagination[pageSize]", "1");
+      qs.set("populate", "billingAddress");
+      qs.set(filterKey, String(userId));
+      for (const [key, value] of Object.entries(extras)) {
+        qs.set(key, value);
+      }
+
+      const r = await fetchJson(
+        `${base}/api/aziendes?${qs.toString()}`,
+        { method: "GET", headers: serviceHeaders() },
+        12_000
+      );
+      const row = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+      if (row) {
+        const { id, documentId } = pickKey(row);
+        if (id || documentId) return { id, documentId, attrs: extractAttrs(row) };
+      }
+    }
+  }
+
   return null;
 }
 
 function extractAziendaFromProfileAttrs(profileAttrs: any): any | null {
   const az = profileAttrs?.azienda;
   if (!az) return null;
-  if (az?.data) return extractAttrs(az.data); // Strapi v4
-  if (typeof az === "object") return extractAttrs(az); // Strapi v5
+  if (az?.data) return extractAttrs(az.data);
+  if (typeof az === "object") return extractAttrs(az);
   return null;
 }
 
@@ -427,10 +445,6 @@ async function updateAzienda(base: string, key: string, patch: any) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Costruzione risposta profilo                                      */
-/* ------------------------------------------------------------------ */
-
 function buildProfileResponse(
   attrs: any,
   aziendaAttrs: any | null,
@@ -446,31 +460,30 @@ function buildProfileResponse(
     ? "BUSINESS"
     : normalizeCustomerType(attrs.customerType);
 
+  const firstName = cleanPlaceholder(attrs.firstName ?? fallback.firstName ?? "");
+  const lastName = cleanPlaceholder(attrs.lastName ?? fallback.lastName ?? "");
+  const companyName = String(aziendaAttrs?.companyName ?? "");
+
   return {
     ok: true,
     exists: true,
     email,
     customerType: ct as "PRIVATE" | "BUSINESS",
-    firstName: cleanPlaceholder(attrs.firstName ?? fallback.firstName ?? ""),
-    lastName: cleanPlaceholder(attrs.lastName ?? fallback.lastName ?? ""),
-    
-    // Dati aziendali da Aziende
-    companyName: String(aziendaAttrs?.companyName ?? ""),
+    firstName,
+    lastName,
+    fullName: buildFullName(firstName, lastName, companyName, email),
+    companyName,
     vatNumber: String(aziendaAttrs?.vatNumber ?? ""),
     pec: String(aziendaAttrs?.pec ?? ""),
     sdi: String(aziendaAttrs?.sdi ?? ""),
-    
-    // ✅ Indirizzi: fallback da Aziende.billingAddress se CustomerProfile è vuoto
     shippingAddress: attrs.shippingAddress ?? fallback.shippingAddress ?? null,
-    billingAddress: attrs.billingAddress ?? 
-                     normalizeAddress(aziendaAttrs?.billingAddress) ?? 
-                     fallback.billingAddress ?? null,
+    billingAddress:
+      attrs.billingAddress ??
+      (aziendaAttrs?.billingAddress ? normalizeAddress(aziendaAttrs.billingAddress) : null) ??
+      fallback.billingAddress ??
+      null,
   };
 }
-
-/* ------------------------------------------------------------------ */
-/*  Handlers HTTP                                                     */
-/* ------------------------------------------------------------------ */
 
 export async function GET(req: Request) {
   const jwt = getJwtFromReq(req);
@@ -484,22 +497,6 @@ export async function GET(req: Request) {
 
   const profile = await findCustomerProfile(base, me.id);
 
-
-  // DEBUG TEMPORANEO - rimuovere dopo fix
-// debug: prova query senza filtro per vedere se ci sono record
-const debugAll = await fetchJson(
-  `${base}/api/customer-profiles?pagination[pageSize]=5`,
-  { method: "GET", headers: serviceHeaders() },
-  12_000
-);
-console.log("[findCustomerProfile] DEBUG ALL records count:", 
-  debugAll.json?.data?.length ?? 0,
-  "status:", debugAll.res.status,
-  "sample:", JSON.stringify(debugAll.json?.data?.[0])?.slice(0, 400)
-);
-
-
-  // Carica eventuale Azienda (prima da relazione, poi da query diretta)
   let aziendaAttrs: any = null;
   if (profile) {
     aziendaAttrs = extractAziendaFromProfileAttrs(profile.attrs);
@@ -510,7 +507,7 @@ console.log("[findCustomerProfile] DEBUG ALL records count:",
   }
 
   if (!profile) {
-    // Nessun CustomerProfile salvato ancora
+    const companyName = String(aziendaAttrs?.companyName ?? "");
     return jsonNoStore(
       {
         ok: true,
@@ -519,12 +516,15 @@ console.log("[findCustomerProfile] DEBUG ALL records count:",
         customerType: aziendaAttrs ? "BUSINESS" : "PRIVATE",
         firstName: "",
         lastName: "",
-        companyName: String(aziendaAttrs?.companyName ?? ""),
+        fullName: buildFullName("", "", companyName, me.email),
+        companyName,
         vatNumber: String(aziendaAttrs?.vatNumber ?? ""),
         pec: String(aziendaAttrs?.pec ?? ""),
         sdi: String(aziendaAttrs?.sdi ?? ""),
         shippingAddress: null,
-        billingAddress: null,
+        billingAddress: aziendaAttrs?.billingAddress
+          ? normalizeAddress(aziendaAttrs.billingAddress)
+          : null,
       },
       200
     );
@@ -581,8 +581,7 @@ export async function PUT(req: Request) {
       400
     );
 
-  // Carica profilo + azienda
-  const [profile, azienda] = await Promise.all([
+    const [profile, azienda] = await Promise.all([
     findCustomerProfile(base, me.id),
     findAziendaByUserId(base, me.id),
   ]);
@@ -590,7 +589,6 @@ export async function PUT(req: Request) {
   const aziendaKey = azienda?.id || azienda?.documentId || null;
   const hasBusiness = Boolean(aziendaKey);
 
-  // Se esiste Azienda → trattiamo come BUSINESS e permettiamo update dei 4 campi
   if (hasBusiness) {
     const companyName = sanitize(body?.companyName, 140);
     const vatNumber = sanitize(body?.vatNumber, 40);
@@ -677,7 +675,6 @@ export async function PUT(req: Request) {
     );
   }
 
-  // Utente PRIVATE: nessuna azienda da aggiornare
   const patch: any = {
     firstName,
     lastName,

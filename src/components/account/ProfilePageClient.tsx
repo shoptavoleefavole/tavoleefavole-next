@@ -26,12 +26,11 @@ type ProfilePayload = {
   customerType?: "PRIVATE" | "BUSINESS";
   firstName?: string | null;
   lastName?: string | null;
-  // campi azienda
+  fullName?: string | null;
   companyName?: string | null;
   vatNumber?: string | null;
   pec?: string | null;
   sdi?: string | null;
-  // indirizzi
   shippingAddress?: Address | null;
   billingAddress?: Address | null;
   error?: string;
@@ -134,10 +133,6 @@ function applyAddressFromServer(
   return incN;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Campo riutilizzabile                                              */
-/* ------------------------------------------------------------------ */
-
 function Field(props: {
   label: string;
   value: string;
@@ -183,10 +178,6 @@ function Field(props: {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Componente principale                                             */
-/* ------------------------------------------------------------------ */
-
 export default function ProfilePageClient() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -198,7 +189,6 @@ export default function ProfilePageClient() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  // dati azienda (solo se BUSINESS)
   const [companyName, setCompanyName] = useState("");
   const [vatNumber, setVatNumber] = useState("");
   const [pec, setPec] = useState("");
@@ -268,11 +258,9 @@ export default function ProfilePageClient() {
     billVal.ok &&
     !saving;
 
-  // Se l'utente spunta "coincide con spedizione", copia i valori
   useEffect(() => {
     if (!didLoadRef.current) return;
     if (sameAsShipping) setBillingAddress(shippingAddress);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shippingAddress, sameAsShipping]);
 
   const applyProfileNonDestructive = useCallback((data: ProfilePayload) => {
@@ -341,11 +329,9 @@ export default function ProfilePageClient() {
       if (!data?.ok) return;
       applyProfileNonDestructive(data);
     } catch {
-      // best-effort
     }
   }, [applyProfileNonDestructive]);
 
-  // Caricamento iniziale
   useEffect(() => {
     let canceled = false;
 
@@ -558,7 +544,6 @@ export default function ProfilePageClient() {
       </p>
 
       <form onSubmit={onSave} className="mt-6 space-y-6" noValidate>
-        {/* Dati azienda (solo BUSINESS) */}
         {isBusiness && (
           <section className="rounded-2xl border border-border bg-white p-5">
             <h2 className="text-lg font-bold">Dati azienda</h2>
@@ -627,7 +612,6 @@ export default function ProfilePageClient() {
           </section>
         )}
 
-        {/* Dati account */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Dati account</h2>
 
@@ -669,7 +653,6 @@ export default function ProfilePageClient() {
           </p>
         </section>
 
-        {/* Indirizzo di spedizione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <h2 className="text-lg font-bold">Indirizzo di spedizione</h2>
 
@@ -729,7 +712,6 @@ export default function ProfilePageClient() {
           )}
         </section>
 
-        {/* Dati di fatturazione */}
         <section className="rounded-2xl border border-border bg-white p-5">
           <div className="flex items-start justify-between gap-3">
             <h2 className="text-lg font-bold">Dati di fatturazione</h2>

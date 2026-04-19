@@ -7,15 +7,16 @@ type Spec = { label: string; value: string };
 export default function ProductTabs({
   description,
   specs,
+  details,
 }: {
   description?: string | null;
   specs?: Spec[] | null;
+  details?: string | null;
 }) {
   const tabs = useMemo(
     () => [
       { key: "descrizione", label: "Descrizione" },
-      { key: "caratteristiche", label: "Caratteristiche" },
-      { key: "spedizione", label: "Spedizione e resi" },
+      { key: "dettagli", label: "Dettagli prodotto" },
     ],
     []
   );
@@ -27,6 +28,7 @@ export default function ProductTabs({
       <div className="flex flex-wrap gap-2 border-b border-border pb-3">
         {tabs.map((t) => {
           const on = t.key === active;
+
           return (
             <button
               key={t.key}
@@ -53,7 +55,7 @@ export default function ProductTabs({
           </div>
         )}
 
-        {active === "caratteristiche" && (
+        {active === "dettagli" && (
           <>
             {specs && specs.length ? (
               <ul className="divide-y divide-border">
@@ -64,20 +66,14 @@ export default function ProductTabs({
                   </li>
                 ))}
               </ul>
+            ) : details ? (
+              <div className="prose prose-sm max-w-none whitespace-pre-line">
+                <p className="text-sm leading-relaxed text-text/80">{details}</p>
+              </div>
             ) : (
-              <p className="text-sm text-text/70">Caratteristiche non disponibili.</p>
+              <p className="text-sm text-text/70">Dettagli prodotto non disponibili.</p>
             )}
           </>
-        )}
-
-        {active === "spedizione" && (
-          <div className="text-sm leading-relaxed text-text/80">
-            <ul className="list-disc space-y-2 pl-5">
-              <li>Spedizione dal nostro magazzino.</li>
-              <li>Imballo protetto e tracciamento ordine.</li>
-              <li>Reso secondo le condizioni del sito.</li>
-            </ul>
-          </div>
         )}
       </div>
     </section>

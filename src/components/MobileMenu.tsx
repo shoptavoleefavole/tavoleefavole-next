@@ -252,15 +252,27 @@ export default function MobileMenu({
           <Link href="/spedizioni" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
             Spedizioni
           </Link>
-          <Link href="/resi-rimborsi" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
+          <Link href="/resi" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
             Resi &amp; rimborsi
           </Link>
-          <Link href="/privacy" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
+          <a
+            href="https://www.iubenda.com/privacy-policy/47702140"
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={onClose}
+            className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2"
+          >
             Privacy
-          </Link>
-          <Link href="/cookie" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
-            Cookie
-          </Link>
+          </a>
+          <a
+            href="https://www.iubenda.com/privacy-policy/47702140/cookie-policy"
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={onClose}
+            className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2"
+          >
+            Cookie Policy
+          </a>
           <Link href="/termini" onClick={onClose} className="block rounded-xl px-3 py-2 text-sm hover:bg-surface-2">
             Termini e condizioni
           </Link>

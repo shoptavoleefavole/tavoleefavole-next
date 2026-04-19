@@ -7,7 +7,6 @@ import { cookies } from "next/headers";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { getAvailability } from "@/lib/inventory.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,6 +54,22 @@ function toInt(v: unknown, fallback: number) {
   if (!Number.isFinite(n)) return fallback;
   const x = Math.floor(n);
   return x > 0 ? x : fallback;
+}
+
+function toIntOrNull(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
+  if (trackInventory === false) return true;
+
+  const qty = toIntOrNull(stockQty);
+  if (qty !== null) return qty > 0;
+
+  if (typeof fallbackInStock === "boolean") return fallbackInStock;
+
+  return true;
 }
 
 function absUrl(base: string, maybeUrl: string | null | undefined) {
@@ -148,6 +163,8 @@ function normalizeStrapiProduct(row: any) {
     compareAtPrice: a?.compareAtPrice ?? null,
     shortDescription: String(a?.shortDescription ?? ""),
     inStock: a?.inStock ?? undefined,
+    stockQty: toIntOrNull(a?.stockQty),
+    trackInventory: typeof a?.trackInventory === "boolean" ? a.trackInventory : null,
     variants,
     image: imageUrl,
     imageUrl,
@@ -419,30 +436,12 @@ export default async function CatalogoPage({
     pagination = res2.pagination;
   }
 
-  const skus: string[] = Array.from(
-    new Set(
-      items
-        .map((p: any) => getDefaultSku(p))
-        .filter((x: unknown): x is string => typeof x === "string" && x.length > 0)
-    )
-  );
-
-  let bySku: Record<string, any> = {};
-  try {
-    const availability = skus.length ? await getAvailability({ skus, warehouse: "MAIN" }) : null;
-    bySku = (availability as any)?.data?.MAIN ?? {};
-  } catch {
-    bySku = {};
-  }
-
   const itemsWithStock = items.map((p: any) => {
     const sku = getDefaultSku(p);
-    const row = sku ? bySku?.[sku] ?? null : null;
-    const available = Number(row?.available ?? 0);
+
     return {
       ...p,
-      inStock: sku ? available > 0 : p?.inStock,
-      inventory: row,
+      inStock: computeInStock(p?.stockQty, p?.trackInventory, p?.inStock),
       sku,
       priceAziende: isBusiness ? (p?.priceAziende ?? null) : null,
     };

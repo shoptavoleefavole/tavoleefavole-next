@@ -57,6 +57,22 @@ function safeStr(v: unknown, fallback = "") {
   return s || fallback;
 }
 
+function toIntOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
+  if (trackInventory === false) return true;
+
+  const qty = toIntOrNull(stockQty);
+  if (qty !== null) return qty > 0;
+
+  if (typeof fallbackInStock === "boolean") return fallbackInStock;
+
+  return true;
+}
+
 function normalizedStrapiBaseUrl() {
   let base = String(STRAPI_URL || "").trim().replace(/\/+$/, "");
   if (!base) return "";
@@ -252,8 +268,8 @@ function normalizeProduct(row: any, base: string) {
     images: images.length ? images : undefined,
     image: images[0] || undefined,
     variants: variants.length ? variants : undefined,
-    stockQty: a?.stockQty ?? null,
-    trackInventory: a?.trackInventory ?? null,
+    stockQty: toIntOrNull(a?.stockQty),
+    trackInventory: typeof a?.trackInventory === "boolean" ? a.trackInventory : null,
     createdAt: a?.createdAt ?? row?.createdAt ?? null,
   };
 }
@@ -384,29 +400,13 @@ export default async function MacroSubPage({
     fetchProductsBySub(macroSlug, subSlug).catch(() => []),
   ]);
 
-  const skus = Array.from(
-    new Set(
-      items
-        .map((it: any) => getDefaultSku(it))
-        .filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
-    )
-  );
-
-  const availability = await safeGetAvailabilityOrNull(skus);
-  const bySku = (availability as any)?.data?.MAIN ?? {};
-
   const itemsWithStock = items.map((it: any) => {
     const sku = getDefaultSku(it);
-    const row = sku ? (bySku?.[sku] ?? null) : null;
-    const available = row ? Number(row.available) : Number.NaN;
-    const known = !!row && Number.isFinite(available);
 
     return {
       ...it,
-      inStock: sku ? (known ? available > 0 : true) : Boolean(it?.inStock ?? true),
-      inventory: row,
+      inStock: computeInStock(it?.stockQty, it?.trackInventory, it?.inStock),
       sku,
-      // priceAziende visibile SOLO se utente verificato BUSINESS
       priceAziende: isBusiness ? (it?.priceAziende ?? null) : null,
     };
   });

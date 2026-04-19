@@ -167,17 +167,26 @@ export default function ContattiPage() {
 
           <p className="mt-6 text-xs text-text/60">
             Per info su privacy e cookie visita{" "}
-            <Link className="text-link hover:text-link-hover font-semibold" href="/privacy-policy">
+            <a 
+              href="https://www.iubenda.com/privacy-policy/47702140" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-link hover:text-link-hover font-semibold"
+            >
               Privacy Policy
-            </Link>{" "}
+            </a>{" "}
             e{" "}
-            <Link className="text-link hover:text-link-hover font-semibold" href="/cookie-policy">
+            <a 
+              href="https://www.iubenda.com/privacy-policy/47702140/cookie-policy" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-link hover:text-link-hover font-semibold"
+            >
               Cookie Policy
-            </Link>
+            </a>
             .
           </p>
         </div>
-
         {/* Mappa */}
         <div className="lg:col-span-2 overflow-hidden rounded-3xl border border-border bg-background">
           <div className="p-6">

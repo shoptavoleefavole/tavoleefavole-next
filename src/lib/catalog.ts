@@ -67,6 +67,11 @@ function toNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function toIntOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
 function titleFromSlug(slug: string) {
   return slug
     .split("-")
@@ -233,6 +238,7 @@ function normalizeProduct(row: AnyObj): Product {
     shortDescription: (a as any)?.shortDescription ?? "",
     description: (a as any)?.description ?? null,
     specs: (a as any)?.specs ?? null,
+    productDetails: (a as any)?.productDetails ?? null,
     inStock: typeof (a as any)?.inStock === "boolean" ? (a as any).inStock : undefined,
     isNew: Boolean((a as any)?.isNew ?? false),
 
@@ -250,7 +256,7 @@ function normalizeProduct(row: AnyObj): Product {
     seoDescription: (a as any)?.seoDescription ?? null,
     seoImage: imagesFromSeo?.[0] ?? null,
 
-    stockQty: typeof (a as any)?.stockQty === "number" ? (a as any).stockQty : null,
+    stockQty: toIntOrNull((a as any)?.stockQty),
     trackInventory: typeof (a as any)?.trackInventory === "boolean" ? (a as any).trackInventory : null,
     aziendaDiscountEligible:
       typeof (a as any)?.aziendaDiscountEligible === "boolean"

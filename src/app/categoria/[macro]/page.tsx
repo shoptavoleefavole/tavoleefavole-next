@@ -6,7 +6,6 @@ import { cookies } from "next/headers";
 
 import ProductsGridWithFilters from "@/components/catalog/ProductsGridWithFilters";
 import Breadcrumbs from "@/components/Breadcrumbs";
-import { getAvailability } from "@/lib/inventory.server";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -93,6 +92,17 @@ function toNumberOrNull(v: unknown): number | null {
 function toIntOrNull(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
+  if (trackInventory === false) return true;
+
+  const qty = toIntOrNull(stockQty);
+  if (qty !== null) return qty > 0;
+
+  if (typeof fallbackInStock === "boolean") return fallbackInStock;
+
+  return true;
 }
 
 async function fetchWithTimeout(
@@ -424,59 +434,13 @@ export default async function MacroPage({
   const prodRes = await fetchProductsByMacro(macroSlug);
   const items = prodRes.items ?? [];
 
-  const needsExternalAvailability = items.some((it: any) => {
-    const track = it?.trackInventory !== false;
-    const hasQty = typeof it?.stockQty === "number";
-    return track && !hasQty;
-  });
-
-  const skus = needsExternalAvailability
-    ? Array.from(
-        new Set(
-          items
-            .map((x: any) => getDefaultSku(x))
-            .filter(
-              (s: unknown): s is string => typeof s === "string" && s.length > 0
-            )
-        )
-      )
-    : [];
-
-  let bySku: any = {};
-  try {
-    const availability = skus.length
-      ? await getAvailability({ skus, warehouse: "MAIN" })
-      : null;
-    bySku = (availability as any)?.data?.MAIN ?? {};
-  } catch {
-    bySku = {};
-  }
-
   const itemsWithStock = items.map((it: any) => {
-    const track = it?.trackInventory !== false;
-    const hasQty = typeof it?.stockQty === "number";
     const sku = getDefaultSku(it);
-
-    const row = sku ? bySku?.[sku] ?? null : null;
-    const available = Number(row?.available ?? 0);
-
-    const computedInStock =
-      track === false
-        ? true
-        : hasQty
-          ? Number(it.stockQty) > 0
-          : sku
-            ? available > 0
-            : typeof it?.inStock === "boolean"
-              ? it.inStock
-              : true;
 
     return {
       ...it,
-      inStock: computedInStock,
-      inventory: row,
+      inStock: computeInStock(it?.stockQty, it?.trackInventory, it?.inStock),
       sku,
-      // SICUREZZA: priceAziende esposto SOLO se utente Business verificato server-side
       priceAziende: isBusiness ? (it?.priceAziende ?? null) : null,
     };
   });

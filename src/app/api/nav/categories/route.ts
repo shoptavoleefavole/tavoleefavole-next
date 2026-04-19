@@ -1,17 +1,7 @@
-// src/app/api/nav/categories/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/**
- * ✅ Fail-safe goals:
- * - Mai 500: risponde sempre 200 con { data: [...] }
- * - Timeout corto: non blocca UI quando Strapi è down/cold-start
- * - Cache in memoria + stale: se Strapi cade, serviamo l’ultima lista valida
- * - Output normalizzato: {slug,label,icon,subcategories[]} -> Header compatibile
- * - Fallback categorie: menu sempre navigabile anche senza Strapi
- */
 
 const STRAPI_URL =
   process.env.STRAPI_URL ||
@@ -27,15 +17,15 @@ const STRAPI_TOKEN_RAW =
 
 const STRAPI_TOKEN = String(STRAPI_TOKEN_RAW || "").trim();
 
-// ⏱️ più basso = UI più reattiva. Se Render è in cold start, preferiamo fallback.
 const TIMEOUT_MS = Number(process.env.NAV_CATEGORIES_TIMEOUT_MS ?? 5500);
 
-// Cache: 60s “fresh”, 10 min “stale”
 const CACHE_TTL_MS = 60_000;
 const STALE_TTL_MS = 10 * 60_000;
 
 type NavSub = { slug: string; label: string };
 type NavCat = { slug: string; label: string; icon: string | null; subcategories: NavSub[] };
+
+type CacheEntry = { data: NavCat[]; fetchedAt: number };
 
 const FALLBACK_CATEGORIES: NavCat[] = [
   { slug: "prodotti-per-pasticceria", label: "Prodotti per pasticceria", icon: null, subcategories: [] },
@@ -43,12 +33,7 @@ const FALLBACK_CATEGORIES: NavCat[] = [
   { slug: "confetti", label: "Confetti", icon: null, subcategories: [] },
 ];
 
-type CacheEntry = { data: NavCat[]; fetchedAt: number };
-
-// Cache in memoria (best-effort: su serverless può resettarsi)
 let memCache: CacheEntry | null = null;
-
-// Anti-stampede: se arrivano richieste in parallelo, facciamo 1 sola fetch a Strapi
 let inflight: Promise<NavCat[] | null> | null = null;
 
 function nowMs() {
@@ -90,11 +75,9 @@ function isStaleAllowed(entry: CacheEntry) {
 }
 
 function json200(payload: any, extraHeaders?: Record<string, string>) {
-  // ✅ caching CDN/browser (utile su Vercel/edge)
   return NextResponse.json(payload, {
     status: 200,
     headers: {
-      // CDN: 60s fresh + 10 min stale
       "Cache-Control": "public, s-maxage=60, stale-while-revalidate=600, max-age=60",
       ...extraHeaders,
     },
@@ -112,15 +95,54 @@ async function fetchStrapi(url: string, token: string | null, signal: AbortSigna
   return { ok: res.ok, status: res.status, text, json };
 }
 
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionActive(a: any) {
+  const isActive = a?.isActive === true;
+  if (isActive) return true;
+
+  const today = todayYMDRome();
+  const start = safeString(a?.startDate, "");
+  const end = safeString(a?.endDate, "");
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
+function shouldIncludeCategory(a: any) {
+  const occasionsRaw = a?.occasions?.data ?? a?.occasions ?? [];
+  const occasions = Array.isArray(occasionsRaw) ? occasionsRaw : [];
+
+  if (occasions.length === 0) return true;
+
+  return occasions.some((o: any) => {
+    const oa = o?.attributes ?? o ?? {};
+    return isOccasionActive(oa);
+  });
+}
+
 function normalizeCategoryRow(row: any, usedUrlBase: string): NavCat | null {
-  // Strapi v4/v5: { id, attributes: {...} } oppure già normalizzato {slug,label,...}
   const a = row?.attributes ?? row ?? {};
   const slug = safeString(a?.slug);
   if (!slug) return null;
 
+  if (!shouldIncludeCategory(a)) return null;
+
   const label = safeString(a?.label ?? a?.name ?? a?.title, slug);
 
-  // icon: accetta sia media strapi sia stringa già pronta
   const iconRaw =
     a?.icon?.data?.attributes?.url ??
     a?.icon?.attributes?.url ??
@@ -131,7 +153,6 @@ function normalizeCategoryRow(row: any, usedUrlBase: string): NavCat | null {
 
   const icon = iconRaw ? absUrl(usedUrlBase, iconRaw) : null;
 
-  // subcategories: Strapi relation oppure già array di {slug,label}
   const subsData = a?.subcategories?.data ?? a?.subcategories ?? [];
   const subsArr = Array.isArray(subsData) ? subsData : [];
 
@@ -157,7 +178,6 @@ function normalizeCategories(rawData: any, usedUrlBase: string): NavCat[] {
     if (n) out.push(n);
   }
 
-  // dedupe per slug (difesa)
   const seen = new Set<string>();
   const deduped: NavCat[] = [];
   for (const c of out) {
@@ -174,7 +194,6 @@ async function loadFromStrapi(url: string, usedUrlBase: string, debug: boolean) 
   const t = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    // 1) prima senza token (public)
     const noAuth = await fetchStrapi(url, null, controller.signal);
     if (noAuth.ok) {
       const dataRaw = Array.isArray(noAuth.json?.data) ? noAuth.json.data : [];
@@ -182,7 +201,6 @@ async function loadFromStrapi(url: string, usedUrlBase: string, debug: boolean) 
       return { data, mode: "noauth" as const, status: noAuth.status, errText: "" };
     }
 
-    // 2) fallback con token (se presente)
     if (STRAPI_TOKEN) {
       const auth = await fetchStrapi(url, STRAPI_TOKEN, controller.signal);
       if (auth.ok) {
@@ -219,23 +237,17 @@ async function loadFromStrapi(url: string, usedUrlBase: string, debug: boolean) 
 }
 
 async function getCategories(url: string, usedUrlBase: string, debug: boolean) {
-  // 1) cache fresh
   if (memCache && isFresh(memCache)) {
     return { data: memCache.data, source: "cache_fresh" as const };
   }
 
-  // 2) inflight (anti-stampede)
   if (!inflight) {
     inflight = (async () => {
       const r = await loadFromStrapi(url, usedUrlBase, debug);
-
       if (Array.isArray(r.data)) {
-        // ✅ se Strapi risponde anche con array vuoto, lo consideriamo valido (può essere voluto)
         memCache = { data: r.data, fetchedAt: nowMs() };
         return r.data;
       }
-
-      // se fallisce, NON sovrascriviamo cache
       return null;
     })().finally(() => {
       inflight = null;
@@ -244,13 +256,9 @@ async function getCategories(url: string, usedUrlBase: string, debug: boolean) {
 
   const fetched = await inflight;
 
-  // 3) successo
   if (Array.isArray(fetched)) return { data: fetched, source: "strapi" as const };
-
-  // 4) fallback a cache stale se disponibile
   if (memCache && isStaleAllowed(memCache)) return { data: memCache.data, source: "cache_stale" as const };
 
-  // 5) fallback finale: categorie statiche
   return { data: [...FALLBACK_CATEGORIES], source: "fallback" as const };
 }
 
@@ -260,7 +268,6 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const debug = searchParams.get("debug") === "1";
 
-    // Se manca base URL => fallback secco
     if (!usedUrlBase) {
       return json200(
         debug
@@ -269,30 +276,30 @@ export async function GET(req: Request) {
       );
     }
 
-    // Query MINIMA: label/slug + icon(fields) + subcategories(fields)
     const qs = new URLSearchParams();
     qs.set("fields[0]", "label");
     qs.set("fields[1]", "slug");
 
-    // icon: SOLO campi necessari
     qs.set("populate[icon][fields][0]", "url");
     qs.set("populate[icon][fields][1]", "alternativeText");
     qs.set("populate[icon][fields][2]", "width");
     qs.set("populate[icon][fields][3]", "height");
     qs.set("populate[icon][fields][4]", "formats");
 
-    // subcategories: solo label/slug
     qs.set("populate[subcategories][fields][0]", "label");
     qs.set("populate[subcategories][fields][1]", "slug");
+
+    qs.set("populate[occasions][fields][0]", "slug");
+    qs.set("populate[occasions][fields][1]", "isActive");
+    qs.set("populate[occasions][fields][2]", "startDate");
+    qs.set("populate[occasions][fields][3]", "endDate");
 
     qs.set("pagination[pageSize]", "100");
     qs.set("sort[0]", "createdAt:asc");
 
     const url = `${usedUrlBase}/api/categories?${qs.toString()}`;
-
     const { data, source } = await getCategories(url, usedUrlBase, debug);
 
-    // ✅ Risposta sempre 200 + header utile debug (non rompe nulla)
     return json200(
       debug
         ? {
@@ -306,12 +313,9 @@ export async function GET(req: Request) {
             },
           }
         : { data },
-      {
-        "X-Nav-Source": source,
-      }
+      { "X-Nav-Source": source }
     );
   } catch {
-    // Ultima difesa: mai 500
     return json200({ data: [...FALLBACK_CATEGORIES] }, { "X-Nav-Source": "fallback_error" });
   }
 }

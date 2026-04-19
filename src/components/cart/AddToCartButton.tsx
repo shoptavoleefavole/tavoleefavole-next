@@ -190,7 +190,7 @@ export default function AddToCartButton({
 
   const computedClassName =
     className ??
-    "h-11 w-full rounded-xl border border-border bg-background px-4 text-sm font-extrabold hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed";
+    "h-11 w-full rounded-xl bg-primary px-4 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed";
 
   const title = exceedsKnownStock
     ? `Disponibilità insufficiente (max ${stockNumber})`

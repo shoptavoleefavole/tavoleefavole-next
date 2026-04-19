@@ -75,8 +75,90 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           Salta al contenuto
         </a>
 
-        {/* Iubenda */}
-        <Script src="https://cdn.iubenda.com/iubenda.js" strategy="afterInteractive" />
+        {/* ============================================================
+            IUBENDA COOKIE SOLUTION
+            Ordine obbligatorio: config → sync → gpp stub → main script
+            beforeInteractive: carica prima dell'idratazione React,
+            così il banner appare prima che qualsiasi script terze parti
+            possa essere eseguito.
+        ============================================================ */}
+
+        {/* 1. Configurazione — deve stare PRIMA di tutti gli altri script Iubenda */}
+        <Script
+          id="iubenda-config"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
+              var _iub = _iub || [];
+              _iub.csConfiguration = {
+                "askConsentAtCookiePolicyUpdate": true,
+                "countryDetection": true,
+                "enableFadp": true,
+                "enableLgpd": true,
+                "enableUspr": true,
+                "floatingPreferencesButtonDisplay": "anchored-center-left",
+                "lgpdAppliesGlobally": false,
+                "perPurposeConsent": true,
+                "siteId": 2088185,
+                "storage": { "useSiteId": true },
+                "whitelabel": false,
+                "cookiePolicyId": 47702140,
+                "banner": {
+                  "acceptButtonCaptionColor": "#FFFFFF",
+                  "acceptButtonColor": "#0073CE",
+                  "acceptButtonDisplay": true,
+                  "backgroundColor": "#FFFFFF",
+                  "closeButtonDisplay": false,
+                  "continueWithoutAcceptingButtonCaptionColor": "#4D4D4D",
+                  "continueWithoutAcceptingButtonColor": "#DADADA",
+                  "customizeButtonCaptionColor": "#4D4D4D",
+                  "customizeButtonColor": "#DADADA",
+                  "customizeButtonDisplay": true,
+                  "explicitWithdrawal": true,
+                  "fontSizeBody": "12px",
+                  "listPurposes": true,
+                  "ownerName": "www.tavoleefavole.com/",
+                  "position": "float-bottom-center",
+                  "rejectButtonCaptionColor": "#FFFFFF",
+                  "rejectButtonColor": "#0073CE",
+                  "rejectButtonDisplay": true,
+                  "showTitle": false,
+                  "showTotalNumberOfProviders": true,
+                  "textColor": "#000000"
+                }
+              };
+              _iub.csLangConfiguration = { "it": { "cookiePolicyId": 47702140 } };
+            `,
+          }}
+        />
+
+        {/* 2. Script sync — specifica per il tuo siteId */}
+        <Script
+          id="iubenda-sync"
+          src="//cs.iubenda.com/sync/2088185.js"
+          strategy="beforeInteractive"
+        />
+
+        {/* 3. GPP stub — necessario per conformità US Privacy / IAB */}
+        <Script
+          id="iubenda-gpp"
+          src="//cdn.iubenda.com/cs/gpp/stub.js"
+          strategy="beforeInteractive"
+        />
+
+        {/* 4. Script principale Cookie Solution */}
+        <Script
+          id="iubenda-cs"
+          src="//cdn.iubenda.com/cs/iubenda_cs.js"
+          strategy="beforeInteractive"
+        />
+
+        {/* RIMOSSO: il vecchio <Script src="https://cdn.iubenda.com/iubenda.js"> 
+            era lo script dei documenti privacy (widget link), non la Cookie Solution.
+            Se nel tuo sito hai link alla privacy policy generati da Iubenda 
+            (classe "iubenda-white iubenda-noiframe"), ri-aggiungilo così:
+            <Script src="https://cdn.iubenda.com/iubenda.js" strategy="lazyOnload" />
+        */}
 
         <AppProviders>
           <FavoritesProvider>
@@ -100,8 +182,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                 <div className="hidden border-t border-border bg-background md:block">
                   <div className="mx-auto max-w-7xl px-4">
                     <div className="relative overflow-hidden rounded-2xl">
-
-                      {/* ✅ Gradiente CSS — nessun file esterno, zero 404 */}
                       <div
                         aria-hidden="true"
                         className="absolute inset-0"
@@ -113,8 +193,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                             "rgba(var(--color-primary-rgb,220,180,120),0.08) 100%)",
                         }}
                       />
-
-                      {/* Contenuto sopra */}
                       <div className="relative">
                         <Navbar />
                       </div>

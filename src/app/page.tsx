@@ -8,7 +8,7 @@ import AddToCartButton from "@/components/cart/AddToCartButton";
 import { getAvailability } from "@/lib/inventory.server";
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
-import EasterHeroPromo from "@/components/seasonal/EasterHeroPromo";
+import HomeDualHero from "@/components/home/HomeDualHero";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -20,7 +20,7 @@ type HomeProduct = {
   name: string;
   price: number;
   compareAtPrice?: number | null;
-  priceAziende?: number | null; // ← AGGIUNTO
+  priceAziende?: number | null;
   image?: string;
   images: string[];
   shortDescription?: string;
@@ -29,22 +29,6 @@ type HomeProduct = {
   trackInventory?: boolean | null;
   inStock?: boolean;
 };
-
-type EasterProduct = {
-  slug: string;
-  name: string;
-  imageUrl?: string | null;
-  price?: number | null;
-  compareAtPrice?: number | null;
-};
-
-/** ✅ QUI scegli i prodotti pasquali da mostrare nel riquadro HERO (solo questi scorrono) */
-const EASTER_FEATURED_SLUGS = [
-  "uovo-di-pasqua-caffarel-500g",
-  "uovo-di-pasqua-lindt-400g",
-  "ovetti-assortiti-200g",
-  "coniglietto-cioccolato-150g",
-];
 
 /* ---------------- WhatsApp ---------------- */
 
@@ -144,8 +128,6 @@ function extractMediaUrls(base: string, media: any): string[] {
     })
     .filter(Boolean);
 }
-
-/* ---------------- Deadline helper ---------------- */
 
 function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
@@ -285,7 +267,6 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   const stockQty = toInt(a?.stockQty);
   const trackInventory = toBool(a?.trackInventory);
 
-  // priceAziende: incluso qui, filtrato server-side in Home() prima di passarlo alla UI
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
     rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
@@ -319,7 +300,7 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[4]", "shortDescription");
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
-  qs.set("fields[7]", "priceAziende"); // ← AGGIUNTO
+  qs.set("fields[7]", "priceAziende");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
@@ -334,6 +315,40 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
+async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
+  const qs = new URLSearchParams();
+
+  qs.set("populate[selectedProducts][fields][0]", "slug");
+  qs.set("populate[selectedProducts][fields][1]", "name");
+  qs.set("populate[selectedProducts][fields][2]", "price");
+  qs.set("populate[selectedProducts][fields][3]", "compareAtPrice");
+  qs.set("populate[selectedProducts][fields][4]", "shortDescription");
+  qs.set("populate[selectedProducts][fields][5]", "stockQty");
+  qs.set("populate[selectedProducts][fields][6]", "trackInventory");
+  qs.set("populate[selectedProducts][fields][7]", "priceAziende");
+
+  qs.set("populate[selectedProducts][populate][images][fields][0]", "url");
+  qs.set("populate[selectedProducts][populate][images][fields][1]", "formats");
+
+  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9000,
+  });
+
+  if (!r.ok) return [];
+
+  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  const root = first?.attributes ?? first ?? {};
+
+  const rows: any[] = Array.isArray(root?.selectedProducts?.data)
+    ? root.selectedProducts.data
+    : Array.isArray(root?.selectedProducts)
+      ? root.selectedProducts
+      : [];
+
+  return rows.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
+}
+
 async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
   qs.set("fields[0]", "slug");
@@ -343,7 +358,7 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[4]", "shortDescription");
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
-  qs.set("fields[7]", "priceAziende"); // ← AGGIUNTO
+  qs.set("fields[7]", "priceAziende");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
@@ -385,85 +400,6 @@ async function withAvailabilitySafe(items: HomeProduct[], timeoutMs = 2500) {
   return withDeadline(withAvailability(items), timeoutMs, items);
 }
 
-/* ---------------- HERO PRODUCTS (Pasqua selezionati) ---------------- */
-
-async function fetchEasterProducts(limit = 10): Promise<EasterProduct[]> {
-  const base = baseStrapiUrl();
-  const token =
-    process.env.STRAPI_API_TOKEN ||
-    process.env.STRAPI_TOKEN ||
-    process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-    process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
-    "";
-
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  async function get(url: string) {
-    const res = await fetch(url, { headers, next: { revalidate: 60 } });
-    if (!res.ok) return null;
-    return (await res.json().catch(() => null)) as any;
-  }
-
-  const qs = new URLSearchParams();
-  qs.set("fields[0]", "slug");
-  qs.set("fields[1]", "name");
-  qs.set("fields[2]", "price");
-  qs.set("fields[3]", "compareAtPrice");
-  qs.set("populate[images][fields][0]", "url");
-  qs.set("populate[images][fields][1]", "formats");
-  qs.set("pagination[pageSize]", "100");
-  qs.set("filters[category][slug][$eq]", "pasqua");
-  qs.set("sort[0]", "updatedAt:desc");
-
-  const json = await get(`${base}/api/products?${qs.toString()}`);
-  const rows: any[] = Array.isArray(json?.data) ? json.data : [];
-
-  function pickImage(a: any) {
-    const imgs = a?.images?.data ?? a?.images ?? [];
-    const first = Array.isArray(imgs) ? imgs[0] : imgs;
-    const raw =
-      first?.attributes?.formats?.small?.url ??
-      first?.attributes?.formats?.thumbnail?.url ??
-      first?.attributes?.url ??
-      first?.formats?.small?.url ??
-      first?.formats?.thumbnail?.url ??
-      first?.url ??
-      null;
-
-    if (!raw) return null;
-    if (String(raw).startsWith("http")) return String(raw);
-    if (String(raw).startsWith("/")) return `${base}${raw}`;
-    return `${base}/${String(raw).replace(/^\/+/, "")}`;
-  }
-
-  const mapped = rows
-    .map((r) => {
-      const a = r?.attributes ?? r ?? {};
-      const slug = String(a?.slug ?? "").trim();
-      if (!slug) return null;
-
-      return {
-        slug,
-        name: String(a?.name ?? a?.title ?? slug),
-        imageUrl: pickImage(a),
-        price: toNumber(a?.price),
-        compareAtPrice: a?.compareAtPrice == null ? null : toNumber(a?.compareAtPrice),
-      } as EasterProduct;
-    })
-    .filter(Boolean) as EasterProduct[];
-
-  const selected = EASTER_FEATURED_SLUGS.map((s) => String(s).trim()).filter(Boolean);
-
-  if (selected.length) {
-    const bySlug = new Map(mapped.map((p) => [p.slug, p]));
-    const picked = selected.map((s) => bySlug.get(s)).filter(Boolean) as EasterProduct[];
-    return picked.length ? picked.slice(0, limit) : mapped.slice(0, limit);
-  }
-
-  return mapped.slice(0, limit);
-}
-
 /* ---------------- Business user check ---------------- */
 
 async function checkIsBusiness(): Promise<boolean> {
@@ -472,7 +408,6 @@ async function checkIsBusiness(): Promise<boolean> {
     const tf = cookieStore.get("tf_token")?.value ?? null;
     if (!tf) return false;
 
-    // Validazione base: deve sembrare un JWT (3 parti base64)
     if (tf.split(".").length !== 3) return false;
 
     const res = await fetchWithTimeout(`${SITE_URL}/api/account/type`, {
@@ -498,7 +433,7 @@ function ProductRail(props: {
   rightHref: string;
   rightLabel: string;
   items: HomeProduct[];
-  isBusiness?: boolean; // ← AGGIUNTO
+  isBusiness?: boolean;
 }) {
   const { title, subtitle, rightHref, rightLabel, items, isBusiness = false } = props;
 
@@ -572,7 +507,6 @@ function ProductRail(props: {
                   <div className="mt-3">
                     <div className="text-sm font-extrabold line-clamp-2">{p.name}</div>
 
-                    {/* ── Prezzo con supporto aziende ── */}
                     <div className="mt-2 flex flex-wrap items-baseline gap-2">
                       {isBusiness && p.priceAziende && p.priceAziende > 0 ? (
                         <>
@@ -749,7 +683,6 @@ function PersonalizedPrintsCarouselBlock() {
               </a>
             </div>
 
-            {/* trust pills */}
             <div className="mt-5 flex flex-wrap items-center gap-2 text-xs font-semibold text-text/70">
               <span className="inline-flex items-center rounded-full border border-border bg-background px-3 py-1">
                 Qualità professionale
@@ -775,15 +708,14 @@ function PersonalizedPrintsCarouselBlock() {
 /* ---------------- PAGE ---------------- */
 
 export default async function Home() {
+  const selectedP = withDeadline(fetchHomepageSelectedProducts(), 9500, []);
   const latestP = withDeadline(fetchLatestProducts(12), 9500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9500, []);
-  const easterP = withDeadline(fetchEasterProducts(10), 9500, []);
 
-  // checkIsBusiness in parallelo con i fetch prodotti — nessun overhead aggiuntivo
-  const [latestRaw, saleCandRaw, easterProducts, isBusiness] = await Promise.all([
+  const [selectedRaw, latestRaw, saleCandRaw, isBusiness] = await Promise.all([
+    selectedP,
     latestP,
     saleP,
-    easterP,
     checkIsBusiness(),
   ]);
 
@@ -800,19 +732,22 @@ export default async function Home() {
 
   const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
 
-  // SICUREZZA: se utente non è business, azzera priceAziende su tutti i prodotti
   const sanitize = (items: HomeProduct[]) =>
     items.map((p) => ({
       ...p,
       priceAziende: isBusiness ? (p.priceAziende ?? null) : null,
     }));
 
+  const selectedSanitized = sanitize(selectedRaw);
   const latestSanitized = sanitize(latest);
   const saleSanitized = sanitize(saleWithStock);
 
   return (
     <main className="mx-auto max-w-7xl px-4 pt-2 pb-10">
-      <EasterHeroPromo products={easterProducts} />
+      <HomeDualHero
+        selectedProducts={selectedSanitized}
+        latestProducts={latestSanitized.slice(0, 3)}
+      />
 
       <PersonalizedPrintsCarouselBlock />
 

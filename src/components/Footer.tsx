@@ -17,15 +17,15 @@ const columns = [
     links: [
       // ✅ "Supporto" rimosso
       { label: "Spedizioni",     href: "/spedizioni"    },
-      { label: "Resi & rimborsi", href: "/resi-rimborsi" }, // ✅ fix: era /resi
+      { label: "Resi & rimborsi", href: "/resi" }, // ✅ fix: era /resi
     ],
   },
   {
     title: "Info legali",
     links: [
-      { label: "Privacy", href: "/privacy" },        // ✅ fix: era /privacy-policy
-      { label: "Cookie",  href: "/cookie"  },        // ✅ fix: era /cookie-policy
-      { label: "Termini", href: "/termini" },
+        { label: "Privacy", href: "https://www.iubenda.com/privacy-policy/47702140" },
+        { label: "Cookie",  href: "https://www.iubenda.com/privacy-policy/47702140/cookie-policy" },
+        { label: "Termini", href: "/termini" },
     ],
   },
   {

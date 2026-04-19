@@ -1,4 +1,4 @@
-//src/app/registrati/azienda/page.tsx
+// src/app/registrati/azienda/page.tsx
 
 "use client";
 
@@ -61,22 +61,18 @@ export const dynamic = "force-dynamic";
 export default function RegisterBusinessPage() {
   const router = useRouter();
 
-  // account
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  // dati azienda (OBBLIGATORI)
   const [companyName, setCompanyName] = useState("");
   const [vatNumber, setVatNumber] = useState("");
   const [pec, setPec] = useState("");
   const [sdi, setSdi] = useState("");
 
-  // referenti (facoltativi ma utili)
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  // indirizzi
   const [shippingAddress, setShippingAddress] = useState<Address>({
     address: "",
     city: "",
@@ -127,18 +123,12 @@ export default function RegisterBusinessPage() {
       type: "BUSINESS" as const,
       email: clamp(email.toLowerCase(), 254),
       password,
-
-      // referenti
       firstName: clamp(firstName, 60),
       lastName: clamp(lastName, 60),
-
-      // 4 obbligatori
       companyName: clamp(companyName, 140),
       vatNumber: clamp(vatNumber, 40),
       pec: clamp(pec.toLowerCase(), 254),
       sdi: clamp(sdi.toUpperCase(), 20),
-
-      // indirizzi
       shippingAddress: normalizeAddr(shippingAddress),
       billingSameAsShipping,
       billingAddress: billingSameAsShipping ? undefined : normalizeAddr(billingAddress),
@@ -156,12 +146,19 @@ export default function RegisterBusinessPage() {
 
       const data = await res.json().catch(() => null);
 
-      if (res.ok && data?.ok) {
+      if (res.ok && data?.ok && data?.profileCreated !== false) {
         window.dispatchEvent(new Event(AUTH_EVENT));
         router.replace("/account");
         return;
       }
 
+      if (data?.error === "PROFILE_SETUP_FAILED" || data?.profileCreated === false) {
+        setErrorMsg(
+          data?.message ||
+            "Account creato, ma il profilo non è stato inizializzato correttamente. Accedi e completa i dati."
+        );
+        return;
+      }
       if (data?.error === "CHECK_EMAIL") {
         setErrorMsg(data?.message || "Controlla la tua email per recuperare l’accesso.");
         return;
@@ -334,7 +331,11 @@ export default function RegisterBusinessPage() {
 
         {errorMsg ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div> : null}
 
-        <button type="submit" disabled={!canSubmit} className="w-full h-12 rounded-full bg-primary text-primary-contrast text-sm font-extrabold hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed">
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full h-12 rounded-full bg-primary text-primary-contrast text-sm font-extrabold hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           {loading ? "Creazione..." : "Crea account Business"}
         </button>
 

@@ -1,4 +1,3 @@
-// src/app/occasione/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
@@ -24,6 +23,24 @@ const SITE_URL = (
 
 const PAGE_SIZE = 200;
 
+type OccasionTheme = {
+  label: string;
+  heroTitle: string;
+  badgeColor: string;
+  bg: string;
+};
+
+type OccasionData = {
+  slug: string;
+  label: string;
+  heroTitle: string;
+  badgeColor: string;
+  isActive: boolean;
+  startDate: string | null;
+  endDate: string | null;
+  categorySlugs: string[];
+};
+
 // ─── utils ────────────────────────────────────────────────────────────────────
 
 function normalizedStrapiBaseUrl() {
@@ -41,7 +58,11 @@ function normalizedStrapiBaseUrl() {
 }
 
 function safeJsonParse(text: string): any {
-  try { return JSON.parse(text); } catch { return null; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function safeStr(v: unknown, fallback = "") {
@@ -75,7 +96,11 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: controller.signal, cache: "no-store" });
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+    });
   } finally {
     clearTimeout(t);
   }
@@ -84,8 +109,9 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000
 async function fetchWithRetry(url: string, init: RequestInit = {}, ms = 25_000) {
   let lastErr: any;
   for (let i = 0; i < 3; i++) {
-    try { return await fetchWithTimeout(url, init, ms); }
-    catch (e: any) {
+    try {
+      return await fetchWithTimeout(url, init, ms);
+    } catch (e: any) {
       lastErr = e;
       if (!isRetryableFetchError(e) || i === 2) break;
       await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
@@ -97,9 +123,11 @@ async function fetchWithRetry(url: string, init: RequestInit = {}, ms = 25_000) 
 async function fetchStrapi(path: string) {
   const base = normalizedStrapiBaseUrl();
   if (!base) return { ok: false, status: 500, json: null, base: "" };
+
   const url = `${base}${path.startsWith("/") ? "" : "/"}${path}`;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
+
   try {
     const res = await fetchWithRetry(url, { headers });
     const text = await res.text().catch(() => "");
@@ -110,6 +138,65 @@ async function fetchStrapi(path: string) {
   }
 }
 
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionCurrentlyActive(occasion: {
+  isActive: boolean;
+  startDate: string | null;
+  endDate: string | null;
+}) {
+  if (occasion.isActive) return true;
+
+  const today = todayYMDRome();
+  const start = safeStr(occasion.startDate, "");
+  const end = safeStr(occasion.endDate, "");
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
+function hexToRgba(hex: string, alpha: number) {
+  const clean = String(hex || "").trim().replace("#", "");
+  const normalized =
+    clean.length === 3
+      ? clean.split("").map((c) => c + c).join("")
+      : clean.length === 6
+        ? clean
+        : "DCAE54";
+
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function buildOccasionTheme(occasion: OccasionData): OccasionTheme {
+  const color = safeStr(occasion.badgeColor, "#DCAE54");
+  return {
+    label: occasion.label,
+    heroTitle: safeStr(occasion.heroTitle, occasion.label),
+    badgeColor: color,
+    bg:
+      `radial-gradient(ellipse at 15% 10%, ${hexToRgba(color, 0.18)} 0%, transparent 48%),` +
+      `radial-gradient(ellipse at 85% 12%, ${hexToRgba(color, 0.12)} 0%, transparent 42%),` +
+      `linear-gradient(160deg, #fffdf8 0%, #fffaf0 45%, #ffffff 100%)`,
+  };
+}
+
 // ─── Business check ───────────────────────────────────────────────────────────
 
 async function checkIsBusiness(): Promise<boolean> {
@@ -117,18 +204,76 @@ async function checkIsBusiness(): Promise<boolean> {
     const cookieStore = await cookies();
     const tf = cookieStore.get("tf_token")?.value ?? null;
     if (!tf) return false;
+
     const res = await fetchWithTimeout(
       `${SITE_URL}/api/account/type`,
       { headers: { Cookie: cookieStore.toString() }, cache: "no-store" },
       8_000
     );
+
     if (!res.ok) return false;
+
     const json = safeJsonParse(await res.text().catch(() => ""));
     const ct = String(json?.customerType ?? "").toUpperCase();
     return ct === "AZIENDE" || ct === "BUSINESS";
   } catch {
     return false;
   }
+}
+
+// ─── Occasion helpers ─────────────────────────────────────────────────────────
+
+function normalizeOccasion(row: any): OccasionData | null {
+  const a = row?.attributes ?? row ?? {};
+
+  const slug = safeStr(a?.slug, "");
+  if (!slug) return null;
+
+  const categoriesRaw = a?.categories?.data ?? a?.categories ?? [];
+  const categorySlugs = Array.isArray(categoriesRaw)
+    ? categoriesRaw
+        .map((c: any) => {
+          const ca = c?.attributes ?? c ?? {};
+          return safeStr(ca?.slug, "");
+        })
+        .filter(Boolean)
+    : [];
+
+  return {
+    slug,
+    label: safeStr(a?.Titolo ?? a?.titolo ?? a?.title ?? a?.label ?? a?.name, slug),
+    heroTitle: safeStr(a?.heroTitle, ""),
+    badgeColor: safeStr(a?.badgeColor, "#DCAE54"),
+    isActive: a?.isActive === true,
+    startDate: a?.startDate ?? null,
+    endDate: a?.endDate ?? null,
+    categorySlugs: Array.from(new Set(categorySlugs)),
+  };
+}
+
+async function fetchOccasionBySlug(slug: string): Promise<OccasionData | null> {
+  const qs = new URLSearchParams();
+  qs.set("filters[slug][$eq]", slug);
+  qs.set("pagination[pageSize]", "1");
+
+  qs.set("fields[0]", "Titolo");
+  qs.set("fields[1]", "slug");
+  qs.set("fields[2]", "isActive");
+  qs.set("fields[3]", "startDate");
+  qs.set("fields[4]", "endDate");
+  qs.set("fields[5]", "heroTitle");
+  qs.set("fields[6]", "badgeColor");
+
+  qs.set("populate[categories][fields][0]", "slug");
+  qs.set("populate[categories][fields][1]", "label");
+
+  const r = await fetchStrapi(`/api/occasions?${qs.toString()}`);
+  if (!r.ok) return null;
+
+  const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
+  if (!data.length) return null;
+
+  return normalizeOccasion(data[0]);
 }
 
 // ─── Prodotti helpers ─────────────────────────────────────────────────────────
@@ -141,13 +286,19 @@ function extractMediaUrls(base: string, media: any): string[] {
   if (!media) return [];
   const data = media?.data ?? media;
   const arr = Array.isArray(data) ? data : [data];
+
   return arr
     .map((node: any) => {
       const a = node?.attributes ?? node ?? {};
       const f = a?.formats ?? null;
       const u =
-        f?.large?.url ?? f?.medium?.url ?? f?.small?.url ??
-        f?.thumbnail?.url ?? a?.url ?? node?.url ?? null;
+        f?.large?.url ??
+        f?.medium?.url ??
+        f?.small?.url ??
+        f?.thumbnail?.url ??
+        a?.url ??
+        node?.url ??
+        null;
       return absUrl(base, u) || "";
     })
     .filter(Boolean);
@@ -160,22 +311,25 @@ function normalizeProduct(row: any, base: string) {
 
   const images =
     extractMediaUrls(base, a?.images).length ? extractMediaUrls(base, a?.images) :
-    extractMediaUrls(base, a?.image).length  ? extractMediaUrls(base, a?.image) :
-    extractMediaUrls(base, a?.cover).length  ? extractMediaUrls(base, a?.cover) :
+    extractMediaUrls(base, a?.image).length ? extractMediaUrls(base, a?.image) :
+    extractMediaUrls(base, a?.cover).length ? extractMediaUrls(base, a?.cover) :
     extractMediaUrls(base, a?.thumbnail);
 
   const variantsData = a?.variants?.data ?? a?.variants ?? [];
   const variants = Array.isArray(variantsData)
-    ? variantsData.map((v: any) => {
-        const va = v?.attributes ?? v ?? {};
-        return va?.sku ? { sku: String(va.sku) } : null;
-      }).filter(Boolean)
+    ? variantsData
+        .map((v: any) => {
+          const va = v?.attributes ?? v ?? {};
+          return va?.sku ? { sku: String(va.sku) } : null;
+        })
+        .filter(Boolean)
     : [];
 
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
     rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
-      ? Number(rawPriceAziende) : null;
+      ? Number(rawPriceAziende)
+      : null;
 
   return {
     id: String(id),
@@ -196,46 +350,34 @@ function normalizeProduct(row: any, base: string) {
   };
 }
 
-async function fetchProductsByOccasion(occasionSlug: string) {
+async function fetchProductsByCategorySlugs(categorySlugs: string[]) {
   const base = normalizedStrapiBaseUrl();
+  const uniqueSlugs = Array.from(new Set(categorySlugs.filter(Boolean)));
+  if (!uniqueSlugs.length) return [];
 
-  const attempts = [
-    (() => {
-      const qs = new URLSearchParams();
-      qs.set("pagination[pageSize]", String(PAGE_SIZE));
-      qs.set("sort[0]", "createdAt:desc");
-      qs.set("filters[category][slug][$eq]", occasionSlug);
-      qs.set("populate", "*");
-      return { label: "category.slug", qs };
-    })(),
-    (() => {
-      const qs = new URLSearchParams();
-      qs.set("pagination[pageSize]", String(PAGE_SIZE));
-      qs.set("sort[0]", "createdAt:desc");
-      qs.set("filters[occasion][slug][$eq]", occasionSlug);
-      qs.set("populate", "*");
-      return { label: "occasion.slug", qs };
-    })(),
-    (() => {
-      const qs = new URLSearchParams();
-      qs.set("pagination[pageSize]", String(PAGE_SIZE));
-      qs.set("sort[0]", "createdAt:desc");
-      qs.set("filters[tags][slug][$eq]", occasionSlug);
-      qs.set("populate", "*");
-      return { label: "tags.slug", qs };
-    })(),
-  ];
+  const results = new Map<string, any>();
 
-  for (const attempt of attempts) {
-    const r = await fetchStrapi(`/api/products?${attempt.qs.toString()}`);
-    if (r.status === 400) continue;
-    if (!r.ok) return [];
+  for (const categorySlug of uniqueSlugs) {
+    const qs = new URLSearchParams();
+    qs.set("pagination[pageSize]", String(PAGE_SIZE));
+    qs.set("sort[0]", "createdAt:desc");
+    qs.set("filters[category][slug][$eq]", categorySlug);
+    qs.set("populate", "*");
+
+    const r = await fetchStrapi(`/api/products?${qs.toString()}`);
+    if (!r.ok) continue;
+
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-    if (data.length === 0) continue;
-    return data.map((row) => normalizeProduct(row, r.base || base));
+    for (const row of data) {
+      const normalized = normalizeProduct(row, r.base || base);
+      const key = normalized.documentId || normalized.id || normalized.slug;
+      if (!results.has(String(key))) {
+        results.set(String(key), normalized);
+      }
+    }
   }
 
-  return [];
+  return Array.from(results.values());
 }
 
 async function safeGetAvailabilityOrNull(skus: string[]) {
@@ -249,36 +391,6 @@ async function safeGetAvailabilityOrNull(skus: string[]) {
   }
 }
 
-// ─── Tema per occasione ───────────────────────────────────────────────────────
-
-const OCCASION_META: Record<string, {
-  label: string;
-  emoji: string;
-  bg: string;
-  decorations: { emoji: string; top: string; left?: string; right?: string; rotate: string; opacity: string; size: string }[];
-}> = {
-  pasqua: {
-    label: "Pasqua",
-    emoji: "🐣",
-    bg:
-      "radial-gradient(ellipse at 15% 10%, rgba(134,239,172,0.28) 0%, transparent 50%)," +
-      "radial-gradient(ellipse at 85% 8%,  rgba(251,207,232,0.32) 0%, transparent 45%)," +
-      "radial-gradient(ellipse at 50% 85%, rgba(253,230,138,0.22) 0%, transparent 50%)," +
-      "radial-gradient(ellipse at 92% 55%, rgba(167,243,208,0.18) 0%, transparent 40%)," +
-      "linear-gradient(160deg, #fdf8f0 0%, #fffcf0 40%, #f2fdf4 100%)",
-    decorations: [
-      { emoji: "🐣", top: "6%",  left:  "3%",  rotate: "-15deg", opacity: "0.10", size: "3.5rem" },
-      { emoji: "🌸", top: "12%", right: "5%",  rotate: "12deg",  opacity: "0.10", size: "3rem"   },
-      { emoji: "🥚", top: "38%", left:  "1%",  rotate: "-8deg",  opacity: "0.09", size: "3rem"   },
-      { emoji: "🐰", top: "55%", right: "2%",  rotate: "20deg",  opacity: "0.10", size: "3.5rem" },
-      { emoji: "🌷", top: "78%", left:  "8%",  rotate: "5deg",   opacity: "0.09", size: "2.8rem" },
-      { emoji: "🍫", top: "22%", left:  "44%", rotate: "-10deg", opacity: "0.07", size: "2.5rem" },
-      { emoji: "🌼", top: "88%", right: "12%", rotate: "15deg",  opacity: "0.09", size: "3rem"   },
-      { emoji: "🥚", top: "68%", left:  "30%", rotate: "8deg",   opacity: "0.06", size: "2.2rem" },
-    ],
-  },
-};
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default async function OccasionPage({
@@ -288,14 +400,17 @@ export default async function OccasionPage({
 }) {
   const { slug: slugParam } = await params;
   const slug = String(slugParam ?? "").trim().toLowerCase();
+  if (!slug) return notFound();
 
-  if (!slug || !OCCASION_META[slug]) return notFound();
+  const occasion = await fetchOccasionBySlug(slug);
+  if (!occasion) return notFound();
+  if (!isOccasionCurrentlyActive(occasion)) return notFound();
 
-  const meta = OCCASION_META[slug];
+  const theme = buildOccasionTheme(occasion);
 
   const [isBusiness, items] = await Promise.all([
     checkIsBusiness(),
-    fetchProductsByOccasion(slug).catch(() => []),
+    fetchProductsByCategorySlugs(occasion.categorySlugs).catch(() => []),
   ]);
 
   const skus = Array.from(
@@ -314,6 +429,7 @@ export default async function OccasionPage({
     const row = sku ? (bySku?.[sku] ?? null) : null;
     const available = row ? Number(row.available) : Number.NaN;
     const known = !!row && Number.isFinite(available);
+
     return {
       ...it,
       inStock: sku ? (known ? available > 0 : true) : Boolean(it?.inStock ?? true),
@@ -326,51 +442,28 @@ export default async function OccasionPage({
   const hasProducts = itemsWithStock.length > 0;
 
   return (
-    <div
-      className="relative min-h-screen"
-      style={{ background: meta.bg }}
-    >
-      {/* ── Decorazioni tema ── */}
-      <div aria-hidden="true" className="pointer-events-none fixed inset-0 overflow-hidden -z-10 select-none">
-        {meta.decorations.map((d, i) => (
-          <span
-            key={i}
-            style={{
-              position: "absolute",
-              top: d.top,
-              ...(d.left  ? { left:  d.left  } : {}),
-              ...(d.right ? { right: d.right } : {}),
-              fontSize: d.size,
-              opacity: d.opacity,
-              transform: `rotate(${d.rotate})`,
-              lineHeight: 1,
-            }}
-          >
-            {d.emoji}
-          </span>
-        ))}
-      </div>
-
-      {/* ── Contenuto ── */}
+    <div className="relative min-h-screen" style={{ background: theme.bg }}>
       <div className="mx-auto max-w-7xl px-4 py-8">
         <Breadcrumbs
           items={[
             { label: "Home", href: "/" },
             { label: "Catalogo", href: "/catalogo" },
-            { label: `${meta.emoji} ${meta.label}` },
+            { label: theme.label },
           ]}
         />
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-extrabold">
-              {meta.emoji} {meta.label}
-            </h1>
+            <h1 className="text-2xl font-extrabold">{theme.label}</h1>
             <p className="mt-1 text-sm text-text/70">
-              Filtra e ordina i prodotti della selezione.
+              {theme.heroTitle || "Filtra e ordina i prodotti della selezione."}
             </p>
           </div>
-          <Link href="/catalogo" className="text-sm font-semibold text-link hover:text-link-hover">
+
+          <Link
+            href="/catalogo"
+            className="text-sm font-semibold text-link hover:text-link-hover"
+          >
             Torna al catalogo
           </Link>
         </div>

@@ -32,6 +32,8 @@ export type Product = {
 
   // Stock (in alcune parti del progetto lo trattate come opzionale)
   inStock?: boolean;
+  stockQty?: number | null;
+  trackInventory?: boolean | null;
 
   isNew?: boolean;
 

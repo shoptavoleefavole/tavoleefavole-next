@@ -1,4 +1,4 @@
-//src/app/registrati/privato/pase.tsx
+// src/app/registrati/privato/page.tsx
 
 "use client";
 
@@ -30,7 +30,7 @@ type Address = {
   city: string;
   postalCode: string;
   province: string;
-  country: string; // IT
+  country: string;
 };
 
 function capOk(cap: string) {
@@ -122,7 +122,6 @@ export default function RegisterPrivatePage() {
       firstName: clamp(firstName, 60),
       lastName: clamp(lastName, 60),
       password,
-
       shippingAddress: normalizeAddr(shippingAddress),
       billingSameAsShipping,
       billingAddress: billingSameAsShipping ? undefined : normalizeAddr(billingAddress),
@@ -140,12 +139,19 @@ export default function RegisterPrivatePage() {
 
       const data = await res.json().catch(() => null);
 
-      if (res.ok && data?.ok) {
+      if (res.ok && data?.ok && data?.profileCreated !== false) {
         window.dispatchEvent(new Event(AUTH_EVENT));
         router.replace("/account");
         return;
       }
 
+      if (data?.error === "PROFILE_SETUP_FAILED" || data?.profileCreated === false) {
+        setErrorMsg(
+          data?.message ||
+            "Account creato, ma il profilo non è stato inizializzato correttamente. Accedi e completa i dati."
+        );
+        return;
+      }
       if (data?.error === "CHECK_EMAIL") {
         setErrorMsg(data?.message || "Controlla la tua email per recuperare l’accesso.");
         return;
@@ -333,7 +339,11 @@ export default function RegisterPrivatePage() {
 
         {errorMsg ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div> : null}
 
-        <button type="submit" disabled={!canSubmit} className="w-full rounded-full px-5 py-3 font-semibold disabled:opacity-50">
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full h-12 rounded-full bg-primary text-primary-contrast text-sm font-extrabold hover:bg-primary-hover transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           {loading ? "Creazione..." : "Crea account"}
         </button>
 
