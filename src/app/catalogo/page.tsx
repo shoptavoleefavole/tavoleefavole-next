@@ -61,6 +61,10 @@ function toIntOrNull(v: unknown) {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+function toBoolOrNull(v: unknown) {
+  return typeof v === "boolean" ? v : null;
+}
+
 function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
   if (trackInventory === false) return true;
 
@@ -97,6 +101,54 @@ function getHeaders(): Record<string, string> {
 
 function getDefaultSku(item: any): string | null {
   return item?.variants?.[0]?.sku ?? item?.variant?.sku ?? null;
+}
+
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionCurrentlyActive(occasion?: {
+  isActive?: boolean | null;
+  startDate?: string | null;
+  endDate?: string | null;
+} | null) {
+  if (!occasion) return true;
+  if (occasion.isActive === true) return true;
+
+  const today = todayYMDRome();
+  const start = String(occasion.startDate ?? "").trim();
+  const end = String(occasion.endDate ?? "").trim();
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
+function shouldShowProductInCatalog(product: {
+  visibleInStorefront?: boolean | null;
+  hiddenFromCatalog?: boolean | null;
+  categoryVisibleInStorefront?: boolean | null;
+  visibilityOccasion?: {
+    isActive?: boolean | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  } | null;
+}) {
+  if (product.visibleInStorefront === false) return false;
+  if (product.hiddenFromCatalog === true) return false;
+  if (product.categoryVisibleInStorefront === false) return false;
+  if (!isOccasionCurrentlyActive(product.visibilityOccasion)) return false;
+  return true;
 }
 
 // ─── normalize prodotto ───────────────────────────────────────────────────────
@@ -137,16 +189,32 @@ function normalizeStrapiProduct(row: any) {
 
   const imageUrl = absUrl(STRAPI_URL, imageUrlRaw);
 
+  const categoryNode =
+    a?.category?.data ??
+    a?.category ??
+    a?.categories?.data?.[0] ??
+    a?.categories?.[0] ??
+    a?.categoria?.data ??
+    a?.categoria ??
+    null;
+
+  const categoryAttr = categoryNode?.attributes ?? categoryNode ?? {};
+
   const categorySlug =
-    a?.category?.data?.attributes?.slug ??
-    a?.category?.slug ??
+    categoryAttr?.slug ??
     a?.categories?.[0]?.slug ??
-    a?.categoria?.data?.attributes?.slug ??
-    a?.categoria?.slug ??
     a?.categorySlug ??
     a?.macroSlug ??
     a?.macroAreaSlug ??
     null;
+
+  const visibilityOccasionNode =
+    a?.visibilityOccasion?.data ??
+    a?.visibilityOccasion ??
+    null;
+
+  const visibilityOccasionAttr =
+    visibilityOccasionNode?.attributes ?? visibilityOccasionNode ?? null;
 
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
@@ -170,6 +238,22 @@ function normalizeStrapiProduct(row: any) {
     imageUrl,
     categorySlug,
     priceAziende,
+    visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
+    hiddenFromCatalog: toBoolOrNull(a?.hiddenFromCatalog),
+    categoryVisibleInStorefront: toBoolOrNull(categoryAttr?.visibleInStorefront),
+    visibilityOccasion: visibilityOccasionAttr
+      ? {
+          isActive: toBoolOrNull(visibilityOccasionAttr?.isActive),
+          startDate:
+            typeof visibilityOccasionAttr?.startDate === "string"
+              ? visibilityOccasionAttr.startDate
+              : null,
+          endDate:
+            typeof visibilityOccasionAttr?.endDate === "string"
+              ? visibilityOccasionAttr.endDate
+              : null,
+        }
+      : null,
     __raw: a,
   };
 }
@@ -207,6 +291,7 @@ async function fetchCategoryBySlug(slug: string) {
       documentId: data[0]?.documentId ?? null,
       slug: String(a?.slug ?? slug),
       label: String(a?.label ?? a?.name ?? a?.title ?? slug),
+      visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
     };
   } catch {
     return null;
@@ -309,6 +394,7 @@ async function fetchProductsFromStrapi(params: {
   }
 
   const cat = await fetchCategoryBySlug(params.categoria);
+  if (cat?.visibleInStorefront === false) return empty;
 
   type Attempt = {
     key: string;
@@ -384,7 +470,6 @@ export default async function CatalogoPage({
   const q = safeText(sp.q, 80);
   const pageRequested = toInt(sp.page, 1);
 
-  // chiede al backend se l'utente è BUSINESS
   const cookieStore = await cookies();
   const tf = cookieStore.get("tf_token")?.value ?? null;
 
@@ -410,7 +495,7 @@ export default async function CatalogoPage({
   const macroFromStrapi = categoria ? await fetchCategoryBySlug(categoria) : null;
   const macro =
     macroFromStrapi ??
-    (categoria ? { id: null, documentId: null, slug: categoria, label: categoria } : null);
+      (categoria ? { id: null, documentId: null, slug: categoria, label: categoria } : null);
 
   const res = await fetchProductsFromStrapi({
     categoria,
@@ -436,7 +521,9 @@ export default async function CatalogoPage({
     pagination = res2.pagination;
   }
 
-  const itemsWithStock = items.map((p: any) => {
+  const visibleItems = items.filter(shouldShowProductInCatalog);
+
+  const itemsWithStock = visibleItems.map((p: any) => {
     const sku = getDefaultSku(p);
 
     return {
@@ -447,7 +534,7 @@ export default async function CatalogoPage({
     };
   });
 
-  const total = Number(pagination.total ?? 0);
+  const total = itemsWithStock.length;
   const pageCount = Math.max(1, Number(pagination.pageCount ?? 1));
   const prevPage = safePage > 1 ? safePage - 1 : null;
   const nextPage = safePage < pageCount ? safePage + 1 : null;

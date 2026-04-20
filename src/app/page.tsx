@@ -28,6 +28,8 @@ type HomeProduct = {
   stockQty?: number | null;
   trackInventory?: boolean | null;
   inStock?: boolean;
+  visibleInStorefront?: boolean | null;
+  hiddenFromHomepage?: boolean | null;
 };
 
 /* ---------------- WhatsApp ---------------- */
@@ -98,6 +100,15 @@ function toInt(v: any): number | null {
 
 function toBool(v: any): boolean | null {
   return typeof v === "boolean" ? v : null;
+}
+
+function shouldShowProductInHomepage(product: {
+  visibleInStorefront?: boolean | null;
+  hiddenFromHomepage?: boolean | null;
+}) {
+  if (product.visibleInStorefront === false) return false;
+  if (product.hiddenFromHomepage === true) return false;
+  return true;
 }
 
 function getDefaultSku(item: any): string | null {
@@ -288,6 +299,8 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
     stockQty,
     trackInventory,
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
+    visibleInStorefront: toBool(a?.visibleInStorefront),
+    hiddenFromHomepage: toBool(a?.hiddenFromHomepage),
   };
 }
 
@@ -301,6 +314,8 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
   qs.set("fields[7]", "priceAziende");
+  qs.set("fields[8]", "visibleInStorefront");
+  qs.set("fields[9]", "hiddenFromHomepage");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "createdAt:desc");
@@ -326,6 +341,8 @@ async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
   qs.set("populate[selectedProducts][fields][5]", "stockQty");
   qs.set("populate[selectedProducts][fields][6]", "trackInventory");
   qs.set("populate[selectedProducts][fields][7]", "priceAziende");
+  qs.set("populate[selectedProducts][fields][8]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][fields][9]", "hiddenFromHomepage");
 
   qs.set("populate[selectedProducts][populate][images][fields][0]", "url");
   qs.set("populate[selectedProducts][populate][images][fields][1]", "formats");
@@ -359,6 +376,8 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[5]", "stockQty");
   qs.set("fields[6]", "trackInventory");
   qs.set("fields[7]", "priceAziende");
+  qs.set("fields[8]", "visibleInStorefront");
+  qs.set("fields[9]", "hiddenFromHomepage");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
   qs.set("sort[0]", "updatedAt:desc");
@@ -712,12 +731,16 @@ export default async function Home() {
   const latestP = withDeadline(fetchLatestProducts(12), 9500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9500, []);
 
-  const [selectedRaw, latestRaw, saleCandRaw, isBusiness] = await Promise.all([
+  const [selectedRawAll, latestRawAll, saleCandRawAll, isBusiness] = await Promise.all([
     selectedP,
     latestP,
     saleP,
     checkIsBusiness(),
   ]);
+
+  const selectedRaw = selectedRawAll.filter(shouldShowProductInHomepage);
+  const latestRaw = latestRawAll.filter(shouldShowProductInHomepage);
+  const saleCandRaw = saleCandRawAll.filter(shouldShowProductInHomepage);
 
   const sale = saleCandRaw
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)

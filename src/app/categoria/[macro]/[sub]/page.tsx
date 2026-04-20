@@ -62,6 +62,10 @@ function toIntOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+function toBoolOrNull(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+
 function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
   if (trackInventory === false) return true;
 
@@ -95,6 +99,54 @@ function absUrl(base: string, maybeUrl: string | null | undefined) {
   if (u.startsWith("//")) return `https:${u}`;
   if (u.startsWith("/")) return `${base.replace(/\/$/, "")}${u}`;
   return u;
+}
+
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionCurrentlyActive(occasion?: {
+  isActive?: boolean | null;
+  startDate?: string | null;
+  endDate?: string | null;
+} | null) {
+  if (!occasion) return true;
+  if (occasion.isActive === true) return true;
+
+  const today = todayYMDRome();
+  const start = String(occasion.startDate ?? "").trim();
+  const end = String(occasion.endDate ?? "").trim();
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
+function shouldShowProductInCatalog(product: {
+  visibleInStorefront?: boolean | null;
+  hiddenFromCatalog?: boolean | null;
+  categoryVisibleInStorefront?: boolean | null;
+  visibilityOccasion?: {
+    isActive?: boolean | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  } | null;
+}) {
+  if (product.visibleInStorefront === false) return false;
+  if (product.hiddenFromCatalog === true) return false;
+  if (product.categoryVisibleInStorefront === false) return false;
+  if (!isOccasionCurrentlyActive(product.visibilityOccasion)) return false;
+  return true;
 }
 
 function isRetryableFetchError(e: any) {
@@ -248,7 +300,25 @@ function normalizeProduct(row: any, base: string) {
         .filter(Boolean)
     : [];
 
-  // priceAziende: normalizzato qui, filtrato server-side prima di passare al client
+  const categoryNode =
+    a?.category?.data ??
+    a?.category ??
+    a?.categories?.data?.[0] ??
+    a?.categories?.[0] ??
+    a?.categoria?.data ??
+    a?.categoria ??
+    null;
+
+  const categoryAttr = categoryNode?.attributes ?? categoryNode ?? {};
+
+  const visibilityOccasionNode =
+    a?.visibilityOccasion?.data ??
+    a?.visibilityOccasion ??
+    null;
+
+  const visibilityOccasionAttr =
+    visibilityOccasionNode?.attributes ?? visibilityOccasionNode ?? null;
+
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
     rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
@@ -271,6 +341,22 @@ function normalizeProduct(row: any, base: string) {
     stockQty: toIntOrNull(a?.stockQty),
     trackInventory: typeof a?.trackInventory === "boolean" ? a.trackInventory : null,
     createdAt: a?.createdAt ?? row?.createdAt ?? null,
+    visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
+    hiddenFromCatalog: toBoolOrNull(a?.hiddenFromCatalog),
+    categoryVisibleInStorefront: toBoolOrNull(categoryAttr?.visibleInStorefront),
+    visibilityOccasion: visibilityOccasionAttr
+      ? {
+          isActive: toBoolOrNull(visibilityOccasionAttr?.isActive),
+          startDate:
+            typeof visibilityOccasionAttr?.startDate === "string"
+              ? visibilityOccasionAttr.startDate
+              : null,
+          endDate:
+            typeof visibilityOccasionAttr?.endDate === "string"
+              ? visibilityOccasionAttr.endDate
+              : null,
+        }
+      : null,
   };
 }
 
@@ -282,6 +368,7 @@ async function fetchMacroLabel(macroSlug: string) {
   qs.set("pagination[pageSize]", "1");
   qs.set("fields[0]", "label");
   qs.set("fields[1]", "slug");
+  qs.set("fields[2]", "visibleInStorefront");
 
   const r = await fetchStrapi(`/api/categories?${qs.toString()}`);
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
@@ -290,6 +377,7 @@ async function fetchMacroLabel(macroSlug: string) {
   return {
     slug: safeStr(a?.slug, macroSlug),
     label: safeStr(a?.label ?? a?.name ?? a?.title, macroSlug),
+    visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
   };
 }
 
@@ -392,15 +480,18 @@ export default async function MacroSubPage({
 
   if (!macroSlug || !subSlug) return notFound();
 
-  // Esegui in parallelo: dati categoria + check business + prodotti
   const [macroObj, subObj, isBusiness, items] = await Promise.all([
-    fetchMacroLabel(macroSlug).catch(() => ({ slug: macroSlug, label: macroSlug })),
+    fetchMacroLabel(macroSlug).catch(() => ({ slug: macroSlug, label: macroSlug, visibleInStorefront: true })),
     fetchSubLabel(subSlug).catch(() => ({ slug: subSlug, label: subSlug })),
     checkIsBusiness(),
     fetchProductsBySub(macroSlug, subSlug).catch(() => []),
   ]);
 
-  const itemsWithStock = items.map((it: any) => {
+  if (macroObj.visibleInStorefront === false) return notFound();
+
+  const visibleItems = items.filter(shouldShowProductInCatalog);
+
+  const itemsWithStock = visibleItems.map((it: any) => {
     const sku = getDefaultSku(it);
 
     return {

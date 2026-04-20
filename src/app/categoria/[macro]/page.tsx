@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 
 type Subcat = { slug: string; label: string };
-type MacroObj = { slug: string; label: string; subcategories: Subcat[] };
+type MacroObj = { slug: string; label: string; subcategories: Subcat[]; visibleInStorefront?: boolean | null };
 
 const STRAPI_URL =
   process.env.NEXT_PUBLIC_STRAPI_URL ||
@@ -94,6 +94,10 @@ function toIntOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+function toBoolOrNull(v: unknown): boolean | null {
+  return typeof v === "boolean" ? v : null;
+}
+
 function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInStock?: boolean) {
   if (trackInventory === false) return true;
 
@@ -102,6 +106,54 @@ function computeInStock(stockQty: unknown, trackInventory: unknown, fallbackInSt
 
   if (typeof fallbackInStock === "boolean") return fallbackInStock;
 
+  return true;
+}
+
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionCurrentlyActive(occasion?: {
+  isActive?: boolean | null;
+  startDate?: string | null;
+  endDate?: string | null;
+} | null) {
+  if (!occasion) return true;
+  if (occasion.isActive === true) return true;
+
+  const today = todayYMDRome();
+  const start = String(occasion.startDate ?? "").trim();
+  const end = String(occasion.endDate ?? "").trim();
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
+function shouldShowProductInCatalog(product: {
+  visibleInStorefront?: boolean | null;
+  hiddenFromCatalog?: boolean | null;
+  categoryVisibleInStorefront?: boolean | null;
+  visibilityOccasion?: {
+    isActive?: boolean | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  } | null;
+}) {
+  if (product.visibleInStorefront === false) return false;
+  if (product.hiddenFromCatalog === true) return false;
+  if (product.categoryVisibleInStorefront === false) return false;
+  if (!isOccasionCurrentlyActive(product.visibilityOccasion)) return false;
   return true;
 }
 
@@ -183,7 +235,6 @@ async function checkIsBusiness(): Promise<boolean> {
     const tf = cookieStore.get("tf_token")?.value ?? null;
     if (!tf) return false;
 
-    // Validazione base: deve sembrare un JWT (3 parti base64)
     const parts = tf.split(".");
     if (parts.length !== 3) return false;
 
@@ -216,6 +267,7 @@ async function fetchMacroBySlug(
   qs.set("pagination[pageSize]", "1");
   qs.set("fields[0]", "label");
   qs.set("fields[1]", "slug");
+  qs.set("fields[2]", "visibleInStorefront");
   qs.set("populate[subcategories][fields][0]", "label");
   qs.set("populate[subcategories][fields][1]", "slug");
 
@@ -234,9 +286,7 @@ async function fetchMacroBySlug(
         const sa = s?.attributes ?? s ?? {};
         const sSlug = safeStr(sa?.slug);
         if (!sSlug) return [];
-        return [
-          { slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) },
-        ];
+        return [{ slug: sSlug, label: safeStr(sa?.label ?? sa?.name ?? sa?.title, sSlug) }];
       })
     : [];
 
@@ -246,6 +296,7 @@ async function fetchMacroBySlug(
       slug: safeStr(a?.slug, slug),
       label: safeStr(a?.label ?? a?.name ?? a?.title, slug),
       subcategories,
+      visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
     },
   };
 }
@@ -311,7 +362,25 @@ function normalizeProduct(row: any, base: string) {
     slug || "0"
   );
 
-  // priceAziende: incluso qui, filtrato server-side prima di passare al client
+  const categoryNode =
+    a?.category?.data ??
+    a?.category ??
+    a?.categories?.data?.[0] ??
+    a?.categories?.[0] ??
+    a?.categoria?.data ??
+    a?.categoria ??
+    null;
+
+  const categoryAttr = categoryNode?.attributes ?? categoryNode ?? {};
+
+  const visibilityOccasionNode =
+    a?.visibilityOccasion?.data ??
+    a?.visibilityOccasion ??
+    null;
+
+  const visibilityOccasionAttr =
+    visibilityOccasionNode?.attributes ?? visibilityOccasionNode ?? null;
+
   const rawPriceAziende = a?.priceAziende ?? null;
   const priceAziende =
     rawPriceAziende !== null && Number.isFinite(Number(rawPriceAziende))
@@ -325,7 +394,7 @@ function normalizeProduct(row: any, base: string) {
     slug,
     price: toNumberOrNull(a?.price),
     compareAtPrice: toNumberOrNull(a?.compareAtPrice),
-    priceAziende, // nascosto se utente non Business — vedi itemsWithStock
+    priceAziende,
     shortDescription: a?.shortDescription ?? "",
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
     stockQty,
@@ -334,6 +403,22 @@ function normalizeProduct(row: any, base: string) {
     image: imageUrl ?? undefined,
     images: imageUrl ? [imageUrl] : undefined,
     createdAt: a?.createdAt ?? row?.createdAt ?? null,
+    visibleInStorefront: toBoolOrNull(a?.visibleInStorefront),
+    hiddenFromCatalog: toBoolOrNull(a?.hiddenFromCatalog),
+    categoryVisibleInStorefront: toBoolOrNull(categoryAttr?.visibleInStorefront),
+    visibilityOccasion: visibilityOccasionAttr
+      ? {
+          isActive: toBoolOrNull(visibilityOccasionAttr?.isActive),
+          startDate:
+            typeof visibilityOccasionAttr?.startDate === "string"
+              ? visibilityOccasionAttr.startDate
+              : null,
+          endDate:
+            typeof visibilityOccasionAttr?.endDate === "string"
+              ? visibilityOccasionAttr.endDate
+              : null,
+        }
+      : null,
   };
 }
 
@@ -418,7 +503,6 @@ export default async function MacroPage({
   const macroSlug = safeDecode(macro);
   if (!macroSlug) return notFound();
 
-  // Esegui in parallelo: macro + check business + prodotti
   const [macroRes, isBusiness] = await Promise.all([
     fetchMacroBySlug(macroSlug),
     checkIsBusiness(),
@@ -431,10 +515,14 @@ export default async function MacroPage({
       ? macroRes.macro
       : { slug: macroSlug, label: macroSlug, subcategories: [] };
 
+  if (macroObj.visibleInStorefront === false) return notFound();
+
   const prodRes = await fetchProductsByMacro(macroSlug);
   const items = prodRes.items ?? [];
 
-  const itemsWithStock = items.map((it: any) => {
+  const visibleItems = items.filter(shouldShowProductInCatalog);
+
+  const itemsWithStock = visibleItems.map((it: any) => {
     const sku = getDefaultSku(it);
 
     return {
