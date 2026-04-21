@@ -30,6 +30,12 @@ type HomeProduct = {
   inStock?: boolean;
   visibleInStorefront?: boolean | null;
   hiddenFromHomepage?: boolean | null;
+  categoryVisibleInStorefront?: boolean | null;
+  visibilityOccasion?: {
+    isActive?: boolean | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  } | null;
 };
 
 /* ---------------- WhatsApp ---------------- */
@@ -102,12 +108,51 @@ function toBool(v: any): boolean | null {
   return typeof v === "boolean" ? v : null;
 }
 
+function todayYMDRome() {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionCurrentlyActive(occasion?: {
+  isActive?: boolean | null;
+  startDate?: string | null;
+  endDate?: string | null;
+} | null) {
+  if (!occasion) return true;
+  if (occasion.isActive === true) return true;
+
+  const today = todayYMDRome();
+  const start = String(occasion.startDate ?? "").trim();
+  const end = String(occasion.endDate ?? "").trim();
+
+  if (!start && !end) return false;
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
 function shouldShowProductInHomepage(product: {
   visibleInStorefront?: boolean | null;
   hiddenFromHomepage?: boolean | null;
+  categoryVisibleInStorefront?: boolean | null;
+  visibilityOccasion?: {
+    isActive?: boolean | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  } | null;
 }) {
   if (product.visibleInStorefront === false) return false;
   if (product.hiddenFromHomepage === true) return false;
+  if (product.categoryVisibleInStorefront === false) return false;
+  if (!isOccasionCurrentlyActive(product.visibilityOccasion)) return false;
   return true;
 }
 
@@ -284,6 +329,25 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
       ? Number(rawPriceAziende)
       : null;
 
+  const categoryNode =
+    a?.category?.data ??
+    a?.category ??
+    a?.categories?.data?.[0] ??
+    a?.categories?.[0] ??
+    a?.categoria?.data ??
+    a?.categoria ??
+    null;
+
+  const categoryAttr = categoryNode?.attributes ?? categoryNode ?? {};
+
+  const visibilityOccasionNode =
+    a?.visibilityOccasion?.data ??
+    a?.visibilityOccasion ??
+    null;
+
+  const visibilityOccasionAttr =
+    visibilityOccasionNode?.attributes ?? visibilityOccasionNode ?? null;
+
   return {
     id,
     strapiId,
@@ -301,6 +365,20 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
     inStock: typeof a?.inStock === "boolean" ? a.inStock : undefined,
     visibleInStorefront: toBool(a?.visibleInStorefront),
     hiddenFromHomepage: toBool(a?.hiddenFromHomepage),
+    categoryVisibleInStorefront: toBool(categoryAttr?.visibleInStorefront),
+    visibilityOccasion: visibilityOccasionAttr
+      ? {
+          isActive: toBool(visibilityOccasionAttr?.isActive),
+          startDate:
+            typeof visibilityOccasionAttr?.startDate === "string"
+              ? visibilityOccasionAttr.startDate
+              : null,
+          endDate:
+            typeof visibilityOccasionAttr?.endDate === "string"
+              ? visibilityOccasionAttr.endDate
+              : null,
+        }
+      : null,
   };
 }
 
@@ -318,6 +396,12 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[9]", "hiddenFromHomepage");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[category][fields][0]", "visibleInStorefront");
+  qs.set("populate[categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[categoria][fields][0]", "visibleInStorefront");
+  qs.set("populate[visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[visibilityOccasion][fields][2]", "endDate");
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
@@ -346,6 +430,12 @@ async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
 
   qs.set("populate[selectedProducts][populate][images][fields][0]", "url");
   qs.set("populate[selectedProducts][populate][images][fields][1]", "formats");
+  qs.set("populate[selectedProducts][populate][category][fields][0]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][populate][categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][populate][categoria][fields][0]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][2]", "endDate");
 
   const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
     revalidate: 60,
@@ -380,6 +470,12 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[9]", "hiddenFromHomepage");
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[category][fields][0]", "visibleInStorefront");
+  qs.set("populate[categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[categoria][fields][0]", "visibleInStorefront");
+  qs.set("populate[visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[visibilityOccasion][fields][2]", "endDate");
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
