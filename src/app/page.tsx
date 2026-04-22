@@ -456,6 +456,48 @@ async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
   return rows.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
+async function fetchHomepageLatestProducts(): Promise<HomeProduct[]> {
+  const qs = new URLSearchParams();
+
+  qs.set("populate[latestProducts][fields][0]", "slug");
+  qs.set("populate[latestProducts][fields][1]", "name");
+  qs.set("populate[latestProducts][fields][2]", "price");
+  qs.set("populate[latestProducts][fields][3]", "compareAtPrice");
+  qs.set("populate[latestProducts][fields][4]", "shortDescription");
+  qs.set("populate[latestProducts][fields][5]", "stockQty");
+  qs.set("populate[latestProducts][fields][6]", "trackInventory");
+  qs.set("populate[latestProducts][fields][7]", "priceAziende");
+  qs.set("populate[latestProducts][fields][8]", "visibleInStorefront");
+  qs.set("populate[latestProducts][fields][9]", "hiddenFromHomepage");
+
+  qs.set("populate[latestProducts][populate][images][fields][0]", "url");
+  qs.set("populate[latestProducts][populate][images][fields][1]", "formats");
+  qs.set("populate[latestProducts][populate][category][fields][0]", "visibleInStorefront");
+  qs.set("populate[latestProducts][populate][categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[latestProducts][populate][categoria][fields][0]", "visibleInStorefront");
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][2]", "endDate");
+
+  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 9000,
+  });
+
+  if (!r.ok) return [];
+
+  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  const root = first?.attributes ?? first ?? {};
+
+  const rows: any[] = Array.isArray(root?.latestProducts?.data)
+    ? root.latestProducts.data
+    : Array.isArray(root?.latestProducts)
+      ? root.latestProducts
+      : [];
+
+  return rows.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
+}
+
 async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
   qs.set("fields[0]", "slug");
@@ -824,32 +866,45 @@ function PersonalizedPrintsCarouselBlock() {
 
 export default async function Home() {
   const selectedP = withDeadline(fetchHomepageSelectedProducts(), 9500, []);
-  const latestP = withDeadline(fetchLatestProducts(12), 9500, []);
+  const latestManualP = withDeadline(fetchHomepageLatestProducts(), 9500, []);
+  const latestAutoP = withDeadline(fetchLatestProducts(12), 9500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9500, []);
 
-  const [selectedRawAll, latestRawAll, saleCandRawAll, isBusiness] = await Promise.all([
-    selectedP,
-    latestP,
-    saleP,
-    checkIsBusiness(),
-  ]);
+  const [selectedRawAll, latestManualRawAll, latestAutoRawAll, saleCandRawAll, isBusiness] =
+    await Promise.all([
+      selectedP,
+      latestManualP,
+      latestAutoP,
+      saleP,
+      checkIsBusiness(),
+    ]);
 
   const selectedRaw = selectedRawAll.filter(shouldShowProductInHomepage);
-  const latestRaw = latestRawAll.filter(shouldShowProductInHomepage);
+  const latestManualRaw = latestManualRawAll.filter(shouldShowProductInHomepage);
+  const latestAutoRaw = latestAutoRawAll.filter(shouldShowProductInHomepage);
   const saleCandRaw = saleCandRawAll.filter(shouldShowProductInHomepage);
-
   const sale = saleCandRaw
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
     .slice(0, 12);
 
-  const latestStockP = withDeadline(
-    withAvailabilitySafe(latestRaw.slice(0, 12), 2500),
+  const latestHeroStockP = withDeadline(
+    withAvailabilitySafe(latestManualRaw.slice(0, 3), 2500),
     2800,
-    latestRaw.slice(0, 12)
+    latestManualRaw.slice(0, 3)
   );
+
+const latestRailStockP = withDeadline(
+  withAvailabilitySafe(latestAutoRaw.slice(0, 12), 2500),
+  2800,
+  latestAutoRaw.slice(0, 12)
+);
   const saleStockP = withDeadline(withAvailabilitySafe(sale, 2500), 2800, sale);
 
-  const [latest, saleWithStock] = await Promise.all([latestStockP, saleStockP]);
+  const [latestHero, latestRail, saleWithStock] = await Promise.all([
+    latestHeroStockP,
+    latestRailStockP,
+    saleStockP,
+  ]);
 
   const sanitize = (items: HomeProduct[]) =>
     items.map((p) => ({
@@ -858,14 +913,15 @@ export default async function Home() {
     }));
 
   const selectedSanitized = sanitize(selectedRaw);
-  const latestSanitized = sanitize(latest);
+  const latestHeroSanitized = sanitize(latestHero);
+  const latestRailSanitized = sanitize(latestRail);
   const saleSanitized = sanitize(saleWithStock);
 
   return (
     <main className="mx-auto max-w-7xl px-4 pt-2 pb-10">
       <HomeDualHero
         selectedProducts={selectedSanitized}
-        latestProducts={latestSanitized.slice(0, 3)}
+        latestProducts={latestHeroSanitized}
       />
 
       <PersonalizedPrintsCarouselBlock />
@@ -881,13 +937,13 @@ export default async function Home() {
         />
       ) : null}
 
-      {latestSanitized.length > 0 ? (
+      {latestRailSanitized.length > 0 ? (
         <ProductRail
           title="Novità"
           subtitle="Ultimi arrivi: nuovi prodotti disponibili."
           rightHref="/catalogo"
           rightLabel="Vedi catalogo"
-          items={latestSanitized}
+          items={latestRailSanitized}
           isBusiness={isBusiness}
         />
       ) : null}
