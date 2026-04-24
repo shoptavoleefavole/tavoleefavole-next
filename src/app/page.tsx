@@ -342,7 +342,8 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
 
   const categoryAttr = categoryNode?.attributes ?? categoryNode ?? {};
 
-  const visibilityOccasionNode = a?.visibilityOccasion?.data ?? a?.visibilityOccasion ?? null;
+  const visibilityOccasionNode =
+    a?.visibilityOccasion?.data ?? a?.visibilityOccasion ?? null;
 
   const visibilityOccasionAttr =
     visibilityOccasionNode?.attributes ?? visibilityOccasionNode ?? null;
@@ -393,14 +394,23 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   qs.set("fields[7]", "priceAziende");
   qs.set("fields[8]", "visibleInStorefront");
   qs.set("fields[9]", "hiddenFromHomepage");
+
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[image][fields][0]", "url");
+  qs.set("populate[image][fields][1]", "formats");
+  qs.set("populate[cover][fields][0]", "url");
+  qs.set("populate[cover][fields][1]", "formats");
+  qs.set("populate[thumbnail][fields][0]", "url");
+  qs.set("populate[thumbnail][fields][1]", "formats");
+
   qs.set("populate[category][fields][0]", "visibleInStorefront");
   qs.set("populate[categories][fields][0]", "visibleInStorefront");
   qs.set("populate[categoria][fields][0]", "visibleInStorefront");
   qs.set("populate[visibilityOccasion][fields][0]", "isActive");
   qs.set("populate[visibilityOccasion][fields][1]", "startDate");
   qs.set("populate[visibilityOccasion][fields][2]", "endDate");
+
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
@@ -408,40 +418,53 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
     revalidate: 60,
     timeoutMs: 9000,
   });
+
   if (!r.ok) return [];
+
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
-/* ---------------- HOMEPAGE DATA ---------------- */
-
-function normalizeHomepageRoot(json: any) {
-  const raw = json?.data ?? null;
-  const first = Array.isArray(raw) ? raw[0] : raw;
-  return first?.attributes ?? first ?? null;
-}
-
-async function fetchHomepageRoot(): Promise<any | null> {
-  const candidates = ["/api/homepages?populate=*", "/api/homepage?populate=*"];
-
-  for (const path of candidates) {
-    const r = await fetchStrapi(path, {
-      revalidate: 60,
-      timeoutMs: 9000,
-    });
-
-    if (!r.ok) continue;
-
-    const root = normalizeHomepageRoot(r.json);
-    if (root) return root;
-  }
-
-  return null;
-}
-
 async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
-  const root = await fetchHomepageRoot();
-  if (!root) return [];
+  const qs = new URLSearchParams();
+
+  qs.set("populate[selectedProducts][fields][0]", "slug");
+  qs.set("populate[selectedProducts][fields][1]", "name");
+  qs.set("populate[selectedProducts][fields][2]", "price");
+  qs.set("populate[selectedProducts][fields][3]", "compareAtPrice");
+  qs.set("populate[selectedProducts][fields][4]", "shortDescription");
+  qs.set("populate[selectedProducts][fields][5]", "stockQty");
+  qs.set("populate[selectedProducts][fields][6]", "trackInventory");
+  qs.set("populate[selectedProducts][fields][7]", "priceAziende");
+  qs.set("populate[selectedProducts][fields][8]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][fields][9]", "hiddenFromHomepage");
+
+  qs.set("populate[selectedProducts][populate][images][fields][0]", "url");
+  qs.set("populate[selectedProducts][populate][images][fields][1]", "formats");
+  qs.set("populate[selectedProducts][populate][image][fields][0]", "url");
+  qs.set("populate[selectedProducts][populate][image][fields][1]", "formats");
+  qs.set("populate[selectedProducts][populate][cover][fields][0]", "url");
+  qs.set("populate[selectedProducts][populate][cover][fields][1]", "formats");
+  qs.set("populate[selectedProducts][populate][thumbnail][fields][0]", "url");
+  qs.set("populate[selectedProducts][populate][thumbnail][fields][1]", "formats");
+
+  qs.set("populate[selectedProducts][populate][category][fields][0]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][populate][categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[selectedProducts][populate][categoria][fields][0]", "visibleInStorefront");
+
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][2]", "endDate");
+
+  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 12000,
+  });
+
+  if (!r.ok) return [];
+
+  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  const root = first?.attributes ?? first ?? {};
 
   const rows: any[] = Array.isArray(root?.selectedProducts?.data)
     ? root.selectedProducts.data
@@ -453,8 +476,45 @@ async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
 }
 
 async function fetchHomepageLatestProducts(): Promise<HomeProduct[]> {
-  const root = await fetchHomepageRoot();
-  if (!root) return [];
+  const qs = new URLSearchParams();
+
+  qs.set("populate[latestProducts][fields][0]", "slug");
+  qs.set("populate[latestProducts][fields][1]", "name");
+  qs.set("populate[latestProducts][fields][2]", "price");
+  qs.set("populate[latestProducts][fields][3]", "compareAtPrice");
+  qs.set("populate[latestProducts][fields][4]", "shortDescription");
+  qs.set("populate[latestProducts][fields][5]", "stockQty");
+  qs.set("populate[latestProducts][fields][6]", "trackInventory");
+  qs.set("populate[latestProducts][fields][7]", "priceAziende");
+  qs.set("populate[latestProducts][fields][8]", "visibleInStorefront");
+  qs.set("populate[latestProducts][fields][9]", "hiddenFromHomepage");
+
+  qs.set("populate[latestProducts][populate][images][fields][0]", "url");
+  qs.set("populate[latestProducts][populate][images][fields][1]", "formats");
+  qs.set("populate[latestProducts][populate][image][fields][0]", "url");
+  qs.set("populate[latestProducts][populate][image][fields][1]", "formats");
+  qs.set("populate[latestProducts][populate][cover][fields][0]", "url");
+  qs.set("populate[latestProducts][populate][cover][fields][1]", "formats");
+  qs.set("populate[latestProducts][populate][thumbnail][fields][0]", "url");
+  qs.set("populate[latestProducts][populate][thumbnail][fields][1]", "formats");
+
+  qs.set("populate[latestProducts][populate][category][fields][0]", "visibleInStorefront");
+  qs.set("populate[latestProducts][populate][categories][fields][0]", "visibleInStorefront");
+  qs.set("populate[latestProducts][populate][categoria][fields][0]", "visibleInStorefront");
+
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][0]", "isActive");
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][1]", "startDate");
+  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][2]", "endDate");
+
+  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
+    revalidate: 60,
+    timeoutMs: 12000,
+  });
+
+  if (!r.ok) return [];
+
+  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  const root = first?.attributes ?? first ?? {};
 
   const rows: any[] = Array.isArray(root?.latestProducts?.data)
     ? root.latestProducts.data
@@ -477,14 +537,24 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   qs.set("fields[7]", "priceAziende");
   qs.set("fields[8]", "visibleInStorefront");
   qs.set("fields[9]", "hiddenFromHomepage");
+
   qs.set("populate[images][fields][0]", "url");
   qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[image][fields][0]", "url");
+  qs.set("populate[image][fields][1]", "formats");
+  qs.set("populate[cover][fields][0]", "url");
+  qs.set("populate[cover][fields][1]", "formats");
+  qs.set("populate[thumbnail][fields][0]", "url");
+  qs.set("populate[thumbnail][fields][1]", "formats");
+
   qs.set("populate[category][fields][0]", "visibleInStorefront");
   qs.set("populate[categories][fields][0]", "visibleInStorefront");
   qs.set("populate[categoria][fields][0]", "visibleInStorefront");
+
   qs.set("populate[visibilityOccasion][fields][0]", "isActive");
   qs.set("populate[visibilityOccasion][fields][1]", "startDate");
   qs.set("populate[visibilityOccasion][fields][2]", "endDate");
+
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
@@ -493,13 +563,17 @@ async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
     revalidate: 60,
     timeoutMs: 9000,
   });
+
   if (!r.ok) return [];
+
   const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
 async function withAvailability(items: HomeProduct[]) {
-  const skus = Array.from(new Set(items.map((p) => p.sku).filter((x): x is string => !!x)));
+  const skus = Array.from(
+    new Set(items.map((p) => p.sku).filter((x): x is string => !!x))
+  );
   if (!skus.length) return items;
 
   const availability = await getAvailability({ skus, warehouse: "MAIN" }).catch(() => null);
@@ -576,7 +650,9 @@ function ProductRail(props: {
         <div className="no-scrollbar flex gap-4 overflow-x-auto pb-2 scroll-smooth">
           {items.map((p) => {
             const effectivePrice =
-              isBusiness && p.priceAziende && p.priceAziende > 0 ? p.priceAziende : p.price;
+              isBusiness && p.priceAziende && p.priceAziende > 0
+                ? p.priceAziende
+                : p.price;
 
             const hasSale =
               !isBusiness &&
@@ -586,7 +662,8 @@ function ProductRail(props: {
 
             const track = p.trackInventory !== false;
             const hasQty = typeof p.stockQty === "number";
-            const isOutOfStock = track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
+            const isOutOfStock =
+              track && hasQty ? p.stockQty! <= 0 : p.inStock === false;
 
             const canBuy = !isOutOfStock && effectivePrice > 0;
 
@@ -596,7 +673,7 @@ function ProductRail(props: {
             return (
               <div
                 key={p.id}
-                className="relative w-[260px] shrink-0 rounded-2xl border border-border bg-background p-4 transition hover:shadow-sm"
+                className="relative w-[260px] shrink-0 rounded-2xl border border-border bg-background p-4 hover:shadow-sm transition"
               >
                 <FavoriteToggleButton
                   productId={favoriteProductId}
@@ -624,7 +701,7 @@ function ProductRail(props: {
                   </div>
 
                   <div className="mt-3">
-                    <div className="line-clamp-2 text-sm font-extrabold">{p.name}</div>
+                    <div className="text-sm font-extrabold line-clamp-2">{p.name}</div>
 
                     <div className="mt-2 flex flex-wrap items-baseline gap-2">
                       {isBusiness && p.priceAziende && p.priceAziende > 0 ? (
@@ -636,7 +713,7 @@ function ProductRail(props: {
                             Azienda
                           </span>
                           {p.price > 0 ? (
-                            <span className="text-xs text-text/50 line-through">
+                            <span className="text-xs line-through text-text/50">
                               € {p.price.toFixed(2)}
                             </span>
                           ) : null}
@@ -647,7 +724,7 @@ function ProductRail(props: {
                             {p.price > 0 ? `€ ${p.price.toFixed(2)}` : "Prezzo n.d."}
                           </span>
                           {hasSale ? (
-                            <span className="text-xs text-text/50 line-through">
+                            <span className="text-xs line-through text-text/50">
                               € {Number(p.compareAtPrice).toFixed(2)}
                             </span>
                           ) : null}
@@ -703,30 +780,10 @@ function ProductRail(props: {
 
 function InfoCards() {
   const cards = [
-    {
-      t: "Spedizioni",
-      d: "Tempi chiari e tracking quando disponibile.",
-      href: "/spedizioni",
-      cta: "Vai a Spedizioni",
-    },
-    {
-      t: "Resi & rimborsi",
-      d: "Procedura semplice e assistenza dedicata.",
-      href: "/resi",
-      cta: "Leggi Resi",
-    },
-    {
-      t: "Assistenza",
-      d: "Email, telefono e WhatsApp.",
-      href: "/contatti",
-      cta: "Contattaci",
-    },
-    {
-      t: "Privacy & Cookie",
-      d: "Informazioni legali.",
-      href: "/privacy-policy",
-      cta: "Info legali",
-    },
+    { t: "Spedizioni", d: "Tempi chiari e tracking quando disponibile.", href: "/spedizioni", cta: "Vai a Spedizioni" },
+    { t: "Resi & rimborsi", d: "Procedura semplice e assistenza dedicata.", href: "/resi", cta: "Leggi Resi" },
+    { t: "Assistenza", d: "Email, telefono e WhatsApp.", href: "/contatti", cta: "Contattaci" },
+    { t: "Privacy & Cookie", d: "Informazioni legali.", href: "/privacy-policy", cta: "Info legali" },
   ] as const;
 
   return (
@@ -755,7 +812,7 @@ function InfoCards() {
             <Link
               key={x.t}
               href={x.href}
-              className="group rounded-2xl border border-border bg-background p-5 transition hover:bg-surface-2 hover:shadow-sm"
+              className="group rounded-2xl border border-border bg-background p-5 hover:bg-surface-2 hover:shadow-sm transition"
             >
               <div className="text-sm font-extrabold">{x.t}</div>
               <div className="mt-2 text-sm text-text/70">{x.d}</div>
