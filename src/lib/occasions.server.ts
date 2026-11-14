@@ -25,7 +25,7 @@ const STRAPI_URL =
   "http://localhost:1337";
 
 const STRAPI_TOKEN =
-  process.env.STRAPI_API_TOKEN || process.env.NEXT_PUBLIC_STRAPI_API_TOKEN;
+  process.env.STRAPI_API_TOKEN;
 
 function absUrl(base: string, maybeUrl?: string | null) {
   if (!maybeUrl) return null;

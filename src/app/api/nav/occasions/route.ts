@@ -26,8 +26,6 @@ const STRAPI_URL =
 const STRAPI_TOKEN_RAW =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
 const STRAPI_TOKEN = String(STRAPI_TOKEN_RAW || "").trim();

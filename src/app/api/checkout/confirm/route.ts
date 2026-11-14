@@ -24,9 +24,7 @@ function strapiBaseUrl() {
 function getStrapiToken() {
   const t =
     process.env.STRAPI_API_TOKEN ||
-    process.env.STRAPI_TOKEN ||
-    process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-    process.env.NEXT_PUBLIC_STRAPI_TOKEN;
+    process.env.STRAPI_TOKEN;
 
   if (!t) throw new Error("Missing STRAPI token (set STRAPI_API_TOKEN or STRAPI_TOKEN)");
   return String(t).trim();

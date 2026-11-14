@@ -1,4 +1,4 @@
-//src/lib/catalog
+// src/lib/catalog.ts
 
 import type { Product, TaxonomyRef, ProductVariant } from "@/lib/types";
 
@@ -15,14 +15,14 @@ export type MacroCategory = {
 const STRAPI_URL =
   process.env.STRAPI_URL ||
   process.env.NEXT_PUBLIC_STRAPI_URL ||
-  "http://localhost:1337";
+  (process.env.NODE_ENV === "production"
+    ? "https://tavoleefavole-strapi.onrender.com"
+    : "http://localhost:1337");
 
-// ✅ include anche STRAPI_TOKEN (nel tuo Vercel c’è)
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN;
+  "";
 
 const BASE_URL = String(STRAPI_URL || "").replace(/\/+$/, "");
 
@@ -174,7 +174,6 @@ function normalizeCategoryRef(x: any): TaxonomyRef | null {
 function normalizeProduct(row: AnyObj): Product {
   const a = pickAttrs(row);
 
-  // ✅ prova vari nomi possibili (non rompe nulla se non esistono)
   const imagesFromImages = extractMediaUrls(BASE_URL, (a as any)?.images);
   const imagesFromImage = extractMediaUrls(BASE_URL, (a as any)?.image);
   const imagesFromCover = extractMediaUrls(BASE_URL, (a as any)?.cover);
@@ -287,12 +286,15 @@ function isValidationErrorPayload(json: any) {
 }
 
 /**
- * ✅ POPULATE ultra-safe:
- * - prima prova populate=*
- * - se Strapi risponde 400 ValidationError, faremo retry senza populate (vedi fetchStrapi)
+ * Popolamento selettivo leggero per le liste prodotti.
+ * Se Strapi risponde 400 ValidationError, fetchStrapi scala automaticamente
+ * a populate=* e poi a query senza populate.
  */
 function buildProductsPopulate(qs: URLSearchParams) {
-  qs.set("populate", "*");
+  qs.set("populate[images][fields][0]", "url");
+  qs.set("populate[images][fields][1]", "formats");
+  qs.set("populate[category]", "*");
+  qs.set("populate[subcategory][populate][category]", "*");
 }
 
 function stripPopulate(qs: URLSearchParams) {
@@ -307,32 +309,64 @@ async function fetchStrapi(
   path: string,
   qs?: URLSearchParams,
   revalidate = DEFAULT_REVALIDATE,
-  opts?: { auth?: boolean }
+  opts?: { auth?: boolean; fallbackWildcardPopulate?: boolean }
 ): Promise<{ ok: boolean; status: number; json: any; text: string; url: string }> {
   const useAuth = opts?.auth ?? Boolean(STRAPI_TOKEN);
+  const headers = useAuth ? headersWithToken() : publicHeaders();
 
   const makeUrl = (params?: URLSearchParams) =>
-    `${BASE_URL}${path}${params ? `?${params.toString()}` : ""}`;
+    `${BASE_URL}${path}${params && params.toString() ? `?${params.toString()}` : ""}`;
 
   const url = makeUrl(qs);
 
   try {
     const res = await fetchWithTimeout(url, {
       next: { revalidate },
-      headers: useAuth ? headersWithToken() : publicHeaders(),
+      headers,
     });
 
     const text = await res.text().catch(() => "");
     const json = safeJsonParse(text);
 
-    // ✅ retry automatico se populate causa ValidationError
+    // Retry 1: fallback a populate=* se il populate selettivo causa ValidationError
+    if (
+      !res.ok &&
+      res.status === 400 &&
+      isValidationErrorPayload(json) &&
+      qs &&
+      opts?.fallbackWildcardPopulate
+    ) {
+      const qsWildcard = stripPopulate(qs);
+      qsWildcard.set("populate", "*");
+      const urlWildcard = makeUrl(qsWildcard);
+
+      const resWildcard = await fetchWithTimeout(urlWildcard, {
+        next: { revalidate },
+        headers,
+      });
+
+      const textWildcard = await resWildcard.text().catch(() => "");
+      const jsonWildcard = safeJsonParse(textWildcard);
+
+      if (resWildcard.ok || resWildcard.status !== 400 || !isValidationErrorPayload(jsonWildcard)) {
+        return {
+          ok: resWildcard.ok,
+          status: resWildcard.status,
+          json: jsonWildcard,
+          text: textWildcard,
+          url: urlWildcard,
+        };
+      }
+    }
+
+    // Retry 2: fallback senza alcun populate se anche populate=* causa ValidationError
     if (!res.ok && res.status === 400 && isValidationErrorPayload(json) && qs) {
       const qsNoPopulate = stripPopulate(qs);
       const url2 = makeUrl(qsNoPopulate);
 
       const res2 = await fetchWithTimeout(url2, {
         next: { revalidate },
-        headers: useAuth ? headersWithToken() : publicHeaders(),
+        headers,
       });
 
       const text2 = await res2.text().catch(() => "");
@@ -373,14 +407,14 @@ async function fetchStrapi(
 }
 
 /**
- * ✅ Helper: 1 singolo prodotto via filters
+ * Helper: 1 singolo prodotto via filters (usa populate=* per avere tutti i dettagli scheda)
  */
 async function fetchFirstProductByFilter(
   buildFilters: (qs: URLSearchParams) => void,
   revalidate = 10
 ): Promise<Product | null> {
   const qs = new URLSearchParams();
-  buildProductsPopulate(qs);
+  qs.set("populate", "*");
   buildFilters(qs);
   qs.set("pagination[pageSize]", "1");
 
@@ -396,11 +430,14 @@ async function fetchFirstProductByFilter(
 
 async function fetchCategoriesAll(): Promise<MacroCategory[]> {
   const qs = new URLSearchParams();
-  qs.set("populate", "*");
+  qs.set("populate[subcategories]", "*");
+  qs.set("populate[icon][fields][0]", "url");
   qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
   qs.set("sort[0]", "createdAt:asc");
 
-  const { ok, json } = await fetchStrapi("/api/categories", qs, 60);
+  const { ok, json } = await fetchStrapi("/api/categories", qs, 60, {
+    fallbackWildcardPopulate: true,
+  });
   if (!ok) return [];
 
   return unwrapCollection(json)
@@ -410,7 +447,6 @@ async function fetchCategoriesAll(): Promise<MacroCategory[]> {
 
 async function fetchSubcategoriesAll(): Promise<NavSub[]> {
   const qs = new URLSearchParams();
-  qs.set("populate", "*");
   qs.set("pagination[pageSize]", String(MAX_PAGE_SIZE));
   qs.set("sort[0]", "createdAt:asc");
 
@@ -431,7 +467,9 @@ async function fetchProductsAll(): Promise<Product[]> {
     qs.set("pagination[pageSize]", String(size));
     qs.set("sort[0]", "createdAt:desc");
 
-    const res = await fetchStrapi("/api/products", qs, 30);
+    const res = await fetchStrapi("/api/products", qs, 30, {
+      fallbackWildcardPopulate: true,
+    });
 
     if (res.ok) {
       return unwrapCollection(res.json)
@@ -487,7 +525,9 @@ async function fetchProductsByMacroSlug(macroSlug: string): Promise<Product[]> {
 
   for (const makeQs of attempts) {
     const qs = makeQs();
-    const res = await fetchStrapi("/api/products", qs, 10);
+    const res = await fetchStrapi("/api/products", qs, 10, {
+      fallbackWildcardPopulate: true,
+    });
 
     if (res.ok) {
       return unwrapCollection(res.json)
@@ -539,7 +579,9 @@ async function fetchProductsByMacroAndSubSlug(macroSlug: string, subSlug: string
 
   for (const makeQs of attempts) {
     const qs = makeQs();
-    const res = await fetchStrapi("/api/products", qs, 10);
+    const res = await fetchStrapi("/api/products", qs, 10, {
+      fallbackWildcardPopulate: true,
+    });
 
     if (res.ok) {
       return unwrapCollection(res.json)

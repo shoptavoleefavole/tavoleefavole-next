@@ -27,11 +27,11 @@ function formatEUR(n?: number | null) {
 
 function ChevronLeftIcon() {
   return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-5 w-5">
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4">
       <path
         d="M12.5 4.5L7 10l5.5 5.5"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -39,16 +39,85 @@ function ChevronLeftIcon() {
   );
 }
 
-function ChevronRightIcon() {
+function ChevronRightIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-5 w-5">
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
       <path
         d="M7.5 4.5L13 10l-5.5 5.5"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function SparkleGemIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-3.5 w-3.5 text-primary">
+      <path
+        d="M6 3.5h8l3 4.5-7 8.5-7-8.5 3-4.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function GiftIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <rect x="3" y="8" width="14" height="9" rx="2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M2.5 8h15M10 8v9" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M10 8c-1.5 0-3.5-.8-3.5-2.3C6.5 4.5 7.5 3.8 8.5 4.2 9.4 4.5 10 6 10 8Zm0 0c1.5 0 3.5-.8 3.5-2.3 0-1.2-1-1.9-2-1.5-.9.3-1.5 1.8-1.5 3.8Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function StarIcon({ className = "h-4 w-4 text-primary" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="m10 2.8 2.1 4.4 4.8.7-3.5 3.4.8 4.8-4.2-2.2-4.2 2.2.8-4.8-3.5-3.4 4.8-.7L10 2.8Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AwardIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 text-primary">
+      <circle cx="10" cy="7.5" r="4.2" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M7.5 11.2 6.5 17l3.5-1.8L13.5 17l-1-5.8"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function HeadsetIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="h-4 w-4 text-primary">
+      <path
+        d="M4 11V9.5a6 6 0 1 1 12 0V11"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <rect x="2.8" y="10.2" width="2.8" height="4.8" rx="1.2" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="14.4" y="10.2" width="2.8" height="4.8" rx="1.2" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -103,88 +172,105 @@ export default function HomeDualHero({
     setActiveIndex((cur) => (cur + 1) % leftItems.length);
   }
 
-  const featuredLatest = rightItems[0] ?? null;
-  const secondaryLatest = rightItems.slice(1);
-
   return (
     <section className="mt-3">
       <div className="grid gap-6 lg:grid-cols-12 lg:items-stretch">
+        {/* COLONNA SINISTRA: Hero principale + Carosello in evidenza */}
         <div className="lg:col-span-8 flex">
-          <div className="relative flex h-full w-full min-h-[640px] overflow-hidden rounded-[2rem] border border-border bg-background shadow-[0_22px_70px_rgba(0,0,0,0.05)]">
+          <div className="relative flex h-full w-full overflow-hidden rounded-[2rem] border border-border bg-background shadow-[0_22px_70px_rgba(0,0,0,0.05)]">
             <div
               aria-hidden="true"
-              className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.18),transparent_24%),linear-gradient(135deg,#fffdf8_0%,#fcf7ea_45%,#ffffff_100%)]"
-            />
-            <div
-              aria-hidden="true"
-              className="absolute -right-16 top-[-40px] h-64 w-64 rounded-full bg-white/40 blur-3xl"
-            />
-            <div
-              aria-hidden="true"
-              className="absolute -left-16 bottom-[-60px] h-72 w-72 rounded-full bg-[#EBCB76]/12 blur-3xl"
+              className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.14),transparent_32%),linear-gradient(135deg,#fffdf9_0%,#fcf8f3_55%,#ffffff_100%)]"
             />
 
-            <div className="relative grid w-full gap-8 p-6 sm:p-8 lg:grid-cols-12 lg:gap-10 lg:p-10 xl:p-12">
-              <div className="flex flex-col justify-center lg:col-span-5">
-                <p className="inline-flex w-fit items-center rounded-full border border-border bg-white/85 px-3 py-1 text-xs font-extrabold text-text/70 shadow-sm">
-                  Selezione speciale
-                </p>
+            <div className="relative grid w-full gap-6 p-6 sm:p-8 lg:grid-cols-12 lg:items-center lg:gap-8 lg:p-9">
+              {/* Testi e CTA */}
+              <div className="flex flex-col justify-between lg:col-span-6">
+                <div>
+                  <p className="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-white/90 px-3 py-1 text-xs font-extrabold text-primary shadow-sm">
+                    <SparkleGemIcon />
+                    <span>Selezione premium per ogni occasione</span>
+                  </p>
 
-                <h1 className="mt-5 text-4xl font-extrabold leading-[0.94] tracking-tight text-text sm:text-5xl lg:text-[4rem]">
-                  Prodotti selezionati per te
-                </h1>
+                  <h1 className="mt-4 text-3xl font-extrabold leading-[1.04] tracking-tight text-text sm:text-4xl xl:text-[2.75rem]">
+                    Piccole dolcezze per{" "}
+                    <span className="text-primary">grandi momenti da ricordare.</span>
+                  </h1>
 
-                <p className="mt-5 max-w-md text-[15px] leading-7 text-text/72 sm:text-base">
-                  Una selezione curata di specialità, idee regalo e articoli scelti tra i prodotti
-                  più interessanti del catalogo.
-                </p>
+                  <p className="mt-4 text-sm leading-6 text-text/75">
+                    Da Tavole &amp; Favole trovi una selezione curata di dolcezze, specialità di
+                    alta qualità, idee regalo e articoli per feste, scelti per rendere speciale
+                    ogni occasione: dalle ricorrenze stagionali ai compleanni, dalle cerimonie ai
+                    momenti più semplici da condividere.
+                  </p>
 
-                <div className="mt-6 flex flex-wrap gap-2.5">
-                  <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-extrabold text-text shadow-sm">
-                    Pagamenti sicuri
-                  </span>
-                  <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-extrabold text-text shadow-sm">
-                    Prodotti di qualità
-                  </span>
-                  <span className="rounded-full bg-white/90 px-3 py-1 text-xs font-extrabold text-text shadow-sm">
-                    Assistenza reale
-                  </span>
+                  <div className="mt-6">
+                    <Link
+                      href="/catalogo"
+                      className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-primary px-6 text-sm font-extrabold text-primary-contrast shadow-sm transition hover:bg-primary-hover"
+                    >
+                      <GiftIcon className="h-4 w-4" />
+                      <span>Scopri le specialità del momento</span>
+                      <ChevronRightIcon className="h-4 w-4" />
+                    </Link>
+                  </div>
                 </div>
 
-                <div className="mt-8 flex flex-wrap items-center gap-3">
-                  <Link
-                    href="/catalogo"
-                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast shadow-sm transition hover:bg-primary-hover"
-                  >
-                    Scopri la selezione
-                  </Link>
+                {/* 3 mini-card punti di forza */}
+                <div className="mt-6 grid grid-cols-3 gap-2.5">
+                  <div className="flex items-center gap-2 rounded-2xl border border-border bg-white/90 px-3 py-2.5 shadow-sm">
+                    <span className="shrink-0">
+                      <StarIcon />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-extrabold text-text">Specialità</div>
+                      <div className="truncate text-[11px] text-text/60">Scelte con cura</div>
+                    </div>
+                  </div>
 
-                  <Link
-                    href="/contatti"
-                    className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-white px-5 text-sm font-extrabold text-text transition hover:bg-surface-2"
-                  >
-                    Contattaci
-                  </Link>
+                  <div className="flex items-center gap-2 rounded-2xl border border-border bg-white/90 px-3 py-2.5 shadow-sm">
+                    <span className="shrink-0">
+                      <AwardIcon />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-extrabold text-text">Marchi</div>
+                      <div className="truncate text-[11px] text-text/60">Alta qualità</div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 rounded-2xl border border-border bg-white/90 px-3 py-2.5 shadow-sm">
+                    <span className="shrink-0">
+                      <HeadsetIcon />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-extrabold text-text">Assistenza</div>
+                      <div className="truncate text-[11px] text-text/60">Sempre attiva</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex lg:col-span-7">
+              {/* Card prodotto in evidenza */}
+              <div className="flex lg:col-span-6">
                 {activeProduct ? (
-                  <div className="relative flex h-full min-h-[520px] w-full flex-col overflow-hidden rounded-[2rem] border border-border bg-white shadow-[0_20px_55px_rgba(0,0,0,0.07)]">
+                  <div className="relative flex w-full flex-col justify-between rounded-[1.75rem] border border-border bg-white p-5 shadow-[0_16px_45px_rgba(0,0,0,0.06)]">
+                    <div className="flex justify-end">
+                      <span className="inline-flex items-center rounded-full border border-border bg-surface-2/70 px-3 py-1 text-[11px] font-extrabold text-primary">
+                        In evidenza
+                      </span>
+                    </div>
+
                     <Link
                       href={`/prodotto/${activeProduct.slug}`}
-                      className="group relative block flex-1 overflow-hidden bg-[#F7F3EA]"
+                      className="group relative my-3 block h-48 w-full overflow-hidden rounded-2xl bg-white sm:h-52"
                     >
-                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(212,175,55,0.13),transparent_30%)]" />
-                      <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-white/30 to-transparent" />
-
                       {activeProduct.image ? (
                         <Image
                           src={activeProduct.image}
                           alt={activeProduct.name}
                           fill
-                          className="object-contain p-8 transition-transform duration-300 group-hover:scale-[1.04] sm:p-10 lg:p-12"
-                          sizes="(max-width: 1024px) 100vw, 720px"
+                          className="object-contain p-3 transition-transform duration-300 group-hover:scale-[1.04]"
+                          sizes="(max-width: 1024px) 100vw, 420px"
                           priority={activeIndex === 0}
                         />
                       ) : (
@@ -194,14 +280,17 @@ export default function HomeDualHero({
                       )}
                     </Link>
 
-                    <div className="border-t border-border bg-white px-5 py-5 sm:px-6">
-                      <div className="line-clamp-2 text-[1.65rem] font-extrabold leading-tight text-text">
+                    <div>
+                      <Link
+                        href={`/prodotto/${activeProduct.slug}`}
+                        className="line-clamp-2 text-lg font-extrabold leading-snug text-text transition hover:text-primary sm:text-xl"
+                      >
                         {activeProduct.name}
-                      </div>
+                      </Link>
 
-                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <div className="mt-2 flex flex-wrap items-baseline gap-2.5">
                         {formatEUR(activeProduct.price) ? (
-                          <span className="text-[1.75rem] font-extrabold text-primary">
+                          <span className="text-xl font-extrabold text-primary">
                             {formatEUR(activeProduct.price)}
                           </span>
                         ) : (
@@ -211,18 +300,18 @@ export default function HomeDualHero({
                         {typeof activeProduct.compareAtPrice === "number" &&
                         typeof activeProduct.price === "number" &&
                         activeProduct.compareAtPrice > activeProduct.price ? (
-                          <span className="text-base text-text/45 line-through">
+                          <span className="text-sm text-text/45 line-through">
                             {formatEUR(activeProduct.compareAtPrice)}
                           </span>
                         ) : null}
                       </div>
 
-                      <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+                      <div className="mt-4 flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
                             onClick={goPrev}
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-border bg-background text-text transition hover:bg-surface-2"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background text-text transition hover:bg-surface-2"
                             aria-label="Prodotto precedente"
                           >
                             <ChevronLeftIcon />
@@ -231,7 +320,7 @@ export default function HomeDualHero({
                           <button
                             type="button"
                             onClick={goNext}
-                            className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-border bg-background text-text transition hover:bg-surface-2"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background text-text transition hover:bg-surface-2"
                             aria-label="Prodotto successivo"
                           >
                             <ChevronRightIcon />
@@ -240,14 +329,14 @@ export default function HomeDualHero({
 
                         <Link
                           href={`/prodotto/${activeProduct.slug}`}
-                          className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast transition hover:bg-primary-hover"
+                          className="inline-flex h-10 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast transition hover:bg-primary-hover"
                         >
                           Vedi prodotto
                         </Link>
                       </div>
 
                       {leftItems.length > 1 ? (
-                        <div className="mt-5 flex items-center gap-2">
+                        <div className="mt-4 flex items-center gap-1.5">
                           {leftItems.map((_, i) => (
                             <button
                               key={i}
@@ -257,8 +346,8 @@ export default function HomeDualHero({
                               className={[
                                 "rounded-full transition-all",
                                 i === activeIndex
-                                  ? "h-2.5 w-7 bg-primary"
-                                  : "h-2.5 w-2.5 bg-black/15 hover:bg-black/25",
+                                  ? "h-2 w-6 bg-primary"
+                                  : "h-2 w-2 bg-black/15 hover:bg-black/25",
                               ].join(" ")}
                             />
                           ))}
@@ -267,7 +356,7 @@ export default function HomeDualHero({
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full w-full items-center rounded-2xl border border-border bg-white p-6 text-sm text-text/70">
+                  <div className="flex h-full w-full items-center justify-center rounded-2xl border border-border bg-white p-6 text-sm text-text/70">
                     Nessun prodotto selezionato disponibile al momento.
                   </div>
                 )}
@@ -276,118 +365,85 @@ export default function HomeDualHero({
           </div>
         </div>
 
+        {/* COLONNA DESTRA: Specialità appena arrivate */}
         <div className="lg:col-span-4 flex">
-          <div className="relative flex h-full w-full min-h-[640px] overflow-hidden rounded-[2rem] border border-border bg-background shadow-[0_22px_70px_rgba(0,0,0,0.05)]">
+          <div className="relative flex h-full w-full overflow-hidden rounded-[2rem] border border-border bg-background shadow-[0_22px_70px_rgba(0,0,0,0.05)]">
             <div
               aria-hidden="true"
-              className="absolute inset-0 bg-[linear-gradient(180deg,#ffffff_0%,#fcfaf5_100%)]"
-            />
-            <div
-              aria-hidden="true"
-              className="absolute -right-12 top-[-40px] h-44 w-44 rounded-full bg-[#EBCB76]/10 blur-3xl"
+              className="absolute inset-0 bg-[linear-gradient(180deg,#ffffff_0%,#fcf8f5_100%)]"
             />
 
-            <div className="relative flex w-full flex-col p-6 sm:p-8">
-              <p className="inline-flex w-fit items-center rounded-full border border-border bg-white px-3 py-1 text-xs font-extrabold text-text/70 shadow-sm">
-                Nuovi arrivi
+            <div className="relative flex w-full flex-col p-6 sm:p-7">
+              <p className="text-xs font-extrabold text-primary">
+                Novità selezionate
               </p>
 
-              <h2 className="mt-4 text-3xl font-extrabold leading-tight tracking-tight text-text sm:text-[2.7rem]">
-                Le novità del momento
+              <h2 className="mt-2 text-2xl font-extrabold leading-tight tracking-tight text-text sm:text-[1.75rem]">
+                Specialità appena arrivate
               </h2>
 
-              <p className="mt-3 max-w-sm text-sm leading-7 text-text/70 sm:text-base">
-                Scopri gli ultimi prodotti inseriti, le nuove referenze e le novità da non perdere.
+              <p className="mt-2 text-sm leading-6 text-text/70">
+                Scopri le ultime dolcezze, idee regalo e specialità stagionali aggiunte al catalogo.
               </p>
 
-              <div className="mt-6 flex flex-1 flex-col gap-4">
-                {featuredLatest ? (
-                  <Link
-                    href={`/prodotto/${featuredLatest.slug}`}
-                    className="group overflow-hidden rounded-[1.75rem] border border-border bg-white shadow-sm transition hover:shadow-md"
-                  >
-                    <div className="relative aspect-[16/10] overflow-hidden bg-[#F7F3EA]">
-                      {featuredLatest.image ? (
-                        <Image
-                          src={featuredLatest.image}
-                          alt={featuredLatest.name}
-                          fill
-                          className="object-contain p-6 transition-transform duration-300 group-hover:scale-[1.04]"
-                          sizes="(max-width: 1024px) 100vw, 420px"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center px-6 text-center text-sm font-semibold text-text/60">
-                          Immagine non disponibile
-                        </div>
-                      )}
-                    </div>
+              {/* Pillole */}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-3 py-1 text-xs font-extrabold text-text shadow-sm">
+                  <StarIcon className="h-3.5 w-3.5 text-primary" />
+                  <span>Stagionali</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-3 py-1 text-xs font-extrabold text-text shadow-sm">
+                  <GiftIcon className="h-3.5 w-3.5 text-primary" />
+                  <span>Idee regalo</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-3 py-1 text-xs font-extrabold text-text shadow-sm">
+                  <SparkleGemIcon />
+                  <span>Alta qualità</span>
+                </span>
+              </div>
 
-                    <div className="border-t border-border p-4">
-                      <div className="line-clamp-2 text-[1.05rem] font-extrabold leading-snug text-text">
-                        {featuredLatest.name}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <span className="text-lg font-extrabold text-primary">
-                          {formatEUR(featuredLatest.price) ?? "Scopri di più"}
-                        </span>
-
-                        {typeof featuredLatest.compareAtPrice === "number" &&
-                        typeof featuredLatest.price === "number" &&
-                        featuredLatest.compareAtPrice > featuredLatest.price ? (
-                          <span className="text-sm text-text/45 line-through">
-                            {formatEUR(featuredLatest.compareAtPrice)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </Link>
-                ) : (
-                  <div className="rounded-2xl border border-border bg-white p-4 text-sm text-text/70">
-                    Nessuna novità disponibile al momento.
-                  </div>
-                )}
-
-                {secondaryLatest.length > 0 ? (
-                  <div className="grid gap-3">
-                    {secondaryLatest.map((p) => (
-                      <Link
-                        key={p.id}
-                        href={`/prodotto/${p.slug}`}
-                        className="flex items-center gap-3 rounded-2xl border border-border bg-white p-3 transition hover:bg-surface-2"
-                      >
-                        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-[#F7F3EA]">
+              {/* Lista 3 novità compatte */}
+              <div className="mt-5 flex flex-1 flex-col justify-between gap-3">
+                {rightItems.length > 0 ? (
+                  rightItems.map((p) => (
+                    <Link
+                      key={p.id}
+                      href={`/prodotto/${p.slug}`}
+                      className="group flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm transition hover:border-primary/30 hover:shadow-md"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-surface-2/40">
                           {p.image ? (
                             <Image
                               src={p.image}
                               alt={p.name}
                               fill
-                              className="object-contain p-2"
-                              sizes="80px"
+                              className="object-contain p-1.5 transition-transform duration-200 group-hover:scale-105"
+                              sizes="64px"
                             />
                           ) : null}
                         </div>
 
                         <div className="min-w-0">
-                          <div className="line-clamp-2 text-sm font-extrabold leading-snug text-text">
+                          <div className="line-clamp-2 text-sm font-extrabold leading-snug text-text transition group-hover:text-primary">
                             {p.name}
                           </div>
-                          <div className="mt-1 text-sm font-semibold text-primary">
+                          <div className="mt-1 text-sm font-extrabold text-primary">
                             {formatEUR(p.price) ?? "Scopri di più"}
                           </div>
                         </div>
-                      </Link>
-                    ))}
-                  </div>
-                ) : null}
+                      </div>
 
-                <div className="mt-auto pt-2">
-                  <Link
-                    href="/catalogo"
-                    className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast transition hover:bg-primary-hover"
-                  >
-                    Vedi le novità
-                  </Link>
-                </div>
+                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-background text-text/60 transition group-hover:border-primary/30 group-hover:text-primary">
+                        <ChevronRightIcon className="h-3.5 w-3.5" />
+                      </span>
+                    </Link>
+                  ))
+                ) : (
+                  <div className="rounded-2xl border border-border bg-white p-4 text-sm text-text/70">
+                    Nessuna novità disponibile al momento.
+                  </div>
+                )}
               </div>
             </div>
           </div>

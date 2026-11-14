@@ -11,7 +11,6 @@ import CialdeExamplesCarousel from "@/components/cialde/CialdeExamplesCarousel";
 import HomeDualHero from "@/components/home/HomeDualHero";
 
 export const dynamic = "force-dynamic";
-export const fetchCache = "force-no-store";
 
 type HomeProduct = {
   id: string;
@@ -57,13 +56,11 @@ const STRAPI_URL =
 const STRAPI_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
 const SITE_URL = (
   process.env.NEXT_PUBLIC_SITE_URL ||
-  "https://tavoleefavole-next-t7pd.vercel.app"
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://www.tavoleefavole.com")
 ).replace(/\/+$/, "");
 
 /* ---------------- Utils ---------------- */
@@ -382,35 +379,14 @@ function normalizeStrapiProduct(row: any): HomeProduct | null {
   };
 }
 
+function applyProductPopulateWildcard(qs: URLSearchParams, prefix = "") {
+  const p = prefix ? `${prefix}[populate]` : "populate";
+  qs.set(p, "*");
+}
+
 async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
-  qs.set("fields[0]", "slug");
-  qs.set("fields[1]", "name");
-  qs.set("fields[2]", "price");
-  qs.set("fields[3]", "compareAtPrice");
-  qs.set("fields[4]", "shortDescription");
-  qs.set("fields[5]", "stockQty");
-  qs.set("fields[6]", "trackInventory");
-  qs.set("fields[7]", "priceAziende");
-  qs.set("fields[8]", "visibleInStorefront");
-  qs.set("fields[9]", "hiddenFromHomepage");
-
-  qs.set("populate[images][fields][0]", "url");
-  qs.set("populate[images][fields][1]", "formats");
-  qs.set("populate[image][fields][0]", "url");
-  qs.set("populate[image][fields][1]", "formats");
-  qs.set("populate[cover][fields][0]", "url");
-  qs.set("populate[cover][fields][1]", "formats");
-  qs.set("populate[thumbnail][fields][0]", "url");
-  qs.set("populate[thumbnail][fields][1]", "formats");
-
-  qs.set("populate[category][fields][0]", "visibleInStorefront");
-  qs.set("populate[categories][fields][0]", "visibleInStorefront");
-  qs.set("populate[categoria][fields][0]", "visibleInStorefront");
-  qs.set("populate[visibilityOccasion][fields][0]", "isActive");
-  qs.set("populate[visibilityOccasion][fields][1]", "startDate");
-  qs.set("populate[visibilityOccasion][fields][2]", "endDate");
-
+  applyProductPopulateWildcard(qs);
   qs.set("sort[0]", "createdAt:desc");
   qs.set("pagination[pageSize]", String(limit));
 
@@ -425,136 +401,56 @@ async function fetchLatestProducts(limit = 12): Promise<HomeProduct[]> {
   return data.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
-async function fetchHomepageSelectedProducts(): Promise<HomeProduct[]> {
+async function fetchHomepageRelation(
+  relationKey: "selectedProducts" | "latestProducts"
+): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
+  qs.set(`populate[${relationKey}][populate]`, "*");
 
-  qs.set("populate[selectedProducts][fields][0]", "slug");
-  qs.set("populate[selectedProducts][fields][1]", "name");
-  qs.set("populate[selectedProducts][fields][2]", "price");
-  qs.set("populate[selectedProducts][fields][3]", "compareAtPrice");
-  qs.set("populate[selectedProducts][fields][4]", "shortDescription");
-  qs.set("populate[selectedProducts][fields][5]", "stockQty");
-  qs.set("populate[selectedProducts][fields][6]", "trackInventory");
-  qs.set("populate[selectedProducts][fields][7]", "priceAziende");
-  qs.set("populate[selectedProducts][fields][8]", "visibleInStorefront");
-  qs.set("populate[selectedProducts][fields][9]", "hiddenFromHomepage");
-
-  qs.set("populate[selectedProducts][populate][images][fields][0]", "url");
-  qs.set("populate[selectedProducts][populate][images][fields][1]", "formats");
-  qs.set("populate[selectedProducts][populate][image][fields][0]", "url");
-  qs.set("populate[selectedProducts][populate][image][fields][1]", "formats");
-  qs.set("populate[selectedProducts][populate][cover][fields][0]", "url");
-  qs.set("populate[selectedProducts][populate][cover][fields][1]", "formats");
-  qs.set("populate[selectedProducts][populate][thumbnail][fields][0]", "url");
-  qs.set("populate[selectedProducts][populate][thumbnail][fields][1]", "formats");
-
-  qs.set("populate[selectedProducts][populate][category][fields][0]", "visibleInStorefront");
-  qs.set("populate[selectedProducts][populate][categories][fields][0]", "visibleInStorefront");
-  qs.set("populate[selectedProducts][populate][categoria][fields][0]", "visibleInStorefront");
-
-  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][0]", "isActive");
-  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][1]", "startDate");
-  qs.set("populate[selectedProducts][populate][visibilityOccasion][fields][2]", "endDate");
-
-  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
+  // Supporta sia Collection Type (/api/homepages) che Single Type (/api/homepage)
+  let r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
     revalidate: 60,
     timeoutMs: 12000,
   });
 
+  if (!r.ok) {
+    r = await fetchStrapi(`/api/homepage?${qs.toString()}`, {
+      revalidate: 60,
+      timeoutMs: 12000,
+    });
+  }
+
   if (!r.ok) return [];
 
-  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
+  const rawData = r.json?.data;
+  const first = Array.isArray(rawData) ? rawData[0] : rawData;
   const root = first?.attributes ?? first ?? {};
+  const rel = root?.[relationKey];
 
-  const rows: any[] = Array.isArray(root?.selectedProducts?.data)
-    ? root.selectedProducts.data
-    : Array.isArray(root?.selectedProducts)
-      ? root.selectedProducts
+  const rows: any[] = Array.isArray(rel?.data)
+    ? rel.data
+    : Array.isArray(rel)
+      ? rel
       : [];
 
   return rows.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
 }
 
-async function fetchHomepageLatestProducts(): Promise<HomeProduct[]> {
-  const qs = new URLSearchParams();
+async function fetchHomepageProducts(): Promise<{
+  selectedProducts: HomeProduct[];
+  latestProducts: HomeProduct[];
+}> {
+  const [selectedProducts, latestProducts] = await Promise.all([
+    fetchHomepageRelation("selectedProducts"),
+    fetchHomepageRelation("latestProducts"),
+  ]);
 
-  qs.set("populate[latestProducts][fields][0]", "slug");
-  qs.set("populate[latestProducts][fields][1]", "name");
-  qs.set("populate[latestProducts][fields][2]", "price");
-  qs.set("populate[latestProducts][fields][3]", "compareAtPrice");
-  qs.set("populate[latestProducts][fields][4]", "shortDescription");
-  qs.set("populate[latestProducts][fields][5]", "stockQty");
-  qs.set("populate[latestProducts][fields][6]", "trackInventory");
-  qs.set("populate[latestProducts][fields][7]", "priceAziende");
-  qs.set("populate[latestProducts][fields][8]", "visibleInStorefront");
-  qs.set("populate[latestProducts][fields][9]", "hiddenFromHomepage");
-
-  qs.set("populate[latestProducts][populate][images][fields][0]", "url");
-  qs.set("populate[latestProducts][populate][images][fields][1]", "formats");
-  qs.set("populate[latestProducts][populate][image][fields][0]", "url");
-  qs.set("populate[latestProducts][populate][image][fields][1]", "formats");
-  qs.set("populate[latestProducts][populate][cover][fields][0]", "url");
-  qs.set("populate[latestProducts][populate][cover][fields][1]", "formats");
-  qs.set("populate[latestProducts][populate][thumbnail][fields][0]", "url");
-  qs.set("populate[latestProducts][populate][thumbnail][fields][1]", "formats");
-
-  qs.set("populate[latestProducts][populate][category][fields][0]", "visibleInStorefront");
-  qs.set("populate[latestProducts][populate][categories][fields][0]", "visibleInStorefront");
-  qs.set("populate[latestProducts][populate][categoria][fields][0]", "visibleInStorefront");
-
-  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][0]", "isActive");
-  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][1]", "startDate");
-  qs.set("populate[latestProducts][populate][visibilityOccasion][fields][2]", "endDate");
-
-  const r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
-    revalidate: 60,
-    timeoutMs: 12000,
-  });
-
-  if (!r.ok) return [];
-
-  const first = Array.isArray(r.json?.data) ? r.json.data[0] : null;
-  const root = first?.attributes ?? first ?? {};
-
-  const rows: any[] = Array.isArray(root?.latestProducts?.data)
-    ? root.latestProducts.data
-    : Array.isArray(root?.latestProducts)
-      ? root.latestProducts
-      : [];
-
-  return rows.map(normalizeStrapiProduct).filter(Boolean) as HomeProduct[];
+  return { selectedProducts, latestProducts };
 }
 
 async function fetchSaleCandidates(limit = 24): Promise<HomeProduct[]> {
   const qs = new URLSearchParams();
-  qs.set("fields[0]", "slug");
-  qs.set("fields[1]", "name");
-  qs.set("fields[2]", "price");
-  qs.set("fields[3]", "compareAtPrice");
-  qs.set("fields[4]", "shortDescription");
-  qs.set("fields[5]", "stockQty");
-  qs.set("fields[6]", "trackInventory");
-  qs.set("fields[7]", "priceAziende");
-  qs.set("fields[8]", "visibleInStorefront");
-  qs.set("fields[9]", "hiddenFromHomepage");
-
-  qs.set("populate[images][fields][0]", "url");
-  qs.set("populate[images][fields][1]", "formats");
-  qs.set("populate[image][fields][0]", "url");
-  qs.set("populate[image][fields][1]", "formats");
-  qs.set("populate[cover][fields][0]", "url");
-  qs.set("populate[cover][fields][1]", "formats");
-  qs.set("populate[thumbnail][fields][0]", "url");
-  qs.set("populate[thumbnail][fields][1]", "formats");
-
-  qs.set("populate[category][fields][0]", "visibleInStorefront");
-  qs.set("populate[categories][fields][0]", "visibleInStorefront");
-  qs.set("populate[categoria][fields][0]", "visibleInStorefront");
-
-  qs.set("populate[visibilityOccasion][fields][0]", "isActive");
-  qs.set("populate[visibilityOccasion][fields][1]", "startDate");
-  qs.set("populate[visibilityOccasion][fields][2]", "endDate");
-
+  applyProductPopulateWildcard(qs);
   qs.set("sort[0]", "updatedAt:desc");
   qs.set("pagination[pageSize]", String(limit));
   qs.set("filters[compareAtPrice][$notNull]", "true");
@@ -622,6 +518,30 @@ async function checkIsBusiness(): Promise<boolean> {
 }
 
 /* ---------------- UI ---------------- */
+
+function ProductImagePlaceholder({ alt }: { alt: string }) {
+  return (
+    <div
+      role="img"
+      aria-label={alt}
+      className="flex h-full w-full items-center justify-center text-text/30"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        className="h-10 w-10"
+        aria-hidden="true"
+      >
+        <rect x="3" y="3" width="18" height="18" rx="3" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <path d="m21 15-5-5L5 21" />
+      </svg>
+    </div>
+  );
+}
 
 function ProductRail(props: {
   title: string;
@@ -691,7 +611,9 @@ function ProductRail(props: {
                         className="object-cover"
                         quality={60}
                       />
-                    ) : null}
+                    ) : (
+                      <ProductImagePlaceholder alt={p.name} />
+                    )}
 
                     {hasSale ? (
                       <span className="absolute left-2 top-2 rounded-full bg-accent px-3 py-1 text-[11px] font-extrabold text-accent-contrast">
@@ -904,22 +826,23 @@ function PersonalizedPrintsCarouselBlock() {
 /* ---------------- PAGE ---------------- */
 
 export default async function Home() {
-  const selectedP = withDeadline(fetchHomepageSelectedProducts(), 9500, []);
-  const latestManualP = withDeadline(fetchHomepageLatestProducts(), 9500, []);
+  const homepageP = withDeadline(fetchHomepageProducts(), 12000, {
+    selectedProducts: [],
+    latestProducts: [],
+  });
   const latestAutoP = withDeadline(fetchLatestProducts(12), 9500, []);
   const saleP = withDeadline(fetchSaleCandidates(24), 9500, []);
 
-  const [selectedRawAll, latestManualRawAll, latestAutoRawAll, saleCandRawAll, isBusiness] =
+  const [homepageData, latestAutoRawAll, saleCandRawAll, isBusiness] =
     await Promise.all([
-      selectedP,
-      latestManualP,
+      homepageP,
       latestAutoP,
       saleP,
       checkIsBusiness(),
     ]);
 
-  const selectedRaw = selectedRawAll.filter(shouldShowProductInHomepage);
-  const latestManualRaw = latestManualRawAll.filter(shouldShowProductInHomepage);
+  const selectedRaw = homepageData.selectedProducts.filter(shouldShowProductInHomepage);
+  const latestManualRaw = homepageData.latestProducts.filter(shouldShowProductInHomepage);
   const latestAutoRaw = latestAutoRawAll.filter(shouldShowProductInHomepage);
   const saleCandRaw = saleCandRawAll.filter(shouldShowProductInHomepage);
 
@@ -927,10 +850,23 @@ export default async function Home() {
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
     .slice(0, 12);
 
+  // Fallback automatico se la selezione manuale su Strapi è vuota
+  const heroSelectedSource =
+    selectedRaw.length > 0
+      ? selectedRaw
+      : sale.length > 0
+        ? sale.slice(0, 6)
+        : latestAutoRaw.slice(0, 6);
+
+  const heroLatestSource =
+    latestManualRaw.length > 0
+      ? latestManualRaw.slice(0, 3)
+      : latestAutoRaw.slice(0, 3);
+
   const latestHeroStockP = withDeadline(
-    withAvailabilitySafe(latestManualRaw.slice(0, 3), 2500),
+    withAvailabilitySafe(heroLatestSource, 2500),
     2800,
-    latestManualRaw.slice(0, 3)
+    heroLatestSource
   );
 
   const latestRailStockP = withDeadline(
@@ -953,13 +889,13 @@ export default async function Home() {
       priceAziende: isBusiness ? (p.priceAziende ?? null) : null,
     }));
 
-  const selectedSanitized = sanitize(selectedRaw);
+  const selectedSanitized = sanitize(heroSelectedSource);
   const latestHeroSanitized = sanitize(latestHero);
   const latestRailSanitized = sanitize(latestRail);
   const saleSanitized = sanitize(saleWithStock);
 
   return (
-    <main className="mx-auto max-w-7xl px-4 pt-2 pb-10">
+    <div className="mx-auto max-w-7xl px-4 pt-2 pb-10">
       <HomeDualHero
         selectedProducts={selectedSanitized}
         latestProducts={latestHeroSanitized}
@@ -1020,6 +956,6 @@ export default async function Home() {
           </div>
         </div>
       </section>
-    </main>
+    </div>
   );
 }

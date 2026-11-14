@@ -18,8 +18,6 @@ function strapiBaseUrl() {
 const STRAPI_SERVICE_TOKEN =
   process.env.STRAPI_API_TOKEN ||
   process.env.STRAPI_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_API_TOKEN ||
-  process.env.NEXT_PUBLIC_STRAPI_TOKEN ||
   "";
 
 type SafeUser = {

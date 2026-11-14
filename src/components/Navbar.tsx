@@ -27,6 +27,7 @@ type NavCat = { slug: string; label: string; icon?: string | null; subcategories
 type NavOcc = {
   slug: string;
   label: string;
+  isActive?: boolean | null;
   startDate?: string | null;
   endDate?: string | null;
 };
@@ -141,14 +142,41 @@ function normalizeStrapiOccasion(row: any): NavOcc | null {
   return {
     slug,
     label,
+    isActive: typeof a?.isActive === "boolean" ? a.isActive : null,
     startDate: a?.startDate ?? null,
     endDate: a?.endDate ?? null,
   };
 }
 
+function todayYMDRome(): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Rome",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function isOccasionActive(o: NavOcc): boolean {
+  if (o.isActive === true) return true;
+
+  const start = String(o.startDate ?? "").trim();
+  const end = String(o.endDate ?? "").trim();
+  if (!start && !end) return false;
+
+  const today = todayYMDRome();
+  if (start && !end) return today >= start;
+  if (!start && end) return today <= end;
+  return today >= start && today <= end;
+}
+
 async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[]> {
   try {
-    const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { cache: "no-store", signal });
+    const { ok, json } = await fetchJsonSafe("/api/nav/occasions", { signal });
     if (ok) {
       const data: any[] = Array.isArray(json?.data)
         ? json.data
@@ -157,11 +185,14 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
           : Array.isArray(json)
             ? json
             : [];
-      const normalized = data.map(normalizeStrapiOccasion).filter(isNavOcc);
-      if (normalized.length) return normalized;
+      // /api/nav/occasions filtra già lato server solo le ricorrenze attive
+      return data
+        .map(normalizeStrapiOccasion)
+        .filter(isNavOcc)
+        .map((o) => ({ ...o, isActive: o.isActive ?? true }));
     }
   } catch {
-    // noop
+    // fallback diretto su Strapi solo se l'API interna fallisce
   }
 
   if (!STRAPI_URL) return [];
@@ -175,28 +206,13 @@ async function fetchNavbarOccasionsRobust(signal?: AbortSignal): Promise<NavOcc[
     const { ok, json } = await fetchJsonSafe(strapiUrl, { cache: "no-store", signal });
     if (!ok) return [];
     const data: any[] = Array.isArray(json?.data) ? json.data : [];
-    return data.map(normalizeStrapiOccasion).filter(isNavOcc);
+    return data
+      .map(normalizeStrapiOccasion)
+      .filter(isNavOcc)
+      .filter(isOccasionActive);
   } catch {
     return [];
   }
-}
-
-function isOccasionActive(o: NavOcc): boolean {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-
-  if (o.startDate) {
-    const start = new Date(o.startDate);
-    if (now < start) return false;
-  }
-
-  if (o.endDate) {
-    const end = new Date(o.endDate);
-    end.setHours(23, 59, 59, 999);
-    if (now > end) return false;
-  }
-
-  return true;
 }
 
 async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<NavCat[]> {
@@ -218,7 +234,7 @@ async function fetchNavbarCategoriesFromStrapi(signal?: AbortSignal): Promise<Na
 
 async function fetchNavbarCategoriesRobust(signal?: AbortSignal): Promise<NavCat[]> {
   try {
-    const { ok, json } = await fetchJsonSafe("/api/nav/categories", { cache: "no-store", signal });
+    const { ok, json } = await fetchJsonSafe("/api/nav/categories", { signal });
     if (ok) {
       const data: any[] = Array.isArray(json?.data)
         ? json.data

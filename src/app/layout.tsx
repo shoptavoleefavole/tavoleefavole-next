@@ -77,10 +77,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
         {/* ============================================================
             IUBENDA COOKIE SOLUTION
-            Ordine obbligatorio: config → sync → gpp stub → main script
-            beforeInteractive: carica prima dell'idratazione React,
-            così il banner appare prima che qualsiasi script terze parti
-            possa essere eseguito.
+            Configurazione inline prima dell'idratazione + caricamento
+            non bloccante (afterInteractive) degli script esterni.
         ============================================================ */}
 
         {/* 1. Configurazione — deve stare PRIMA di tutti gli altri script Iubenda */}
@@ -136,34 +134,27 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <Script
           id="iubenda-sync"
           src="//cs.iubenda.com/sync/2088185.js"
-          strategy="beforeInteractive"
+          strategy="afterInteractive"
         />
 
         {/* 3. GPP stub — necessario per conformità US Privacy / IAB */}
         <Script
           id="iubenda-gpp"
           src="//cdn.iubenda.com/cs/gpp/stub.js"
-          strategy="beforeInteractive"
+          strategy="afterInteractive"
         />
 
         {/* 4. Script principale Cookie Solution */}
         <Script
           id="iubenda-cs"
           src="//cdn.iubenda.com/cs/iubenda_cs.js"
-          strategy="beforeInteractive"
+          strategy="afterInteractive"
         />
-
-        {/* RIMOSSO: il vecchio <Script src="https://cdn.iubenda.com/iubenda.js"> 
-            era lo script dei documenti privacy (widget link), non la Cookie Solution.
-            Se nel tuo sito hai link alla privacy policy generati da Iubenda 
-            (classe "iubenda-white iubenda-noiframe"), ri-aggiungilo così:
-            <Script src="https://cdn.iubenda.com/iubenda.js" strategy="lazyOnload" />
-        */}
 
         <AppProviders>
           <FavoritesProvider>
             <div className="flex min-h-dvh flex-col">
-              <div className="sticky top-0 z-[9999] isolate bg-background shadow-sm">
+              <div className="sticky top-0 z-40 isolate bg-background shadow-sm">
                 <Topbar />
 
                 <Suspense
