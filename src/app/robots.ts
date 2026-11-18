@@ -1,10 +1,10 @@
+// src/app/robots.ts
 import type { MetadataRoute } from "next";
 
 function getSiteUrl() {
   return (
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-  );
+    process.env.NEXT_PUBLIC_SITE_URL || "https://www.tavoleefavole.com"
+  ).replace(/\/+$/, "");
 }
 
 export default function robots(): MetadataRoute.Robots {
@@ -15,8 +15,7 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        // se vuoi bloccare aree specifiche in futuro:
-        // disallow: ["/debug", "/api"],
+        disallow: ["/api/", "/account", "/carrello", "/checkout", "/debug"],
       },
     ],
     sitemap: `${siteUrl}/sitemap.xml`,

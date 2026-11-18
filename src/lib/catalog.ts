@@ -262,6 +262,16 @@ function normalizeProduct(row: AnyObj): Product {
         ? (a as any).aziendaDiscountEligible
         : undefined,
     priceAziende: toNumber((a as any)?.priceAziende),
+    brand: (a as any)?.brand ?? null,
+    sku: (a as any)?.sku ?? null,
+    gtin: (a as any)?.gtin ?? null,
+    weight_grams: toIntOrNull((a as any)?.weight_grams),
+    visibleInStorefront:
+      typeof (a as any)?.visibleInStorefront === "boolean"
+        ? (a as any).visibleInStorefront
+        : true,
+    foodInfo: (a as any)?.foodInfo ?? null,
+    nutrition: (a as any)?.nutrition ?? null,
   };
 
   return out as Product;
