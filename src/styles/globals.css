@@ -60,6 +60,60 @@
 
 html { color-scheme: light; }
 
+/* ============================================================
+   TEMA NATALIZIO REVERSIBILE (attivo con data-theme="christmas")
+   ============================================================ */
+html[data-theme="christmas"] {
+  --color-brand: 168 24 42;
+  --color-brand-dark: 132 16 32;
+  --color-brand-soft: 252 238 240;
+
+  --color-primary: 178 24 43;           /* rosso natalizio elegante */
+  --color-primary-hover: 150 18 35;
+  --color-primary-active: 125 14 28;
+  --color-primary-contrast: 255 255 255;
+
+  --color-secondary: 253 238 240;       /* rosa/rosso chiarissimo */
+  --color-accent: 18 107 69;            /* verde abete */
+  --color-accent-contrast: 255 255 255;
+
+  --color-background: 255 255 255;
+  --color-surface: 255 251 245;         /* avorio caldo */
+  --color-surface-2: 243 249 246;       /* verde abete chiarissimo */
+
+  --color-link: 18 107 69;
+  --color-link-hover: 178 24 43;
+}
+
+@keyframes tf-snowfall {
+  0% {
+    transform: translate3d(0, -10vh, 0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.75;
+  }
+  85% {
+    opacity: 0.75;
+  }
+  100% {
+    transform: translate3d(18px, 105vh, 0);
+    opacity: 0;
+  }
+}
+
+.tf-snowflake {
+  position: fixed;
+  top: -5vh;
+  color: rgba(212, 175, 55, 0.45);
+  user-select: none;
+  pointer-events: none;
+  z-index: 35;
+  animation-name: tf-snowfall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
 body {
   background: rgb(var(--color-background));
   color: rgb(var(--color-text));

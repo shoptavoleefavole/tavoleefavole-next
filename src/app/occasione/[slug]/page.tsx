@@ -18,7 +18,7 @@ const STRAPI_TOKEN =
 
 const SITE_URL = (
   process.env.NEXT_PUBLIC_SITE_URL ||
-  "https://tavoleefavole-next-t7pd.vercel.app"
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://www.tavoleefavole.com")
 ).replace(/\/+$/, "");
 
 const PAGE_SIZE = 200;
@@ -92,7 +92,7 @@ function isRetryableFetchError(e: any) {
   );
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000) {
+async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 15_000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), ms);
   try {
@@ -106,7 +106,7 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 25_000
   }
 }
 
-async function fetchWithRetry(url: string, init: RequestInit = {}, ms = 25_000) {
+async function fetchWithRetry(url: string, init: RequestInit = {}, ms = 15_000) {
   let lastErr: any;
   for (let i = 0; i < 3; i++) {
     try {
@@ -114,7 +114,7 @@ async function fetchWithRetry(url: string, init: RequestInit = {}, ms = 25_000) 
     } catch (e: any) {
       lastErr = e;
       if (!isRetryableFetchError(e) || i === 2) break;
-      await new Promise((r) => setTimeout(r, 500 * Math.pow(2, i)));
+      await new Promise((r) => setTimeout(r, 400 * Math.pow(2, i)));
     }
   }
   throw lastErr;
@@ -125,14 +125,23 @@ async function fetchStrapi(path: string) {
   if (!base) return { ok: false, status: 500, json: null, base: "" };
 
   const url = `${base}${path.startsWith("/") ? "" : "/"}${path}`;
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
 
-  try {
+  const tryFetch = async (withAuth: boolean) => {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (withAuth && STRAPI_TOKEN) headers.Authorization = `Bearer ${STRAPI_TOKEN}`;
     const res = await fetchWithRetry(url, { headers });
     const text = await res.text().catch(() => "");
     const json = text ? safeJsonParse(text) : null;
     return { ok: res.ok, status: res.status, json, base };
+  };
+
+  try {
+    if (STRAPI_TOKEN) {
+      const r1 = await tryFetch(true);
+      if (r1.ok) return r1;
+      if (r1.status !== 401 && r1.status !== 403) return r1;
+    }
+    return await tryFetch(false);
   } catch {
     return { ok: false, status: 0, json: null, base };
   }
@@ -185,15 +194,21 @@ function hexToRgba(hex: string, alpha: number) {
 }
 
 function buildOccasionTheme(occasion: OccasionData): OccasionTheme {
-  const color = safeStr(occasion.badgeColor, "#DCAE54");
+  const fallbackColor = occasion.slug === "natale" ? "#B2182B" : "#DCAE54";
+  const color = safeStr(occasion.badgeColor, fallbackColor);
   return {
     label: occasion.label,
-    heroTitle: safeStr(occasion.heroTitle, occasion.label),
+    heroTitle: safeStr(
+      occasion.heroTitle,
+      occasion.slug === "natale"
+        ? "Speciale Natale: dolcezze artigianali, idee regalo e specialità delle feste."
+        : occasion.label
+    ),
     badgeColor: color,
     bg:
-      `radial-gradient(ellipse at 15% 10%, ${hexToRgba(color, 0.18)} 0%, transparent 48%),` +
-      `radial-gradient(ellipse at 85% 12%, ${hexToRgba(color, 0.12)} 0%, transparent 42%),` +
-      `linear-gradient(160deg, #fffdf8 0%, #fffaf0 45%, #ffffff 100%)`,
+      `radial-gradient(ellipse at 15% 10%, ${hexToRgba(color, 0.16)} 0%, transparent 48%),` +
+      `radial-gradient(ellipse at 85% 12%, rgba(212, 175, 55, 0.14) 0%, transparent 44%),` +
+      `linear-gradient(160deg, #fffdf8 0%, #fffaf2 45%, #ffffff 100%)`,
   };
 }
 
@@ -203,7 +218,7 @@ async function checkIsBusiness(): Promise<boolean> {
   try {
     const cookieStore = await cookies();
     const tf = cookieStore.get("tf_token")?.value ?? null;
-    if (!tf) return false;
+    if (!tf || tf.split(".").length !== 3) return false;
 
     const res = await fetchWithTimeout(
       `${SITE_URL}/api/account/type`,
@@ -226,7 +241,7 @@ async function checkIsBusiness(): Promise<boolean> {
 function normalizeOccasion(row: any): OccasionData | null {
   const a = row?.attributes ?? row ?? {};
 
-  const slug = safeStr(a?.slug, "");
+  const slug = safeStr(a?.slug ?? a?.documentId, "").toLowerCase();
   if (!slug) return null;
 
   const categoriesRaw = a?.categories?.data ?? a?.categories ?? [];
@@ -243,7 +258,7 @@ function normalizeOccasion(row: any): OccasionData | null {
     slug,
     label: safeStr(a?.Titolo ?? a?.titolo ?? a?.title ?? a?.label ?? a?.name, slug),
     heroTitle: safeStr(a?.heroTitle, ""),
-    badgeColor: safeStr(a?.badgeColor, "#DCAE54"),
+    badgeColor: safeStr(a?.badgeColor, slug === "natale" ? "#B2182B" : "#DCAE54"),
     isActive: a?.isActive === true,
     startDate: a?.startDate ?? null,
     endDate: a?.endDate ?? null,
@@ -252,28 +267,35 @@ function normalizeOccasion(row: any): OccasionData | null {
 }
 
 async function fetchOccasionBySlug(slug: string): Promise<OccasionData | null> {
+  const target = slug.trim().toLowerCase();
+
   const qs = new URLSearchParams();
-  qs.set("filters[slug][$eq]", slug);
+  qs.set("filters[slug][$eqi]", target);
   qs.set("pagination[pageSize]", "1");
-
-  qs.set("fields[0]", "Titolo");
-  qs.set("fields[1]", "slug");
-  qs.set("fields[2]", "isActive");
-  qs.set("fields[3]", "startDate");
-  qs.set("fields[4]", "endDate");
-  qs.set("fields[5]", "heroTitle");
-  qs.set("fields[6]", "badgeColor");
-
   qs.set("populate[categories][fields][0]", "slug");
   qs.set("populate[categories][fields][1]", "label");
 
   const r = await fetchStrapi(`/api/occasions?${qs.toString()}`);
-  if (!r.ok) return null;
+  if (r.ok) {
+    const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
+    if (data.length) return normalizeOccasion(data[0]);
+  }
 
-  const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
-  if (!data.length) return null;
+  // Fallback: scarica le occasioni e confronta lo slug normalizzato
+  const qsAll = new URLSearchParams();
+  qsAll.set("pagination[pageSize]", "100");
+  qsAll.set("populate[categories][fields][0]", "slug");
+  qsAll.set("populate[categories][fields][1]", "label");
 
-  return normalizeOccasion(data[0]);
+  const rAll = await fetchStrapi(`/api/occasions?${qsAll.toString()}`);
+  if (!rAll.ok) return null;
+
+  const allRows: any[] = Array.isArray(rAll.json?.data) ? rAll.json.data : [];
+  const normalizedList = allRows
+    .map(normalizeOccasion)
+    .filter((o): o is OccasionData => Boolean(o));
+
+  return normalizedList.find((o) => o.slug === target) ?? null;
 }
 
 // ─── Prodotti helpers ─────────────────────────────────────────────────────────
@@ -350,26 +372,50 @@ function normalizeProduct(row: any, base: string) {
   };
 }
 
-async function fetchProductsByCategorySlugs(categorySlugs: string[]) {
+async function fetchOccasionProducts(occasionSlug: string, categorySlugs: string[]) {
   const base = normalizedStrapiBaseUrl();
-  const uniqueSlugs = Array.from(new Set(categorySlugs.filter(Boolean)));
-  if (!uniqueSlugs.length) return [];
-
+  const uniqueSlugs = Array.from(new Set([occasionSlug, ...categorySlugs].filter(Boolean)));
   const results = new Map<string, any>();
 
+  const queries: URLSearchParams[] = [];
+
+  // 1) Prodotti collegati direttamente all'occasione tramite visibilityOccasion
+  if (occasionSlug) {
+    const qsOcc = new URLSearchParams();
+    qsOcc.set("pagination[pageSize]", String(PAGE_SIZE));
+    qsOcc.set("sort[0]", "createdAt:desc");
+    qsOcc.set("filters[visibilityOccasion][slug][$eqi]", occasionSlug);
+    qsOcc.set("populate", "*");
+    queries.push(qsOcc);
+  }
+
+  // 2) Prodotti collegati alle categorie (o sottocategorie) associate all'occasione
   for (const categorySlug of uniqueSlugs) {
-    const qs = new URLSearchParams();
-    qs.set("pagination[pageSize]", String(PAGE_SIZE));
-    qs.set("sort[0]", "createdAt:desc");
-    qs.set("filters[category][slug][$eq]", categorySlug);
-    qs.set("populate", "*");
+    const qsCat = new URLSearchParams();
+    qsCat.set("pagination[pageSize]", String(PAGE_SIZE));
+    qsCat.set("sort[0]", "createdAt:desc");
+    qsCat.set("filters[category][slug][$eqi]", categorySlug);
+    qsCat.set("populate", "*");
+    queries.push(qsCat);
 
-    const r = await fetchStrapi(`/api/products?${qs.toString()}`);
+    const qsSubCat = new URLSearchParams();
+    qsSubCat.set("pagination[pageSize]", String(PAGE_SIZE));
+    qsSubCat.set("sort[0]", "createdAt:desc");
+    qsSubCat.set("filters[subcategory][category][slug][$eqi]", categorySlug);
+    qsSubCat.set("populate", "*");
+    queries.push(qsSubCat);
+  }
+
+  const responses = await Promise.all(
+    queries.map((qs) => fetchStrapi(`/api/products?${qs.toString()}`))
+  );
+
+  for (const r of responses) {
     if (!r.ok) continue;
-
     const data: any[] = Array.isArray(r.json?.data) ? r.json.data : [];
     for (const row of data) {
       const normalized = normalizeProduct(row, r.base || base);
+      if (!normalized.slug) continue;
       const key = normalized.documentId || normalized.id || normalized.slug;
       if (!results.has(String(key))) {
         results.set(String(key), normalized);
@@ -410,7 +456,7 @@ export default async function OccasionPage({
 
   const [isBusiness, items] = await Promise.all([
     checkIsBusiness(),
-    fetchProductsByCategorySlugs(occasion.categorySlugs).catch(() => []),
+    fetchOccasionProducts(occasion.slug, occasion.categorySlugs).catch(() => []),
   ]);
 
   const skus = Array.from(
@@ -440,6 +486,7 @@ export default async function OccasionPage({
   });
 
   const hasProducts = itemsWithStock.length > 0;
+  const isChristmasOccasion = occasion.slug === "natale";
 
   return (
     <div className="relative min-h-screen" style={{ background: theme.bg }}>
@@ -452,36 +499,55 @@ export default async function OccasionPage({
           ]}
         />
 
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mt-4 flex flex-col gap-3 rounded-3xl border border-border bg-white/85 p-6 shadow-sm backdrop-blur-sm sm:flex-row sm:items-end sm:justify-between sm:p-8">
           <div>
-            <h1 className="text-2xl font-extrabold">{theme.label}</h1>
-            <p className="mt-1 text-sm text-text/70">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-extrabold text-primary">
+              <span aria-hidden="true">{isChristmasOccasion ? "🎄" : "✨"}</span>
+              <span>Selezione stagionale</span>
+            </span>
+
+            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-text sm:text-4xl">
+              {theme.label}
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-text/75 sm:text-base">
               {theme.heroTitle || "Filtra e ordina i prodotti della selezione."}
             </p>
           </div>
 
           <Link
             href="/catalogo"
-            className="text-sm font-semibold text-link hover:text-link-hover"
+            className="inline-flex h-11 shrink-0 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold text-text transition hover:bg-surface-2"
           >
-            Torna al catalogo
+            Vedi tutto il catalogo
           </Link>
         </div>
 
         {!hasProducts ? (
-          <div className="mt-6 rounded-2xl border border-border bg-white/80 backdrop-blur-sm p-5">
-            <p className="text-sm font-semibold">
-              Nessun prodotto disponibile per questa occasione.
+          <div className="mt-6 rounded-3xl border border-border bg-white/90 p-6 shadow-sm backdrop-blur-sm sm:p-8">
+            <p className="text-base font-extrabold text-text">
+              {isChristmasOccasion
+                ? "Stiamo preparando le specialità di Natale!"
+                : "Nessun prodotto disponibile per questa occasione al momento."}
             </p>
-            <p className="mt-2 text-sm text-text/70">
-              Prova un&apos;altra categoria oppure torna al catalogo completo.
+            <p className="mt-2 max-w-xl text-sm leading-6 text-text/70">
+              {isChristmasOccasion
+                ? "A breve troverai qui panettoni artigianali, idee regalo, cioccolato e dolcezze natalizie. Nel frattempo puoi esplorare tutto il nostro catalogo o scriverci su WhatsApp per richieste personalizzate."
+                : "Prova un'altra categoria oppure torna al catalogo completo."}
             </p>
-            <Link
-              href="/catalogo"
-              className="mt-4 inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
-            >
-              Torna al catalogo
-            </Link>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/catalogo"
+                className="inline-flex h-11 items-center justify-center rounded-xl bg-primary px-5 text-sm font-extrabold text-primary-contrast hover:bg-primary-hover"
+              >
+                Esplora il catalogo
+              </Link>
+              <Link
+                href="/contatti"
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-5 text-sm font-extrabold hover:bg-surface-2"
+              >
+                Contattaci
+              </Link>
+            </div>
           </div>
         ) : (
           <ProductsGridWithFilters

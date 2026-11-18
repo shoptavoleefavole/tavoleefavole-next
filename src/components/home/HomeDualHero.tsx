@@ -13,6 +13,9 @@ type HeroProduct = {
   compareAtPrice?: number | null;
 };
 
+const IS_CHRISTMAS =
+  String(process.env.NEXT_PUBLIC_SITE_THEME ?? "").trim().toLowerCase() === "christmas";
+
 function formatEUR(n?: number | null) {
   if (typeof n !== "number" || !Number.isFinite(n)) return null;
   try {
@@ -180,7 +183,11 @@ export default function HomeDualHero({
           <div className="relative flex h-full w-full overflow-hidden rounded-[2rem] border border-border bg-background shadow-[0_22px_70px_rgba(0,0,0,0.05)]">
             <div
               aria-hidden="true"
-              className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.14),transparent_32%),linear-gradient(135deg,#fffdf9_0%,#fcf8f3_55%,#ffffff_100%)]"
+              className={
+                IS_CHRISTMAS
+                  ? "absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.22),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(178,24,43,0.08),transparent_42%),linear-gradient(135deg,#fffdf8_0%,#fdf6ec_55%,#ffffff_100%)]"
+                  : "absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.14),transparent_32%),linear-gradient(135deg,#fffdf9_0%,#fcf8f3_55%,#ffffff_100%)]"
+              }
             />
 
             <div className="relative grid w-full gap-6 p-6 sm:p-8 lg:grid-cols-12 lg:items-center lg:gap-8 lg:p-9">
@@ -188,29 +195,50 @@ export default function HomeDualHero({
               <div className="flex flex-col justify-between lg:col-span-6">
                 <div>
                   <p className="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-white/90 px-3 py-1 text-xs font-extrabold text-primary shadow-sm">
-                    <SparkleGemIcon />
-                    <span>Selezione premium per ogni occasione</span>
+                    {IS_CHRISTMAS ? (
+                      <>
+                        <span aria-hidden="true">🎄</span>
+                        <span>Speciale Natale • Selezione per le feste</span>
+                      </>
+                    ) : (
+                      <>
+                        <SparkleGemIcon />
+                        <span>Selezione premium per ogni occasione</span>
+                      </>
+                    )}
                   </p>
 
                   <h1 className="mt-4 text-3xl font-extrabold leading-[1.04] tracking-tight text-text sm:text-4xl xl:text-[2.75rem]">
-                    Piccole dolcezze per{" "}
-                    <span className="text-primary">grandi momenti da ricordare.</span>
+                    {IS_CHRISTMAS ? (
+                      <>
+                        La magia del Natale in{" "}
+                        <span className="text-primary">dolcezze da condividere.</span>
+                      </>
+                    ) : (
+                      <>
+                        Piccole dolcezze per{" "}
+                        <span className="text-primary">grandi momenti da ricordare.</span>
+                      </>
+                    )}
                   </h1>
 
                   <p className="mt-4 text-sm leading-6 text-text/75">
-                    Da Tavole &amp; Favole trovi una selezione curata di dolcezze, specialità di
-                    alta qualità, idee regalo e articoli per feste, scelti per rendere speciale
-                    ogni occasione: dalle ricorrenze stagionali ai compleanni, dalle cerimonie ai
-                    momenti più semplici da condividere.
+                    {IS_CHRISTMAS
+                      ? "Scopri la nostra selezione natalizia di specialità artigianali, idee regalo, cioccolato e dolcezze delle feste, scelte con cura per rendere indimenticabile la tavola di Natale."
+                      : "Da Tavole & Favole trovi una selezione curata di dolcezze, specialità di alta qualità, idee regalo e articoli per feste, scelti per rendere speciale ogni occasione: dalle ricorrenze stagionali ai compleanni, dalle cerimonie ai momenti più semplici da condividere."}
                   </p>
 
                   <div className="mt-6">
                     <Link
-                      href="/catalogo"
+                      href={IS_CHRISTMAS ? "/occasione/natale" : "/catalogo"}
                       className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-primary px-6 text-sm font-extrabold text-primary-contrast shadow-sm transition hover:bg-primary-hover"
                     >
                       <GiftIcon className="h-4 w-4" />
-                      <span>Scopri le specialità del momento</span>
+                      <span>
+                        {IS_CHRISTMAS
+                          ? "Scopri lo Speciale Natale"
+                          : "Scopri le specialità del momento"}
+                      </span>
                       <ChevronRightIcon className="h-4 w-4" />
                     </Link>
                   </div>
@@ -256,7 +284,7 @@ export default function HomeDualHero({
                   <div className="relative flex w-full flex-col justify-between rounded-[1.75rem] border border-border bg-white p-5 shadow-[0_16px_45px_rgba(0,0,0,0.06)]">
                     <div className="flex justify-end">
                       <span className="inline-flex items-center rounded-full border border-border bg-surface-2/70 px-3 py-1 text-[11px] font-extrabold text-primary">
-                        In evidenza
+                        {IS_CHRISTMAS ? "Idee Natale" : "In evidenza"}
                       </span>
                     </div>
 
@@ -375,7 +403,7 @@ export default function HomeDualHero({
 
             <div className="relative flex w-full flex-col p-6 sm:p-7">
               <p className="text-xs font-extrabold text-primary">
-                Novità selezionate
+                {IS_CHRISTMAS ? "Novità delle feste" : "Novità selezionate"}
               </p>
 
               <h2 className="mt-2 text-2xl font-extrabold leading-tight tracking-tight text-text sm:text-[1.75rem]">

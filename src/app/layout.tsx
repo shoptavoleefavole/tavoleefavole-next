@@ -15,6 +15,7 @@ import MobileBottomNav from "@/components/MobileBottomNav";
 import Analytics from "@/components/Analytics";
 import FavoritesProvider from "@/components/favorites/FavoritesProvider";
 import WhatsAppFloatingButton from "@/components/WhatsAppFloatingButton";
+import ChristmasDecor from "@/components/ChristmasDecor"
 
 function normalizeSiteUrl(input: unknown) {
   const raw = String(input ?? "").trim();
@@ -63,10 +64,13 @@ export const metadata: Metadata = {
   },
 };
 
+const SITE_THEME = String(process.env.NEXT_PUBLIC_SITE_THEME ?? "default").trim().toLowerCase();
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="it" suppressHydrationWarning>
+    <html lang="it" data-theme={SITE_THEME} suppressHydrationWarning>
       <body className="min-h-dvh bg-background text-text antialiased">
+          <ChristmasDecor />
         {/* Skip link accessibilità */}
         <a
           href="#main-content"
