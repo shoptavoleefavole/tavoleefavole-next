@@ -281,8 +281,11 @@ export default function HomeDualHero({
               {/* Card prodotto in evidenza */}
               <div className="flex lg:col-span-6">
                 {activeProduct ? (
-                  <div className="relative flex w-full flex-col justify-between rounded-[1.75rem] border border-border bg-white p-5 shadow-[0_16px_45px_rgba(0,0,0,0.06)]">
-                    <div className="flex justify-end">
+                  <div className="relative flex w-full flex-col justify-between rounded-[1.75rem] border border-border bg-white p-4 sm:p-5 shadow-[0_16px_45px_rgba(0,0,0,0.06)]">
+                    <div className="mb-2.5 flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-text/45">
+                        {activeIndex + 1} / {leftItems.length}
+                      </span>
                       <span className="inline-flex items-center rounded-full border border-border bg-surface-2/70 px-3 py-1 text-[11px] font-extrabold text-primary">
                         {IS_CHRISTMAS ? "Idee Natale" : "In evidenza"}
                       </span>
@@ -290,15 +293,16 @@ export default function HomeDualHero({
 
                     <Link
                       href={`/prodotto/${activeProduct.slug}`}
-                      className="group relative my-3 block h-48 w-full overflow-hidden rounded-2xl bg-white sm:h-52"
+                      className="group relative block aspect-[4/3] w-full overflow-hidden rounded-2xl bg-surface-2/40 ring-1 ring-black/5"
                     >
                       {activeProduct.image ? (
                         <Image
                           src={activeProduct.image}
                           alt={activeProduct.name}
                           fill
-                          className="object-contain p-3 transition-transform duration-300 group-hover:scale-[1.04]"
-                          sizes="(max-width: 1024px) 100vw, 420px"
+                          quality={85}
+                          className="object-cover object-center transition-transform duration-300 group-hover:scale-[1.03]"
+                          sizes="(max-width: 1024px) 100vw, 460px"
                           priority={activeIndex === 0}
                         />
                       ) : (
@@ -308,7 +312,7 @@ export default function HomeDualHero({
                       )}
                     </Link>
 
-                    <div>
+                    <div className="mt-3.5">
                       <Link
                         href={`/prodotto/${activeProduct.slug}`}
                         className="line-clamp-2 text-lg font-extrabold leading-snug text-text transition hover:text-primary sm:text-xl"
@@ -437,17 +441,18 @@ export default function HomeDualHero({
                     <Link
                       key={p.id}
                       href={`/prodotto/${p.slug}`}
-                      className="group flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-3 shadow-sm transition hover:border-primary/30 hover:shadow-md"
+                      className="group flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-2.5 shadow-sm transition hover:border-primary/30 hover:shadow-md"
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-surface-2/40">
+                        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-surface-2/40 ring-1 ring-black/5">
                           {p.image ? (
                             <Image
                               src={p.image}
                               alt={p.name}
                               fill
-                              className="object-contain p-1.5 transition-transform duration-200 group-hover:scale-105"
-                              sizes="64px"
+                              quality={85}
+                              className="object-cover object-center transition-transform duration-200 group-hover:scale-105"
+                              sizes="80px"
                             />
                           ) : null}
                         </div>

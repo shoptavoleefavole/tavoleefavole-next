@@ -166,12 +166,13 @@ function extractMediaUrls(base: string, media: any): string[] {
 
   return arr
     .map((node) => {
+      const a = node?.attributes ?? node ?? {};
       const u =
-        node?.attributes?.url ??
-        node?.attributes?.formats?.large?.url ??
-        node?.attributes?.formats?.medium?.url ??
-        node?.attributes?.formats?.small?.url ??
-        node?.attributes?.formats?.thumbnail?.url ??
+        a?.url ??
+        a?.formats?.large?.url ??
+        a?.formats?.medium?.url ??
+        a?.formats?.small?.url ??
+        a?.formats?.thumbnail?.url ??
         node?.url ??
         node?.formats?.large?.url ??
         node?.formats?.medium?.url ??
@@ -407,7 +408,6 @@ async function fetchHomepageRelation(
   const qs = new URLSearchParams();
   qs.set(`populate[${relationKey}][populate]`, "*");
 
-  // Supporta sia Collection Type (/api/homepages) che Single Type (/api/homepage)
   let r = await fetchStrapi(`/api/homepages?${qs.toString()}`, {
     revalidate: 60,
     timeoutMs: 12000,
@@ -609,7 +609,7 @@ function ProductRail(props: {
                         fill
                         sizes="(max-width: 768px) 100vw, 260px"
                         className="object-cover"
-                        quality={60}
+                        quality={85}
                       />
                     ) : (
                       <ProductImagePlaceholder alt={p.name} />
@@ -850,7 +850,6 @@ export default async function Home() {
     .filter((p) => (p.compareAtPrice ?? 0) > p.price && p.price > 0)
     .slice(0, 12);
 
-  // Fallback automatico se la selezione manuale su Strapi è vuota
   const heroSelectedSource =
     selectedRaw.length > 0
       ? selectedRaw
