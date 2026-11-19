@@ -609,7 +609,7 @@ function ProductRail(props: {
                         fill
                         sizes="(max-width: 768px) 100vw, 260px"
                         className="object-cover"
-                        quality={85}
+                        quality={60}
                       />
                     ) : (
                       <ProductImagePlaceholder alt={p.name} />

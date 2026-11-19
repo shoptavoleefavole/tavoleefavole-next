@@ -143,6 +143,7 @@ export default function HomeDualHero({
   );
 
   const [activeIndex, setActiveIndex] = useState(0);
+  const [unoptimizedMap, setUnoptimizedMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (activeIndex >= leftItems.length) {
@@ -173,6 +174,11 @@ export default function HomeDualHero({
   function goNext() {
     if (!leftItems.length) return;
     setActiveIndex((cur) => (cur + 1) % leftItems.length);
+  }
+
+  function markUnoptimized(url?: string) {
+    if (!url) return;
+    setUnoptimizedMap((prev) => (prev[url] ? prev : { ...prev, [url]: true }));
   }
 
   return (
@@ -300,7 +306,9 @@ export default function HomeDualHero({
                           src={activeProduct.image}
                           alt={activeProduct.name}
                           fill
-                          quality={85}
+                          quality={75}
+                          unoptimized={Boolean(unoptimizedMap[activeProduct.image])}
+                          onError={() => markUnoptimized(activeProduct.image)}
                           className="object-cover object-center transition-transform duration-300 group-hover:scale-[1.03]"
                           sizes="(max-width: 1024px) 100vw, 460px"
                           priority={activeIndex === 0}
@@ -444,14 +452,16 @@ export default function HomeDualHero({
                       className="group flex items-center justify-between gap-3 rounded-2xl border border-border bg-white p-2.5 shadow-sm transition hover:border-primary/30 hover:shadow-md"
                     >
                       <div className="flex min-w-0 items-center gap-3">
-                        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-surface-2/40 ring-1 ring-black/5">
+                        <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-white ring-1 ring-border/70">
                           {p.image ? (
                             <Image
                               src={p.image}
                               alt={p.name}
                               fill
-                              quality={85}
-                              className="object-cover object-center transition-transform duration-200 group-hover:scale-105"
+                              quality={75}
+                              unoptimized={Boolean(unoptimizedMap[p.image])}
+                              onError={() => markUnoptimized(p.image)}
+                              className="object-contain p-1 transition-transform duration-200 group-hover:scale-105"
                               sizes="80px"
                             />
                           ) : null}
